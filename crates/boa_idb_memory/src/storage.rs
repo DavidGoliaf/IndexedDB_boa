@@ -49,18 +49,18 @@ impl Storage for MemoryStorage {
     }
 
     fn open_database(&self, name: &str) -> Result<Box<dyn Database>, BackendError> {
-        let state = self.state.read();
+        let mut state = self.state.write();
         let meta = state
             .databases
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| DatabaseMeta {
+            .entry(name.to_string())
+            .or_insert_with(|| DatabaseMeta {
                 name: Utf16String::from(name),
                 version: 0,
                 stores: Vec::new(),
                 next_store_id: 1,
                 next_index_id: 1,
-            });
+            })
+            .clone();
         Ok(Box::new(MemoryDatabase::new(meta, self.state.clone())))
     }
 
