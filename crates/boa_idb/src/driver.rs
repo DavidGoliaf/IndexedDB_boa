@@ -1546,38 +1546,49 @@ fn start_ready_txns(
             let Some((db_name, mode, scope, durability)) = params else {
                 continue;
             };
-            // Open + begin (engine lock; pure backend IO).
+            // Open + begin (engine lock; pure backend IO). Errors are kept
+            // (not swallowed) to tell `Locked` apart from fatal failures.
             let backend = {
                 let mut engine_guard = crate::runtime::lock_mutex(engine_handle);
                 let Some(engine) = engine_guard.as_mut() else {
                     break;
                 };
-                engine
-                    .open_db_handle(&db_name)
-                    .ok()
-                    .and_then(|mut h| h.begin(mode, &scope, durability).ok())
+                match engine.open_db_handle(&db_name) {
+                    Ok(mut h) => h.begin(mode, &scope, durability),
+                    Err(e) => Err(boa_idb_core::backend::error::BackendError::Internal(
+                        format!("Failed to open database handle: {e}"),
+                    )),
+                }
             };
-            // Install or fail (driver lock).
-            if let Some(b) = backend {
-                let mut d = crate::runtime::lock_mutex(driver_handle);
-                if let Some(handle) = d.txns.get_mut(&txn_id) {
-                    handle.backend = Some(b);
+            // Install, retry, or fail (driver lock).
+            match backend {
+                Ok(b) => {
+                    let mut d = crate::runtime::lock_mutex(driver_handle);
+                    if let Some(handle) = d.txns.get_mut(&txn_id) {
+                        handle.backend = Some(b);
+                    }
+                    started_any = true;
                 }
-                started_any = true;
-            } else {
-                let mut d = crate::runtime::lock_mutex(driver_handle);
-                d.scheduler.forget(txn_id);
-                if let Some(handle) = d.txns.get_mut(&txn_id) {
-                    handle.finished = true;
+                // A taken writer slot is transient under the single-threaded
+                // pump (the holder always progresses or finishes): leave the
+                // transaction scheduled and retry on a later turn instead of
+                // failing its queue. Anything else is fatal.
+                Err(boa_idb_core::backend::error::BackendError::Locked) => {}
+                Err(_) => {
+                    let mut d = crate::runtime::lock_mutex(driver_handle);
+                    d.scheduler.forget(txn_id);
+                    if let Some(handle) = d.txns.get_mut(&txn_id) {
+                        handle.finished = true;
+                    }
+                    drop(d);
+                    fail_queued_requests(
+                        driver_handle,
+                        context,
+                        txn_id,
+                        &IdbError::Unknown("Failed to start backend transaction".into()),
+                    );
+                    progressed = true;
                 }
-                drop(d);
-                fail_queued_requests(
-                    driver_handle,
-                    context,
-                    txn_id,
-                    &IdbError::Unknown("Failed to start backend transaction".into()),
-                );
-                progressed = true;
             }
         }
         progressed |= started_any;
