@@ -49,7 +49,11 @@ pub fn compare_keys(a: &Key, b: &Key) -> Ordering {
             }
             x.len().cmp(&y.len())
         }
-        _ => unreachable!(),
+        // Cross-type pairs are excluded by the `type_order` check above, so
+        // this arm is logically unreachable. It returns `Equal` instead of
+        // panicking (`unreachable!` is forbidden in library code) as a
+        // defensive fallback.
+        _ => Ordering::Equal,
     }
 }
 

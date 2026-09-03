@@ -1,5 +1,6 @@
 //! SCF-v1 binary decoder for `ScValue`.
 
+use crate::clone::crc32c::crc32c;
 use crate::clone::scvalue::{RegExpFlags, ScErrorKind, ScErrorObject, ScTypedArrayKind, ScValue};
 use crate::clone::varint::{decode_ivarint, decode_uvarint};
 use crate::error::ScError;
@@ -43,20 +44,27 @@ const SCF_MAGIC: &[u8; 4] = b"IDB1";
 ///
 /// Validates the header, CRC32C trailer, and format version.
 pub fn decode_scf(data: &[u8], limits: &LimitConfig) -> Result<ScValue, ScError> {
-    // Minimum size: 8 (header) + 1 (at least one tag) + 4 (crc) = 13
-    if data.len() < 12 {
+    // Validate magic first (needs only 4 bytes) so corrupt headers report
+    // `InvalidMagic` rather than a generic truncation error.
+    if data.len() < 4 {
         return Err(ScError::CorruptedPayload("SCF data too short".into()));
     }
-
-    // Validate magic
     if &data[0..4] != SCF_MAGIC {
         return Err(ScError::InvalidMagic);
     }
 
-    // Validate version
+    // Validate version (needs 5 bytes).
+    if data.len() < 5 {
+        return Err(ScError::CorruptedPayload("SCF data too short".into()));
+    }
     let format_ver = data[4];
     if format_ver != 1 {
         return Err(ScError::UnsupportedVersion(format_ver));
+    }
+
+    // Minimum size: 8 (header) + 1 (at least one tag) + 4 (crc) = 13.
+    if data.len() < 13 {
+        return Err(ScError::CorruptedPayload("SCF data too short".into()));
     }
 
     // Validate CRC32C
@@ -67,7 +75,7 @@ pub fn decode_scf(data: &[u8], limits: &LimitConfig) -> Result<ScValue, ScError>
         data[payload_end + 2],
         data[payload_end + 3],
     ]);
-    let calculated_crc = crc32fast::hash(&data[0..payload_end]);
+    let calculated_crc = crc32c(&data[0..payload_end]);
     if expected_crc != calculated_crc {
         return Err(ScError::ChecksumMismatch {
             expected: expected_crc,
@@ -135,6 +143,31 @@ impl<'a> ScfDecoder<'a> {
         Ok(f64::from_le_bytes(buf))
     }
 
+    /// Converts a decoded `u64` length/count to `usize`.
+    ///
+    /// Fails with `CorruptedPayload` on 32-bit targets where the value does
+    /// not fit (instead of silently truncating via `as usize`).
+    fn u64_to_usize(v: u64) -> Result<usize, ScError> {
+        usize::try_from(v)
+            .map_err(|_| ScError::CorruptedPayload(format!("Length value out of range: {v}")))
+    }
+
+    /// Validates an element count against the remaining input.
+    ///
+    /// Every encoded item consumes at least one input byte, so a count larger
+    /// than the remaining bytes is necessarily corrupt. This check runs
+    /// *before* any allocation and bounds `Vec::with_capacity` by the actual
+    /// input size (DoS protection).
+    fn check_count(&self, count: usize) -> Result<(), ScError> {
+        if count > self.remaining() {
+            return Err(ScError::CorruptedPayload(format!(
+                "Element count {count} exceeds remaining input {}",
+                self.remaining()
+            )));
+        }
+        Ok(())
+    }
+
     fn decode_value(&mut self) -> Result<ScValue, ScError> {
         self.decode_value_depth(0)
     }
@@ -192,8 +225,11 @@ impl<'a> ScfDecoder<'a> {
     }
 
     fn decode_string_value(&mut self) -> Result<ScValue, ScError> {
-        let len = decode_uvarint(self.data, &mut self.offset)? as usize;
-        if self.remaining() < len * 2 {
+        let len = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
+        let byte_len = len
+            .checked_mul(2)
+            .ok_or_else(|| ScError::CorruptedPayload(format!("String length overflows: {len}")))?;
+        if self.remaining() < byte_len {
             return Err(ScError::UnexpectedEof);
         }
         let mut units = Vec::with_capacity(len);
@@ -207,12 +243,16 @@ impl<'a> ScfDecoder<'a> {
 
     fn decode_bigint_value(&mut self) -> Result<ScValue, ScError> {
         let sign_byte = self.read_byte()?;
-        let len = decode_uvarint(self.data, &mut self.offset)? as usize;
+        let len = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
         let bytes = self.read_bytes(len)?;
         let sign = match sign_byte {
             0 => num_bigint::Sign::Plus,
             1 => num_bigint::Sign::Minus,
-            _ => num_bigint::Sign::NoSign,
+            _ => {
+                return Err(ScError::CorruptedPayload(format!(
+                    "Invalid BigInt sign byte: {sign_byte:#04x}"
+                )));
+            }
         };
         let bi = num_bigint::BigInt::from_bytes_le(sign, bytes);
         Ok(ScValue::BigInt(bi))
@@ -220,8 +260,11 @@ impl<'a> ScfDecoder<'a> {
 
     fn decode_regexp_value(&mut self) -> Result<ScValue, ScError> {
         // Pattern (string without tag)
-        let pat_len = decode_uvarint(self.data, &mut self.offset)? as usize;
-        if self.remaining() < pat_len * 2 {
+        let pat_len = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
+        let pat_bytes = pat_len.checked_mul(2).ok_or_else(|| {
+            ScError::CorruptedPayload(format!("RegExp pattern length overflows: {pat_len}"))
+        })?;
+        if self.remaining() < pat_bytes {
             return Err(ScError::UnexpectedEof);
         }
         let mut units = Vec::with_capacity(pat_len);
@@ -231,9 +274,14 @@ impl<'a> ScfDecoder<'a> {
         }
         let pattern: Utf16String = units.into();
 
-        // Flags
-        let flags_bits = decode_uvarint(self.data, &mut self.offset)? as u8;
-        let flags = RegExpFlags::from_bitfield(flags_bits);
+        // Flags (u8 bitfield; values above 0xFF are corrupt, not truncatable)
+        let flags_raw = decode_uvarint(self.data, &mut self.offset)?;
+        if flags_raw > u64::from(u8::MAX) {
+            return Err(ScError::CorruptedPayload(format!(
+                "RegExp flags out of range: {flags_raw:#x}"
+            )));
+        }
+        let flags = RegExpFlags::from_bitfield(flags_raw as u8);
 
         Ok(ScValue::RegExp { pattern, flags })
     }
@@ -243,19 +291,45 @@ impl<'a> ScfDecoder<'a> {
         // Reserve a placeholder — will be replaced after decoding
         self.memo_vec.push(ScValue::Undefined);
 
-        let length = decode_uvarint(self.data, &mut self.offset)? as usize;
-        let items_count = decode_uvarint(self.data, &mut self.offset)? as usize;
+        let length = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
+        let items_count = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
+        // An array claims at most `max_value_len` slots; anything larger is
+        // corrupt (DoS protection: `vec![None; length]` allocates per slot).
+        // Note: sparse arrays (holes) legitimately carry almost no input
+        // bytes per hole, so this bound — not the remaining-input bound used
+        // for dense counts — applies here.
+        if length > self.limits.max_value_len {
+            return Err(ScError::ValueTooLarge {
+                limit: self.limits.max_value_len,
+                actual: length,
+            });
+        }
+        if items_count > length {
+            return Err(ScError::CorruptedPayload(format!(
+                "Array items count {items_count} exceeds array length {length}"
+            )));
+        }
+        self.check_count(items_count)?;
 
         let mut elements: Vec<Option<ScValue>> = vec![None; length];
         for _ in 0..items_count {
-            let index = decode_uvarint(self.data, &mut self.offset)? as usize;
-            let val = self.decode_value_depth(depth + 1)?;
-            if index < length {
-                elements[index] = Some(val);
+            let index = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
+            if index >= length {
+                return Err(ScError::CorruptedPayload(format!(
+                    "Array item index {index} out of bounds for length {length}"
+                )));
             }
+            let val = self.decode_value_depth(depth + 1)?;
+            if elements[index].is_some() {
+                return Err(ScError::CorruptedPayload(format!(
+                    "Duplicate array item index {index}"
+                )));
+            }
+            elements[index] = Some(val);
         }
 
-        let extra_count = decode_uvarint(self.data, &mut self.offset)? as usize;
+        let extra_count = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
+        self.check_count(extra_count)?;
         let mut extra_props = Vec::with_capacity(extra_count);
         for _ in 0..extra_count {
             let ScValue::String(key) = self.decode_string_value()? else {
@@ -277,7 +351,8 @@ impl<'a> ScfDecoder<'a> {
         let memo_idx = self.memo_vec.len();
         self.memo_vec.push(ScValue::Undefined);
 
-        let count = decode_uvarint(self.data, &mut self.offset)? as usize;
+        let count = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
+        self.check_count(count)?;
         let mut map = IndexMap::with_capacity(count);
         for _ in 0..count {
             let ScValue::String(key) = self.decode_string_value()? else {
@@ -296,7 +371,8 @@ impl<'a> ScfDecoder<'a> {
         let memo_idx = self.memo_vec.len();
         self.memo_vec.push(ScValue::Undefined);
 
-        let count = decode_uvarint(self.data, &mut self.offset)? as usize;
+        let count = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
+        self.check_count(count)?;
         let mut pairs = Vec::with_capacity(count);
         for _ in 0..count {
             let k = self.decode_value_depth(depth + 1)?;
@@ -313,7 +389,8 @@ impl<'a> ScfDecoder<'a> {
         let memo_idx = self.memo_vec.len();
         self.memo_vec.push(ScValue::Undefined);
 
-        let count = decode_uvarint(self.data, &mut self.offset)? as usize;
+        let count = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
+        self.check_count(count)?;
         let mut values = Vec::with_capacity(count);
         for _ in 0..count {
             let v = self.decode_value_depth(depth + 1)?;
@@ -355,7 +432,8 @@ impl<'a> ScfDecoder<'a> {
         };
 
         let errors = if has_errors {
-            let count = decode_uvarint(self.data, &mut self.offset)? as usize;
+            let count = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
+            self.check_count(count)?;
             let mut errs = Vec::with_capacity(count);
             for _ in 0..count {
                 errs.push(self.decode_value_depth(depth + 1)?);
@@ -379,14 +457,14 @@ impl<'a> ScfDecoder<'a> {
         let memo_idx = self.memo_vec.len();
         self.memo_vec.push(ScValue::Undefined);
 
-        let max_byte_length_raw = decode_uvarint(self.data, &mut self.offset)? as usize;
+        let max_byte_length_raw = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
         let max_byte_length = if max_byte_length_raw == 0 {
             None
         } else {
             Some(max_byte_length_raw - 1)
         };
 
-        let byte_len = decode_uvarint(self.data, &mut self.offset)? as usize;
+        let byte_len = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
         let data = self.read_bytes(byte_len)?.to_vec();
 
         let buf = ScValue::ArrayBuffer {
@@ -398,37 +476,56 @@ impl<'a> ScfDecoder<'a> {
     }
 
     fn decode_typedarray_value(&mut self) -> Result<ScValue, ScError> {
+        // Reserve a memo slot to stay index-aligned with the encoder, which
+        // allocates a memo index for every TypedArray (see `encode_typedarray`).
+        let memo_idx = self.memo_vec.len();
+        self.memo_vec.push(ScValue::Undefined);
+
         let kind_byte = self.read_byte()?;
         let kind = ScTypedArrayKind::from_u8(kind_byte).ok_or_else(|| {
             ScError::CorruptedPayload(format!("Unknown TypedArray kind: {kind_byte:#04x}"))
         })?;
-        let byte_offset = decode_uvarint(self.data, &mut self.offset)? as usize;
-        let length = decode_uvarint(self.data, &mut self.offset)? as usize;
-        let buffer_memo_index = decode_uvarint(self.data, &mut self.offset)? as usize;
+        let byte_offset = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
+        let length = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
+        let buffer_memo_index = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
 
-        Ok(ScValue::TypedArray {
+        let view = ScValue::TypedArray {
             kind,
             byte_offset,
             length,
             buffer_memo_index,
-        })
+        };
+        self.memo_vec[memo_idx] = view.clone();
+        Ok(view)
     }
 
     fn decode_dataview_value(&mut self) -> Result<ScValue, ScError> {
-        let byte_offset = decode_uvarint(self.data, &mut self.offset)? as usize;
-        let byte_length = decode_uvarint(self.data, &mut self.offset)? as usize;
-        let buffer_memo_index = decode_uvarint(self.data, &mut self.offset)? as usize;
+        // Reserve a memo slot to stay index-aligned with the encoder
+        // (see `encode_dataview`).
+        let memo_idx = self.memo_vec.len();
+        self.memo_vec.push(ScValue::Undefined);
 
-        Ok(ScValue::DataView {
+        let byte_offset = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
+        let byte_length = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
+        let buffer_memo_index = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
+
+        let view = ScValue::DataView {
             byte_offset,
             byte_length,
             buffer_memo_index,
-        })
+        };
+        self.memo_vec[memo_idx] = view.clone();
+        Ok(view)
     }
 
     fn decode_boxed_value(&mut self, depth: usize) -> Result<ScValue, ScError> {
+        // Reserve a memo slot to stay index-aligned with the encoder, which
+        // allocates a memo index for every boxed value.
+        let memo_idx = self.memo_vec.len();
+        self.memo_vec.push(ScValue::Undefined);
+
         let subtag = self.read_byte()?;
-        match subtag {
+        let boxed = match subtag {
             BOXED_BOOL => {
                 let inner = self.decode_value_depth(depth + 1)?;
                 match inner {
@@ -468,6 +565,8 @@ impl<'a> ScfDecoder<'a> {
             _ => Err(ScError::CorruptedPayload(format!(
                 "Unknown boxed subtag: {subtag:#04x}"
             ))),
-        }
+        }?;
+        self.memo_vec[memo_idx] = boxed.clone();
+        Ok(boxed)
     }
 }

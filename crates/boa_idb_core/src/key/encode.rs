@@ -168,6 +168,15 @@ fn encode_key_internal(
     Ok(())
 }
 
+/// Maximum nesting depth accepted by the `KEY-v1` decoder.
+///
+/// Mirrors the encoder-side `max_key_depth` default so hostile inputs cannot
+/// overflow the call stack through deeply nested arrays. The encoder enforces
+/// the configured `LimitConfig::max_key_depth`; the decoder (which has no
+/// access to the caller's limits) enforces this constant, which equals the
+/// default limit.
+pub const MAX_KEY_DECODE_DEPTH: usize = 32;
+
 /// Decodes a key from the `KEY-v1` binary format.
 ///
 /// Returns the decoded key and the number of bytes consumed.
@@ -175,10 +184,13 @@ pub fn decode_key(bytes: &[u8]) -> Result<(Key, usize), KeyError> {
     if bytes.is_empty() {
         return Err(KeyError::UnexpectedEof);
     }
-    decode_key_internal(bytes, 0)
+    decode_key_internal(bytes, 0, 0)
 }
 
-fn decode_key_internal(bytes: &[u8], pos: usize) -> Result<(Key, usize), KeyError> {
+fn decode_key_internal(bytes: &[u8], pos: usize, depth: usize) -> Result<(Key, usize), KeyError> {
+    if depth > MAX_KEY_DECODE_DEPTH {
+        return Err(KeyError::MaxDepthExceeded(MAX_KEY_DECODE_DEPTH));
+    }
     if pos >= bytes.len() {
         return Err(KeyError::UnexpectedEof);
     }
@@ -192,6 +204,9 @@ fn decode_key_internal(bytes: &[u8], pos: usize) -> Result<(Key, usize), KeyErro
             let mut buf = [0u8; 8];
             buf.copy_from_slice(&bytes[pos + 1..pos + 9]);
             let val = decode_f64_orderable(buf);
+            if val.is_nan() {
+                return Err(KeyError::InvalidValue("Number key cannot be NaN".into()));
+            }
             Ok((Key::Number(val), 9))
         }
         TAG_DATE => {
@@ -201,6 +216,9 @@ fn decode_key_internal(bytes: &[u8], pos: usize) -> Result<(Key, usize), KeyErro
             let mut buf = [0u8; 8];
             buf.copy_from_slice(&bytes[pos + 1..pos + 9]);
             let val = decode_f64_orderable(buf);
+            if val.is_nan() {
+                return Err(KeyError::InvalidValue("Date key cannot be NaN".into()));
+            }
             Ok((Key::Date(val), 9))
         }
         TAG_STRING => {
@@ -222,7 +240,7 @@ fn decode_key_internal(bytes: &[u8], pos: usize) -> Result<(Key, usize), KeyErro
                     offset += 1;
                     break;
                 }
-                let (key, consumed) = decode_key_internal(bytes, offset)?;
+                let (key, consumed) = decode_key_internal(bytes, offset, depth + 1)?;
                 elements.push(key);
                 offset += consumed;
             }
@@ -241,6 +259,7 @@ fn decode_string_cesu8(bytes: &[u8], pos: usize) -> Result<(Vec<u16>, usize), Ke
     // First, un-escape: read until terminator [0x00, 0x00]
     let mut unescaped = Vec::new();
     let mut i = pos;
+    let mut found_terminator = false;
     while i < bytes.len() {
         if bytes[i] == 0x00 {
             if i + 1 >= bytes.len() {
@@ -251,6 +270,7 @@ fn decode_string_cesu8(bytes: &[u8], pos: usize) -> Result<(Vec<u16>, usize), Ke
             if bytes[i + 1] == 0x00 {
                 // Terminator found
                 i += 2;
+                found_terminator = true;
                 break;
             }
             if bytes[i + 1] == 0xFF {
@@ -266,6 +286,11 @@ fn decode_string_cesu8(bytes: &[u8], pos: usize) -> Result<(Vec<u16>, usize), Ke
             unescaped.push(bytes[i]);
             i += 1;
         }
+    }
+    if !found_terminator {
+        return Err(KeyError::InvalidEncoding(
+            "Unterminated string in key encoding".into(),
+        ));
     }
     let consumed = i - pos;
 
@@ -331,6 +356,7 @@ fn decode_string_cesu8(bytes: &[u8], pos: usize) -> Result<(Vec<u16>, usize), Ke
 fn decode_binary_escaped(bytes: &[u8], pos: usize) -> Result<(Vec<u8>, usize), KeyError> {
     let mut data = Vec::new();
     let mut i = pos;
+    let mut found_terminator = false;
     while i < bytes.len() {
         if bytes[i] == 0x00 {
             if i + 1 >= bytes.len() {
@@ -341,6 +367,7 @@ fn decode_binary_escaped(bytes: &[u8], pos: usize) -> Result<(Vec<u8>, usize), K
             if bytes[i + 1] == 0x00 {
                 // Terminator
                 i += 2;
+                found_terminator = true;
                 break;
             }
             if bytes[i + 1] == 0xFF {
@@ -355,6 +382,11 @@ fn decode_binary_escaped(bytes: &[u8], pos: usize) -> Result<(Vec<u8>, usize), K
             data.push(bytes[i]);
             i += 1;
         }
+    }
+    if !found_terminator {
+        return Err(KeyError::InvalidEncoding(
+            "Unterminated binary data in key encoding".into(),
+        ));
     }
     Ok((data, i - pos))
 }

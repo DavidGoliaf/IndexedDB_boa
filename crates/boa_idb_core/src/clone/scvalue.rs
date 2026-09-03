@@ -258,6 +258,15 @@ pub enum ScValue {
     BoxedString(Utf16String),
     /// Boxed bigint (`new BigInt(42n)`).
     BoxedBigInt(BigInt),
+    /// Reference to a previously encoded value by memo-table index (0-based).
+    ///
+    /// This is the only way to represent shared or cyclic object graphs in the
+    /// tree-shaped `ScValue`: the L1 (`boa_idb`) structured-clone converter
+    /// emits `MemoRef` for objects it has already visited, the SCF encoder
+    /// writes `TAG_MEMO_REF`, and the decoder resolves the index against the
+    /// values decoded so far (returning `InvalidMemoRef` for forward or
+    /// out-of-range references).
+    MemoRef(usize),
 }
 
 impl ScValue {
@@ -312,6 +321,9 @@ impl ScValue {
             }
             ScValue::Object(_) | ScValue::Map(_) | ScValue::Set(_) => Err(KeyError::InvalidType(
                 "Object/Map/Set cannot be a key".into(),
+            )),
+            ScValue::MemoRef(_) => Err(KeyError::InvalidType(
+                "Memo reference cannot be a key".into(),
             )),
         }
     }

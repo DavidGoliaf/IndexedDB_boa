@@ -101,7 +101,13 @@ fn validate_key_path_str(s: &str) -> Result<(), KeyPathError> {
     if s.is_empty() {
         return Ok(());
     }
-    for part in s.split('.') {
+    let units: Vec<u16> = s.encode_utf16().collect();
+    validate_key_path_units(&units)
+}
+
+/// Validates dot-separated `IdentifierName`s over raw UTF-16 code units.
+fn validate_key_path_units(units: &[u16]) -> Result<(), KeyPathError> {
+    for part in split_path_units(units) {
         if part.is_empty() {
             return Err(KeyPathError::InvalidSyntax(
                 "Empty identifier in key path".into(),
@@ -112,37 +118,70 @@ fn validate_key_path_str(s: &str) -> Result<(), KeyPathError> {
     Ok(())
 }
 
-/// Validates that a string is a valid ECMA-262 `IdentifierName`.
+/// Validates that a code-unit slice is a valid ECMA-262 `IdentifierName`.
+///
+/// Operates on raw UTF-16 code units so key paths containing unpaired
+/// surrogates are validated without lossy conversion: lone surrogates are
+/// never valid identifier characters and yield `InvalidSyntax`.
 ///
 /// Rules:
 /// - First character: Unicode `ID_Start`, or `$`, or `_`.
 /// - Subsequent characters: Unicode `ID_Continue`, or `$`, or `_`, or `U+200C` (ZWNJ), or `U+200D` (ZWJ).
 /// - Escape sequences (`\uXXXX`) are NOT allowed.
-fn validate_identifier_name(s: &str) -> Result<(), KeyPathError> {
-    if s.is_empty() {
+pub fn validate_identifier_name(units: &[u16]) -> Result<(), KeyPathError> {
+    if units.is_empty() {
         return Err(KeyPathError::InvalidSyntax("Empty identifier".into()));
     }
 
-    let mut chars = s.chars();
-    let first = chars
-        .next()
-        .ok_or_else(|| KeyPathError::InvalidSyntax("Empty identifier".into()))?;
-
-    if !is_id_start(first) {
-        return Err(KeyPathError::InvalidSyntax(format!(
-            "Invalid start character '{first}' in identifier"
-        )));
-    }
-
-    for c in chars {
-        if !is_id_continue(c) {
+    let mut pos = 0;
+    let mut first = true;
+    while pos < units.len() {
+        let (decoded, consumed) = decode_unit(units, pos);
+        let Some(c) = decoded else {
+            return Err(KeyPathError::InvalidSyntax(
+                "Unpaired surrogate in identifier".into(),
+            ));
+        };
+        let valid = if first {
+            is_id_start(c)
+        } else {
+            is_id_continue(c)
+        };
+        if !valid {
             return Err(KeyPathError::InvalidSyntax(format!(
                 "Invalid character '{c}' in identifier"
             )));
         }
+        pos += consumed;
+        first = false;
     }
 
     Ok(())
+}
+
+/// Decodes one Unicode scalar value at `pos`.
+///
+/// Returns the character (or `None` for a lone surrogate) and the number of
+/// code units consumed (1 or 2).
+fn decode_unit(units: &[u16], pos: usize) -> (Option<char>, usize) {
+    let u = units[pos];
+    if (0xD800..0xDC00).contains(&u) {
+        if pos + 1 < units.len() {
+            let lo = units[pos + 1];
+            if (0xDC00..0xE000).contains(&lo) {
+                let high = u32::from(u - 0xD800);
+                let low = u32::from(lo - 0xDC00);
+                if let Some(c) = char::from_u32(0x1_0000 + (high << 10) + low) {
+                    return (Some(c), 2);
+                }
+            }
+        }
+        return (None, 1);
+    }
+    if (0xDC00..0xE000).contains(&u) {
+        return (None, 1);
+    }
+    (char::from_u32(u32::from(u)), 1)
 }
 
 /// Checks if a character is valid as the first character of an identifier.
@@ -158,7 +197,9 @@ fn is_id_continue(c: char) -> bool {
 /// Simplified Unicode ID_Start check.
 ///
 /// This covers the most common ranges. A full implementation would use
-/// the `unicode-id` crate, but for IndexedDB key paths this is sufficient.
+/// the `unicode-ident` crate, but for IndexedDB key paths this is sufficient.
+/// Note: `U+200E`/`U+200F` (bidi controls) are deliberately excluded — they
+/// are not `ID_Start` in UAX #31.
 fn unicode_id_start(c: char) -> bool {
     matches!(c,
         'a'..='z' |
@@ -168,7 +209,6 @@ fn unicode_id_start(c: char) -> bool {
         '\u{00F8}'..='\u{02FF}' |
         '\u{0370}'..='\u{037D}' |
         '\u{037F}'..='\u{1FFF}' |
-        '\u{200E}'..='\u{200F}' |
         '\u{2070}'..='\u{218F}' |
         '\u{2C00}'..='\u{2FEF}' |
         '\u{3001}'..='\u{D7FF}' |
@@ -190,29 +230,56 @@ fn unicode_id_continue(c: char) -> bool {
         )
 }
 
+/// Splits a key path into steps on `.` (`U+002E`) over raw code units.
+///
+/// Unlike `str::split`, this preserves unpaired surrogates instead of
+/// corrupting them through lossy UTF-8 conversion.
+fn split_path_units(units: &[u16]) -> Vec<&[u16]> {
+    let mut steps = Vec::new();
+    let mut start = 0;
+    for (i, &cu) in units.iter().enumerate() {
+        if cu == 0x002E {
+            steps.push(&units[start..i]);
+            start = i + 1;
+        }
+    }
+    steps.push(&units[start..]);
+    steps
+}
+
+/// Checks whether a path step is the `length` pseudo-property.
+fn is_length_step(step: &[u16]) -> bool {
+    step == [0x006C, 0x0065, 0x006E, 0x0067, 0x0074, 0x0068] // "length"
+}
+
 /// Extracts a key from a value using a single dot-separated key path.
 fn extract_single_path(path: &Utf16String, value: &ScValue) -> Result<Option<Key>, KeyError> {
-    let path_str = path.to_string();
+    let steps = split_path_units(path.as_slice());
     let mut curr = value;
 
-    for step in path_str.split('.') {
+    for (i, step) in steps.iter().enumerate() {
+        let last = i + 1 == steps.len();
         match curr {
-            ScValue::Object(map) => {
-                let step_utf16: Utf16String = step.into();
-                match map.get(&step_utf16) {
-                    Some(v) => curr = v,
-                    None => return Ok(None),
-                }
-            }
+            ScValue::Object(map) => match map.get(&Utf16String::from_slice(step)) {
+                Some(v) => curr = v,
+                None => return Ok(None),
+            },
             ScValue::Array { elements, .. } => {
-                if step == "length" {
-                    let len = elements.len();
-                    return Ok(Some(Key::Number(len as f64)));
+                if is_length_step(step) {
+                    if !last {
+                        // `length` resolves to a number; traversing further
+                        // into a number yields nothing.
+                        return Ok(None);
+                    }
+                    return Ok(Some(Key::Number(elements.len() as f64)));
                 }
                 return Ok(None);
             }
             ScValue::String(s) => {
-                if step == "length" {
+                if is_length_step(step) {
+                    if !last {
+                        return Ok(None);
+                    }
                     return Ok(Some(Key::Number(s.len() as f64)));
                 }
                 return Ok(None);
@@ -226,19 +293,17 @@ fn extract_single_path(path: &Utf16String, value: &ScValue) -> Result<Option<Key
 
 /// Checks if a key can be injected at the given path without side effects.
 fn can_inject_single(path: &Utf16String, target: &ScValue) -> bool {
-    let path_str = path.to_string();
-    let parts: Vec<&str> = path_str.split('.').collect();
+    let steps = split_path_units(path.as_slice());
 
-    if parts.is_empty() {
+    if steps.is_empty() {
         return true;
     }
 
     let mut curr = target;
-    for step in &parts[..parts.len() - 1] {
+    for step in &steps[..steps.len() - 1] {
         match curr {
             ScValue::Object(map) => {
-                let step_utf16: Utf16String = (*step).into();
-                match map.get(&step_utf16) {
+                match map.get(&Utf16String::from_slice(step)) {
                     Some(v) => curr = v,
                     None => return true, // Will create intermediate object
                 }
@@ -256,22 +321,21 @@ fn inject_single_path(
     target: &mut ScValue,
     key: &Key,
 ) -> Result<(), KeyPathError> {
-    let path_str = path.to_string();
-    let parts: Vec<&str> = path_str.split('.').collect();
+    let steps = split_path_units(path.as_slice());
 
-    if parts.is_empty() {
+    if steps.is_empty() {
         return Ok(());
     }
 
     let mut curr = target;
-    for step in &parts[..parts.len() - 1] {
-        let step_utf16: Utf16String = (*step).into();
+    for step in &steps[..steps.len() - 1] {
+        let step_key = Utf16String::from_slice(step);
         match curr {
             ScValue::Object(map) => {
-                if !map.contains_key(&step_utf16) {
-                    map.insert(step_utf16.clone(), ScValue::Object(IndexMap::new()));
+                if !map.contains_key(&step_key) {
+                    map.insert(step_key.clone(), ScValue::Object(IndexMap::new()));
                 }
-                curr = map.get_mut(&step_utf16).ok_or_else(|| {
+                curr = map.get_mut(&step_key).ok_or_else(|| {
                     KeyPathError::InvalidSyntax("Failed to access intermediate object".into())
                 })?;
             }
@@ -279,7 +343,7 @@ fn inject_single_path(
         }
     }
 
-    let last_step: Utf16String = parts.last().map(|s| (*s).into()).unwrap_or_default();
+    let last_step = Utf16String::from_slice(steps.last().map_or(&[], |s| *s));
     match curr {
         ScValue::Object(map) => {
             map.insert(last_step, ScValue::from_key(key));

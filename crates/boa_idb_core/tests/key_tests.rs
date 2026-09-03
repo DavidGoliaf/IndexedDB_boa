@@ -1,5 +1,6 @@
 //! Unit tests for key encoding/decoding with exact test vectors from the spec.
 
+use boa_idb_core::error::KeyError;
 use boa_idb_core::key::compare::compare_keys;
 use boa_idb_core::key::encode::{
     decode_f64_orderable, decode_key, encode_f64_orderable, encode_key,
@@ -405,4 +406,65 @@ fn test_compare_arrays_lexicographic() {
     let c = Key::Array(vec![Key::Number(1.0)]);
     let d = Key::Array(vec![Key::Number(1.0), Key::Number(0.0)]);
     assert_eq!(compare_keys(&c, &d), Ordering::Less); // shorter < longer
+}
+
+// ===== fix-01 decoder strictness regressions =====
+
+#[test]
+fn test_unterminated_string_rejected() {
+    // TAG_STRING + 'a' without the [0x00, 0x00] terminator.
+    let result = decode_key(&[0x30, 0x61]);
+    assert!(
+        matches!(result, Err(KeyError::InvalidEncoding(_))),
+        "expected InvalidEncoding, got {result:?}"
+    );
+}
+
+#[test]
+fn test_unterminated_binary_rejected() {
+    // TAG_BINARY + 0x01 without the terminator.
+    let result = decode_key(&[0x40, 0x01]);
+    assert!(
+        matches!(result, Err(KeyError::InvalidEncoding(_))),
+        "expected InvalidEncoding, got {result:?}"
+    );
+}
+
+#[test]
+fn test_lone_tag_string_rejected() {
+    // TAG_STRING with no body at all.
+    let result = decode_key(&[0x30]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_deep_nesting_rejected() {
+    // 40 nested arrays exceed the decoder depth limit (32).
+    let bytes = vec![0x50; 40];
+    let result = decode_key(&bytes);
+    assert!(
+        matches!(result, Err(KeyError::MaxDepthExceeded(_))),
+        "expected MaxDepthExceeded, got {result:?}"
+    );
+}
+
+#[test]
+fn test_decode_nan_number_rejected() {
+    // NaN in order-preserving form: tag + transformed 0x7FF8_0000_0000_0000.
+    let bytes = [0x10, 0xFF, 0xF8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+    let result = decode_key(&bytes);
+    assert!(
+        matches!(result, Err(KeyError::InvalidValue(_))),
+        "expected InvalidValue, got {result:?}"
+    );
+}
+
+#[test]
+fn test_decode_nan_date_rejected() {
+    let bytes = [0x20, 0xFF, 0xF8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+    let result = decode_key(&bytes);
+    assert!(
+        matches!(result, Err(KeyError::InvalidValue(_))),
+        "expected InvalidValue, got {result:?}"
+    );
 }
