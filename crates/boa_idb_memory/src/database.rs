@@ -52,18 +52,16 @@ impl Database for MemoryDatabase {
         Ok(Box::new(MemoryTxn::new(
             mode,
             scope.to_vec(),
-            &mut self.meta,
+            self.meta.clone(),
             self.storage_state.clone(),
         )))
     }
 
     fn flush(&mut self) -> Result<(), BackendError> {
-        // Nothing to flush for in-memory storage
         Ok(())
     }
 
     fn close(self: Box<Self>) -> Result<(), BackendError> {
-        // Nothing to close for in-memory storage
         Ok(())
     }
 }

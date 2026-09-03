@@ -63,14 +63,28 @@ impl TransactionScheduler {
 
     /// Checks if a candidate transaction can start at the given position in the queue.
     fn can_start(&self, candidate: &TxnQueueItem, index_in_pending: usize) -> bool {
-        // 1. Check conflicts with already running transactions
+        // 1. If a VersionChange is pending ahead of us, block everything
+        for earlier in self.pending_queue.iter().take(index_in_pending) {
+            if earlier.mode == TxnMode::VersionChange {
+                return false;
+            }
+        }
+
+        // 2. If a VersionChange is running, block everything
+        for running in &self.running_txns {
+            if running.mode == TxnMode::VersionChange {
+                return false;
+            }
+        }
+
+        // 3. Check conflicts with already running transactions
         for running in &self.running_txns {
             if Self::conflicts(candidate, running) {
                 return false;
             }
         }
 
-        // 2. Check conflicts with earlier pending transactions
+        // 4. Check conflicts with earlier pending transactions
         for earlier in self.pending_queue.iter().take(index_in_pending) {
             if Self::conflicts(candidate, earlier) {
                 return false;

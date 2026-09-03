@@ -8,7 +8,12 @@
     clippy::doc_markdown,
     clippy::enum_variant_names,
     clippy::elidable_lifetime_names,
-    clippy::redundant_closure_for_method_calls
+    clippy::redundant_closure_for_method_calls,
+    clippy::type_complexity,
+    clippy::zero_sized_map_values,
+    clippy::for_kv_map,
+    clippy::ignored_unit_patterns,
+    clippy::collapsible_if
 )]
 
 mod cursor;

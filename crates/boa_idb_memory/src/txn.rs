@@ -1,7 +1,6 @@
 //! In-memory transaction with undo log support.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use boa_idb_core::backend::error::BackendError;
 use boa_idb_core::backend::traits::{BackendCursor, BackendTxn};
@@ -9,58 +8,47 @@ use boa_idb_core::backend::types::{DatabaseMeta, IndexSpec, StoreSpec};
 use boa_idb_core::key::range::EncodedRange;
 use boa_idb_core::proto::{Direction, IndexId, SourceRef, StoreId, TxnMode};
 use parking_lot::RwLock;
+use std::sync::Arc;
 
 use crate::cursor::MemoryCursor;
-use crate::storage::StorageState;
+use crate::storage::{IndexKey, RecordKey, StorageState};
 
 /// Undo operation for savepoint rollback.
 #[derive(Debug)]
 enum UndoOp {
     /// Restore a record to its previous value (or delete if None).
     RestoreRecord {
-        store: StoreId,
-        key: Vec<u8>,
+        key: RecordKey,
         old_value: Option<Vec<u8>>,
     },
     /// Restore an index entry.
-    RestoreIndex {
-        index: IndexId,
-        idx_key: Vec<u8>,
-        pkey: Vec<u8>,
-        existed: bool,
-    },
+    RestoreIndex { key: IndexKey, existed: bool },
     /// Restore key generator value.
     RestoreKeyGen { store: StoreId, old_val: f64 },
 }
 
 /// In-memory transaction implementation.
-pub struct MemoryTxn<'a> {
+pub struct MemoryTxn {
     mode: TxnMode,
     scope: Vec<StoreId>,
-    meta: &'a mut DatabaseMeta,
+    meta: DatabaseMeta,
     storage_state: Arc<RwLock<StorageState>>,
 
-    // Transaction-local data
-    records: BTreeMap<(StoreId, Vec<u8>), Option<Vec<u8>>>,
-    index_records: BTreeMap<(IndexId, Vec<u8>, Vec<u8>), bool>,
-    key_generators: BTreeMap<StoreId, f64>,
+    // Transaction-local data (pending changes)
+    pending_records: BTreeMap<RecordKey, Option<Vec<u8>>>,
+    pending_index_entries: BTreeMap<IndexKey, bool>,
+    pending_key_generators: BTreeMap<StoreId, f64>,
 
     // Undo log stack (one per savepoint level)
     undo_stack: Vec<Vec<UndoOp>>,
-
-    // Schema changes (VersionChange only)
-    new_stores: Vec<StoreSpec>,
-    deleted_stores: Vec<StoreId>,
-    new_indexes: Vec<(StoreId, IndexSpec)>,
-    deleted_indexes: Vec<(StoreId, IndexId)>,
 }
 
-impl<'a> MemoryTxn<'a> {
+impl MemoryTxn {
     /// Creates a new memory transaction.
     pub fn new(
         mode: TxnMode,
         scope: Vec<StoreId>,
-        meta: &'a mut DatabaseMeta,
+        meta: DatabaseMeta,
         storage_state: Arc<RwLock<StorageState>>,
     ) -> Self {
         Self {
@@ -68,14 +56,10 @@ impl<'a> MemoryTxn<'a> {
             scope,
             meta,
             storage_state,
-            records: BTreeMap::new(),
-            index_records: BTreeMap::new(),
-            key_generators: BTreeMap::new(),
+            pending_records: BTreeMap::new(),
+            pending_index_entries: BTreeMap::new(),
+            pending_key_generators: BTreeMap::new(),
             undo_stack: Vec::new(),
-            new_stores: Vec::new(),
-            deleted_stores: Vec::new(),
-            new_indexes: Vec::new(),
-            deleted_indexes: Vec::new(),
         }
     }
 
@@ -96,21 +80,101 @@ impl<'a> MemoryTxn<'a> {
         }
         Ok(())
     }
+
+    /// Reads a record, checking pending changes first, then committed storage.
+    fn read_record(&self, key: &RecordKey) -> Option<Vec<u8>> {
+        // Check pending changes
+        if let Some(val) = self.pending_records.get(key) {
+            return val.clone();
+        }
+        // Fall back to committed data
+        let state = self.storage_state.read();
+        state.records.get(key).cloned()
+    }
+
+    /// Checks if a record exists (pending or committed).
+    fn record_exists(&self, key: &RecordKey) -> bool {
+        if let Some(val) = self.pending_records.get(key) {
+            return val.is_some();
+        }
+        let state = self.storage_state.read();
+        state.records.contains_key(key)
+    }
+
+    /// Checks if an index entry exists (pending or committed).
+    fn index_entry_exists(&self, key: &IndexKey) -> bool {
+        if let Some(existed) = self.pending_index_entries.get(key) {
+            return *existed;
+        }
+        let state = self.storage_state.read();
+        state.index_entries.contains_key(key)
+    }
+
+    /// Finds index entries matching a prefix (index_id, idx_key).
+    fn find_index_entries(&self, index_id: IndexId, idx_key: &[u8]) -> Vec<(Vec<u8>, bool)> {
+        let state = self.storage_state.read();
+        let mut results = Vec::new();
+
+        // Check committed entries
+        for ((iid, ik, pk), _) in &state.index_entries {
+            if *iid == index_id && ik == idx_key {
+                let pending_key = (index_id, ik.clone(), pk.clone());
+                // Check if overridden by pending
+                if let Some(existed) = self.pending_index_entries.get(&pending_key) {
+                    if *existed {
+                        results.push((pk.clone(), true));
+                    }
+                } else {
+                    results.push((pk.clone(), true));
+                }
+            }
+        }
+
+        // Check pending-only entries
+        for ((iid, ik, pk), existed) in &self.pending_index_entries {
+            if *iid == index_id && ik == idx_key && *existed {
+                // Only add if not already in results
+                if !results.iter().any(|(rpk, _)| rpk == pk) {
+                    results.push((pk.clone(), true));
+                }
+            }
+        }
+
+        results
+    }
+
+    /// Finds all index entries for a primary key across all indexes.
+    fn find_index_entries_by_primary(&self, index_id: IndexId, primary_key: &[u8]) -> Vec<Vec<u8>> {
+        let state = self.storage_state.read();
+        let mut results = Vec::new();
+
+        // Check committed entries
+        for ((iid, ik, pk), _) in &state.index_entries {
+            if *iid == index_id && pk == primary_key {
+                let pending_key = (index_id, ik.clone(), pk.clone());
+                if let Some(existed) = self.pending_index_entries.get(&pending_key) {
+                    if *existed {
+                        results.push(ik.clone());
+                    }
+                } else {
+                    results.push(ik.clone());
+                }
+            }
+        }
+
+        results
+    }
 }
 
-impl<'a> BackendTxn for MemoryTxn<'a> {
+impl BackendTxn for MemoryTxn {
     fn begin_request(&mut self) -> Result<(), BackendError> {
         self.undo_stack.push(Vec::new());
         Ok(())
     }
 
     fn commit_request(&mut self) -> Result<(), BackendError> {
-        if let Some(ops) = self.undo_stack.pop() {
-            // Merge into previous level if exists
-            if let Some(top) = self.undo_stack.last_mut() {
-                top.extend(ops);
-            }
-        }
+        // Discard undo ops — committed request effects are permanent
+        self.undo_stack.pop();
         Ok(())
     }
 
@@ -118,36 +182,23 @@ impl<'a> BackendTxn for MemoryTxn<'a> {
         if let Some(ops) = self.undo_stack.pop() {
             for op in ops.into_iter().rev() {
                 match op {
-                    UndoOp::RestoreRecord {
-                        store,
-                        key,
-                        old_value,
-                    } => {
-                        let map_key = (store, key);
-                        match old_value {
-                            Some(val) => {
-                                self.records.insert(map_key, Some(val));
-                            }
-                            None => {
-                                self.records.remove(&map_key);
-                            }
+                    UndoOp::RestoreRecord { key, old_value } => match old_value {
+                        Some(val) => {
+                            self.pending_records.insert(key, Some(val));
                         }
-                    }
-                    UndoOp::RestoreIndex {
-                        index,
-                        idx_key,
-                        pkey,
-                        existed,
-                    } => {
-                        let map_key = (index, idx_key, pkey);
+                        None => {
+                            self.pending_records.remove(&key);
+                        }
+                    },
+                    UndoOp::RestoreIndex { key, existed } => {
                         if existed {
-                            self.index_records.insert(map_key, true);
+                            self.pending_index_entries.insert(key, true);
                         } else {
-                            self.index_records.remove(&map_key);
+                            self.pending_index_entries.remove(&key);
                         }
                     }
                     UndoOp::RestoreKeyGen { store, old_val } => {
-                        self.key_generators.insert(store, old_val);
+                        self.pending_key_generators.insert(store, old_val);
                     }
                 }
             }
@@ -173,7 +224,17 @@ impl<'a> BackendTxn for MemoryTxn<'a> {
         }
         let id = self.meta.next_store_id;
         self.meta.next_store_id += 1;
-        self.new_stores.push(spec.clone());
+        self.meta
+            .stores
+            .push(boa_idb_core::backend::types::StoreMeta {
+                id,
+                name: spec.name.clone(),
+                key_path: spec.key_path.clone(),
+                auto_increment: spec.auto_increment,
+                key_gen: 1.0,
+                indexes: Vec::new(),
+                deleted: false,
+            });
         Ok(id)
     }
 
@@ -183,12 +244,21 @@ impl<'a> BackendTxn for MemoryTxn<'a> {
                 "delete_store requires VersionChange mode".into(),
             ));
         }
-        self.deleted_stores.push(id);
+        if let Some(store) = self.meta.stores.iter_mut().find(|s| s.id == id) {
+            store.deleted = true;
+        }
         Ok(())
     }
 
-    fn rename_store(&mut self, _id: StoreId, _new_name: &str) -> Result<(), BackendError> {
-        // TODO: implement rename
+    fn rename_store(&mut self, id: StoreId, new_name: &str) -> Result<(), BackendError> {
+        if self.mode != TxnMode::VersionChange {
+            return Err(BackendError::Internal(
+                "rename_store requires VersionChange mode".into(),
+            ));
+        }
+        if let Some(store) = self.meta.stores.iter_mut().find(|s| s.id == id) {
+            store.name = new_name.into();
+        }
         Ok(())
     }
 
@@ -200,7 +270,17 @@ impl<'a> BackendTxn for MemoryTxn<'a> {
         }
         let id = self.meta.next_index_id;
         self.meta.next_index_id += 1;
-        self.new_indexes.push((store, spec.clone()));
+        if let Some(s) = self.meta.stores.iter_mut().find(|s| s.id == store) {
+            s.indexes.push(boa_idb_core::backend::types::IndexMeta {
+                id,
+                store_id: store,
+                name: spec.name.clone(),
+                key_path: spec.key_path.clone(),
+                unique: spec.unique,
+                multi_entry: spec.multi_entry,
+                deleted: false,
+            });
+        }
         Ok(id)
     }
 
@@ -210,17 +290,30 @@ impl<'a> BackendTxn for MemoryTxn<'a> {
                 "delete_index requires VersionChange mode".into(),
             ));
         }
-        self.deleted_indexes.push((store, id));
+        if let Some(s) = self.meta.stores.iter_mut().find(|s| s.id == store) {
+            if let Some(idx) = s.indexes.iter_mut().find(|i| i.id == id) {
+                idx.deleted = true;
+            }
+        }
         Ok(())
     }
 
     fn rename_index(
         &mut self,
-        _store: StoreId,
-        _id: IndexId,
-        _new_name: &str,
+        store: StoreId,
+        id: IndexId,
+        new_name: &str,
     ) -> Result<(), BackendError> {
-        // TODO: implement rename
+        if self.mode != TxnMode::VersionChange {
+            return Err(BackendError::Internal(
+                "rename_index requires VersionChange mode".into(),
+            ));
+        }
+        if let Some(s) = self.meta.stores.iter_mut().find(|s| s.id == store) {
+            if let Some(idx) = s.indexes.iter_mut().find(|i| i.id == id) {
+                idx.name = new_name.into();
+            }
+        }
         Ok(())
     }
 
@@ -229,41 +322,37 @@ impl<'a> BackendTxn for MemoryTxn<'a> {
         store: StoreId,
         key: &[u8],
         value: &[u8],
-        _no_overwrite: bool,
+        no_overwrite: bool,
     ) -> Result<(), BackendError> {
         self.check_scope(store)?;
         self.check_readwrite()?;
 
         let map_key = (store, key.to_vec());
 
+        // Check no_overwrite
+        if no_overwrite && self.record_exists(&map_key) {
+            return Err(BackendError::Constraint(format!(
+                "Record already exists for key in store {store}"
+            )));
+        }
+
         // Save old value for undo
-        let old_value = self.records.get(&map_key).and_then(|v| v.clone());
+        let old_value = self.read_record(&map_key);
         if let Some(ops) = self.undo_stack.last_mut() {
             ops.push(UndoOp::RestoreRecord {
-                store,
-                key: key.to_vec(),
+                key: map_key.clone(),
                 old_value,
             });
         }
 
-        self.records.insert(map_key, Some(value.to_vec()));
+        self.pending_records.insert(map_key, Some(value.to_vec()));
         Ok(())
     }
 
     fn get(&mut self, store: StoreId, key: &[u8]) -> Result<Option<Vec<u8>>, BackendError> {
         self.check_scope(store)?;
-
         let map_key = (store, key.to_vec());
-
-        // Check transaction-local changes first
-        if let Some(val) = self.records.get(&map_key) {
-            return Ok(val.clone());
-        }
-
-        // Fall back to committed data
-        let _state = self.storage_state.read();
-        // TODO: implement committed data lookup
-        Ok(None)
+        Ok(self.read_record(&map_key))
     }
 
     fn delete_record(&mut self, store: StoreId, key: &[u8]) -> Result<bool, BackendError> {
@@ -271,28 +360,24 @@ impl<'a> BackendTxn for MemoryTxn<'a> {
         self.check_readwrite()?;
 
         let map_key = (store, key.to_vec());
-
-        // Save old value for undo
-        let old_value = self.records.get(&map_key).and_then(|v| v.clone());
+        let old_value = self.read_record(&map_key);
         let existed = old_value.is_some();
 
         if let Some(ops) = self.undo_stack.last_mut() {
             ops.push(UndoOp::RestoreRecord {
-                store,
-                key: key.to_vec(),
+                key: map_key.clone(),
                 old_value,
             });
         }
 
-        self.records.insert(map_key, None);
+        self.pending_records.insert(map_key, None);
         Ok(existed)
     }
 
     fn delete_range(&mut self, store: StoreId, _range: &EncodedRange) -> Result<u64, BackendError> {
         self.check_scope(store)?;
         self.check_readwrite()?;
-
-        // TODO: implement range deletion
+        // TODO: implement range deletion with proper range matching
         Ok(0)
     }
 
@@ -300,12 +385,44 @@ impl<'a> BackendTxn for MemoryTxn<'a> {
         self.check_scope(store)?;
         self.check_readwrite()?;
 
-        // TODO: implement clear
+        // Collect all keys for this store from committed storage
+        let state = self.storage_state.read();
+        let keys: Vec<RecordKey> = state
+            .records
+            .keys()
+            .filter(|(sid, _)| *sid == store)
+            .cloned()
+            .collect();
+        drop(state);
+
+        // Mark all committed records as deleted in pending
+        for key in keys {
+            let old_value = self.read_record(&key);
+            if let Some(ops) = self.undo_stack.last_mut() {
+                ops.push(UndoOp::RestoreRecord {
+                    key: key.clone(),
+                    old_value,
+                });
+            }
+            self.pending_records.insert(key, None);
+        }
+
+        // Also remove any pending-only records for this store
+        let pending_keys: Vec<RecordKey> = self
+            .pending_records
+            .keys()
+            .filter(|(sid, _)| *sid == store)
+            .cloned()
+            .collect();
+        for key in pending_keys {
+            self.pending_records.remove(&key);
+        }
+
         Ok(())
     }
 
     fn count(&mut self, _src: SourceRef, _range: &EncodedRange) -> Result<u64, BackendError> {
-        // TODO: implement count
+        // TODO: implement count with range matching
         Ok(0)
     }
 
@@ -316,22 +433,28 @@ impl<'a> BackendTxn for MemoryTxn<'a> {
         _dir: Direction,
         _key_only: bool,
     ) -> Result<Box<dyn BackendCursor + '_>, BackendError> {
-        // TODO: implement scan
+        // TODO: implement scan with merged data
         Ok(Box::new(MemoryCursor::new()))
     }
 
     fn key_gen_current(&self, store: StoreId) -> Result<f64, BackendError> {
-        Ok(self.key_generators.get(&store).copied().unwrap_or(1.0))
+        // Check pending first
+        if let Some(val) = self.pending_key_generators.get(&store) {
+            return Ok(*val);
+        }
+        // Fall back to committed
+        let state = self.storage_state.read();
+        Ok(state.key_generators.get(&store).copied().unwrap_or(1.0))
     }
 
     fn key_gen_set(&mut self, store: StoreId, value: f64) -> Result<(), BackendError> {
-        let old_val = self.key_generators.get(&store).copied().unwrap_or(1.0);
+        let old_val = self.key_gen_current(store)?;
 
         if let Some(ops) = self.undo_stack.last_mut() {
             ops.push(UndoOp::RestoreKeyGen { store, old_val });
         }
 
-        self.key_generators.insert(store, value);
+        self.pending_key_generators.insert(store, value);
         Ok(())
     }
 
@@ -340,21 +463,30 @@ impl<'a> BackendTxn for MemoryTxn<'a> {
         index: IndexId,
         idx_key: &[u8],
         primary_key: &[u8],
-        _unique: bool,
+        unique: bool,
     ) -> Result<(), BackendError> {
         let map_key = (index, idx_key.to_vec(), primary_key.to_vec());
-        let existed = self.index_records.contains_key(&map_key);
+        let existed = self.index_entry_exists(&map_key);
+
+        // Check unique constraint
+        if unique && !existed {
+            // Check if another entry with the same idx_key exists
+            let existing = self.find_index_entries(index, idx_key);
+            if !existing.is_empty() {
+                return Err(BackendError::Constraint(format!(
+                    "Unique constraint violation for index {index}"
+                )));
+            }
+        }
 
         if let Some(ops) = self.undo_stack.last_mut() {
             ops.push(UndoOp::RestoreIndex {
-                index,
-                idx_key: idx_key.to_vec(),
-                pkey: primary_key.to_vec(),
+                key: map_key.clone(),
                 existed,
             });
         }
 
-        self.index_records.insert(map_key, true);
+        self.pending_index_entries.insert(map_key, true);
         Ok(())
     }
 
@@ -365,52 +497,77 @@ impl<'a> BackendTxn for MemoryTxn<'a> {
         primary_key: &[u8],
     ) -> Result<(), BackendError> {
         let map_key = (index, idx_key.to_vec(), primary_key.to_vec());
-        let existed = self.index_records.contains_key(&map_key);
+        let existed = self.index_entry_exists(&map_key);
 
         if let Some(ops) = self.undo_stack.last_mut() {
             ops.push(UndoOp::RestoreIndex {
-                index,
-                idx_key: idx_key.to_vec(),
-                pkey: primary_key.to_vec(),
+                key: map_key.clone(),
                 existed,
             });
         }
 
-        self.index_records.remove(&map_key);
+        self.pending_index_entries.insert(map_key, false);
         Ok(())
     }
 
     fn index_delete_by_primary(
         &mut self,
-        _index: IndexId,
+        index: IndexId,
         primary_key: &[u8],
     ) -> Result<(), BackendError> {
-        // Find all index entries with this primary key
-        let keys: Vec<_> = self
-            .index_records
-            .keys()
-            .filter(|(_, _, pk)| pk == primary_key)
-            .cloned()
-            .collect();
+        // Find all index entries for this primary key in this specific index
+        let idx_keys = self.find_index_entries_by_primary(index, primary_key);
 
-        for key in keys {
-            self.index_records.remove(&key);
+        for idx_key in idx_keys {
+            let map_key = (index, idx_key, primary_key.to_vec());
+            let existed = self.index_entry_exists(&map_key);
+
+            if let Some(ops) = self.undo_stack.last_mut() {
+                ops.push(UndoOp::RestoreIndex {
+                    key: map_key.clone(),
+                    existed,
+                });
+            }
+
+            self.pending_index_entries.insert(map_key, false);
         }
 
         Ok(())
     }
 
     fn commit(self: Box<Self>) -> Result<(), BackendError> {
-        // Apply changes to shared state
-        let _state = self.storage_state.write();
+        let mut state = self.storage_state.write();
 
-        // Apply record changes
-        for (_store, _key) in self.records.keys() {
-            // TODO: apply to committed storage
+        // Apply pending record changes
+        for (key, value) in &self.pending_records {
+            match value {
+                Some(val) => {
+                    state.records.insert(key.clone(), val.clone());
+                }
+                None => {
+                    state.records.remove(key);
+                }
+            }
+        }
+
+        // Apply pending index entry changes
+        for (key, exists) in &self.pending_index_entries {
+            if *exists {
+                state.index_entries.insert(key.clone(), ());
+            } else {
+                state.index_entries.remove(key);
+            }
+        }
+
+        // Apply pending key generator changes
+        for (store, value) in &self.pending_key_generators {
+            state.key_generators.insert(*store, *value);
         }
 
         // Apply schema changes
-        // TODO: apply schema changes
+        state
+            .databases
+            .insert(self.meta.name.to_string(), self.meta);
 
         Ok(())
     }
