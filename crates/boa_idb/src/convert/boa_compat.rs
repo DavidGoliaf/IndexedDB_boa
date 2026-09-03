@@ -15,6 +15,9 @@ pub trait JsObjectExt {
 
     /// Получает длину массива (если объект является массивом).
     fn array_length(&self, context: &mut Context) -> JsResult<u64>;
+
+    /// Возвращает список только enumerable собственных строковых ключей.
+    fn get_enumerable_keys(&self, context: &mut Context) -> JsResult<Vec<JsString>>;
 }
 
 impl JsObjectExt for JsObject {
@@ -34,6 +37,37 @@ impl JsObjectExt for JsObject {
     fn array_length(&self, context: &mut Context) -> JsResult<u64> {
         let arr = JsArray::from_object(self.clone())?;
         arr.length(context)
+    }
+
+    fn get_enumerable_keys(&self, context: &mut Context) -> JsResult<Vec<JsString>> {
+        // Use Object.keys() to get only enumerable own string keys per §14
+        let object_ctor = context
+            .intrinsics()
+            .constructors()
+            .object()
+            .constructor()
+            .clone();
+        let keys_fn = object_ctor.get(js_string!("keys"), context)?;
+        let keys_callable = keys_fn
+            .as_callable()
+            .ok_or_else(|| JsNativeError::typ().with_message("Object.keys is not callable"))?;
+        let keys_val = keys_callable.call(
+            &JsValue::from(object_ctor.clone()),
+            &[JsValue::from(self.clone())],
+            context,
+        )?;
+        let keys_obj = keys_val.as_object().ok_or_else(|| {
+            JsNativeError::typ().with_message("Object.keys did not return an object")
+        })?;
+        let length = JsArray::from_object(keys_obj.clone())?.length(context)? as u32;
+        let mut result = Vec::with_capacity(length as usize);
+        for i in 0..length {
+            let elem = keys_obj.get(i, context)?;
+            if let Some(s) = elem.as_string() {
+                result.push(s.clone());
+            }
+        }
+        Ok(result)
     }
 }
 

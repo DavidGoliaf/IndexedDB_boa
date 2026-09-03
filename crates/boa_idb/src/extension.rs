@@ -1,10 +1,12 @@
 //! IndexedDB extension registration.
 
-use boa_engine::{Context, JsNativeError, JsObject, JsResult, JsValue, js_string};
+use boa_engine::class::Class;
+use boa_engine::{Context, JsNativeError, JsResult, JsValue, js_string};
 use boa_idb_core::backend::traits::BackendFactory;
 use boa_idb_core::proto::StorageKey;
 use std::sync::Arc;
 
+use crate::api::factory::IdBFactory;
 use crate::runtime::IdbRuntime;
 
 /// Builder for `IndexedDbExtension`.
@@ -15,19 +17,16 @@ pub struct IndexedDbExtensionBuilder {
 }
 
 impl IndexedDbExtensionBuilder {
-    /// Sets the storage key.
     pub fn storage_key(mut self, key: StorageKey) -> Self {
         self.storage_key = Some(key);
         self
     }
 
-    /// Sets the backend factory.
     pub fn backend_factory(mut self, factory: Arc<dyn BackendFactory>) -> Self {
         self.backend_factory = Some(factory);
         self
     }
 
-    /// Builds the extension.
     pub fn build(self) -> JsResult<IndexedDbExtension> {
         let storage_key = self
             .storage_key
@@ -49,19 +48,45 @@ pub struct IndexedDbExtension {
 }
 
 impl IndexedDbExtension {
-    /// Creates a new builder.
     pub fn builder() -> IndexedDbExtensionBuilder {
         IndexedDbExtensionBuilder::default()
     }
 
     /// Registers the extension in a Boa context.
     pub fn register(&self, context: &mut Context) -> JsResult<()> {
-        // 1. Initialize IdbRuntime and insert into HostDefined
+        // 1. Idempotency check
+        if context.get_data::<IdbRuntime>().is_some() {
+            return Err(JsNativeError::error()
+                .with_message("IndexedDbExtension is already registered in this Context")
+                .into());
+        }
+
+        // 2. Initialize IdbRuntime and insert into HostDefined
         let runtime = IdbRuntime::new(self.storage_key.clone(), self.backend_factory.clone());
         context.insert_data(runtime);
 
-        // 2. Register 'indexedDB' on globalThis
-        let factory_obj = JsObject::with_null_proto();
+        // 3. Register DOM shim classes
+        context.register_global_class::<crate::dom::exception::DomException>()?;
+        context.register_global_class::<crate::dom::event::EventDataHelper>()?;
+
+        // 4. Register IDB API classes
+        context.register_global_class::<crate::api::request::IdBRequest>()?;
+        context.register_global_class::<crate::api::request::IdBOpenDBRequest>()?;
+        context.register_global_class::<crate::api::factory::IdBFactory>()?;
+        context.register_global_class::<crate::api::database::IdBDatabase>()?;
+        context.register_global_class::<crate::api::transaction::IdBTransaction>()?;
+        context.register_global_class::<crate::api::object_store::IdBObjectStore>()?;
+        context.register_global_class::<crate::api::index::IdBIndex>()?;
+        context.register_global_class::<crate::api::key_range::IdBKeyRange>()?;
+        context.register_global_class::<crate::api::record::IdBRecord>()?;
+        context.register_global_class::<crate::api::cursor::IdBCursor>()?;
+        context.register_global_class::<crate::api::cursor::IdBCursorWithValue>()?;
+        context
+            .register_global_class::<crate::api::version_change_event::IdBVersionChangeEvent>()?;
+
+        // 5. Set 'indexedDB' on globalThis as a singleton IDBFactory
+        let factory_obj = IdBFactory::from_data(IdBFactory, context)?;
+
         context.global_object().set(
             js_string!("indexedDB"),
             JsValue::from(factory_obj),

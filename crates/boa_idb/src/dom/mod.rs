@@ -1,4 +1,7 @@
 //! DOM shim classes for IndexedDB.
+//!
+//! Provides `EventTarget`, `Event`, `DOMException`, and `DOMStringList`
+//! implementations required by the IndexedDB specification.
 
 pub mod dispatch;
 pub mod event;

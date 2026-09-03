@@ -28,6 +28,7 @@ pub mod api;
 pub mod convert;
 pub mod dom;
 pub mod driver;
+pub mod engine;
 pub mod executor;
 pub mod extension;
 pub mod io;

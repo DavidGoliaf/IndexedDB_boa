@@ -1,10 +1,119 @@
-//! `DOMException` implementation.
+//! `DOMException` implementation per WebIDL.
 
-use boa_engine::{Context, JsNativeError, JsResult, JsValue};
+use boa_engine::class::{Class, ClassBuilder};
+use boa_engine::native_function::NativeFunction;
+use boa_engine::property::Attribute;
+use boa_engine::{Context, JsNativeError, JsResult, JsValue, js_string};
+use boa_gc::{Finalize, Trace};
 
-use crate::convert::boa_compat::native_error_to_js_value;
+/// Native data for `DOMException`.
+#[derive(Debug, Trace, Finalize, boa_engine::JsData)]
+pub struct DomException {
+    #[unsafe_ignore_trace]
+    pub name: String,
+    #[unsafe_ignore_trace]
+    pub message: String,
+    #[unsafe_ignore_trace]
+    pub code: u16,
+}
 
-/// DOMException name-to-code mapping.
+impl DomException {
+    pub fn new(name: impl Into<String>, message: impl Into<String>) -> Self {
+        let name = name.into();
+        let code = dom_exception_code(&name);
+        Self {
+            name,
+            message: message.into(),
+            code,
+        }
+    }
+}
+
+impl Class for DomException {
+    const NAME: &'static str = "DOMException";
+    const LENGTH: usize = 2;
+    const ATTRIBUTES: Attribute = Attribute::all();
+
+    fn data_constructor(
+        _new_target: &JsValue,
+        args: &[JsValue],
+        context: &mut Context,
+    ) -> JsResult<Self> {
+        let message = if args.first().is_some_and(|v| !v.is_undefined()) {
+            args[0].to_string(context)?.to_std_string_escaped()
+        } else {
+            String::new()
+        };
+        let name = if args.get(1).is_some_and(|v| !v.is_undefined()) {
+            args[1].to_string(context)?.to_std_string_escaped()
+        } else {
+            "Error".to_string()
+        };
+        Ok(DomException::new(name, message))
+    }
+
+    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
+        let realm = class.context().realm().clone();
+
+        let name_getter = NativeFunction::from_fn_ptr(|this, _args, _ctx| {
+            if let Some(obj) = this.as_object() {
+                if let Some(data) = obj.downcast_ref::<DomException>() {
+                    return Ok(JsValue::from(js_string!(data.name.as_str())));
+                }
+            }
+            Err(JsNativeError::typ()
+                .with_message("'this' is not a DOMException")
+                .into())
+        })
+        .to_js_function(&realm);
+
+        let message_getter = NativeFunction::from_fn_ptr(|this, _args, _ctx| {
+            if let Some(obj) = this.as_object() {
+                if let Some(data) = obj.downcast_ref::<DomException>() {
+                    return Ok(JsValue::from(js_string!(data.message.as_str())));
+                }
+            }
+            Err(JsNativeError::typ()
+                .with_message("'this' is not a DOMException")
+                .into())
+        })
+        .to_js_function(&realm);
+
+        let code_getter = NativeFunction::from_fn_ptr(|this, _args, _ctx| {
+            if let Some(obj) = this.as_object() {
+                if let Some(data) = obj.downcast_ref::<DomException>() {
+                    return Ok(JsValue::from(data.code));
+                }
+            }
+            Err(JsNativeError::typ()
+                .with_message("'this' is not a DOMException")
+                .into())
+        })
+        .to_js_function(&realm);
+
+        class.accessor(
+            js_string!("name"),
+            Some(name_getter),
+            None,
+            Attribute::READONLY,
+        );
+        class.accessor(
+            js_string!("message"),
+            Some(message_getter),
+            None,
+            Attribute::READONLY,
+        );
+        class.accessor(
+            js_string!("code"),
+            Some(code_getter),
+            None,
+            Attribute::READONLY,
+        );
+
+        Ok(())
+    }
+}
+
 pub fn dom_exception_code(name: &str) -> u16 {
     match name {
         "IndexSizeError" => 1,
@@ -33,38 +142,40 @@ pub fn dom_exception_code(name: &str) -> u16 {
     }
 }
 
-/// Creates a `DOMException` JsValue with the given name and message.
-pub fn create_dom_exception(name: &str, message: &str, context: &mut Context) -> JsValue {
-    let err = JsNativeError::error().with_message(format!("{name}: {message}"));
-    native_error_to_js_value(err, context)
+pub fn create_dom_exception(name: &str, message: &str, context: &mut Context) -> JsResult<JsValue> {
+    let data = DomException::new(name, message);
+    let obj = DomException::from_data(data, context)?;
+    Ok(obj.into())
 }
 
-/// Creates a `ConstraintError` DOMException.
-pub fn constraint_error(message: &str, context: &mut Context) -> JsValue {
+pub fn constraint_error(message: &str, context: &mut Context) -> JsResult<JsValue> {
     create_dom_exception("ConstraintError", message, context)
 }
 
-/// Creates a `DataError` DOMException.
-pub fn data_error(message: &str, context: &mut Context) -> JsValue {
+pub fn data_error(message: &str, context: &mut Context) -> JsResult<JsValue> {
     create_dom_exception("DataError", message, context)
 }
 
-/// Creates a `DataCloneError` DOMException.
-pub fn data_clone_error(message: &str, context: &mut Context) -> JsValue {
+pub fn data_clone_error(message: &str, context: &mut Context) -> JsResult<JsValue> {
     create_dom_exception("DataCloneError", message, context)
 }
 
-/// Creates a `NotFoundError` DOMException.
-pub fn not_found_error(message: &str, context: &mut Context) -> JsValue {
+pub fn not_found_error(message: &str, context: &mut Context) -> JsResult<JsValue> {
     create_dom_exception("NotFoundError", message, context)
 }
 
-/// Creates a `TransactionInactiveError` DOMException.
-pub fn transaction_inactive_error(message: &str, context: &mut Context) -> JsValue {
+pub fn transaction_inactive_error(message: &str, context: &mut Context) -> JsResult<JsValue> {
     create_dom_exception("TransactionInactiveError", message, context)
 }
 
-/// Creates a `VersionError` DOMException.
-pub fn version_error(message: &str, context: &mut Context) -> JsValue {
+pub fn version_error(message: &str, context: &mut Context) -> JsResult<JsValue> {
     create_dom_exception("VersionError", message, context)
+}
+
+pub fn invalid_state_error(message: &str, context: &mut Context) -> JsResult<JsValue> {
+    create_dom_exception("InvalidStateError", message, context)
+}
+
+pub fn read_only_error(message: &str, context: &mut Context) -> JsResult<JsValue> {
+    create_dom_exception("ReadOnlyError", message, context)
 }

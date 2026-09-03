@@ -111,21 +111,24 @@ impl OpenQueue {
             return None;
         }
 
-        let request = self.queue.front()?;
+        // Clone the front request data to avoid borrow conflicts
+        let request = self.queue.front()?.clone();
+        let request_id = request.request_id;
 
         match &request.request_type {
             OpenRequestType::Open { requested_version } => {
                 if *requested_version == 0 {
                     // Opening any version - just open current
+                    self.queue.pop_front();
                     Some(OpenQueueAction::OpenConnection {
-                        request_id: request.request_id,
+                        request_id,
                         version: self.current_version,
                     })
                 } else if *requested_version < self.current_version {
                     // Requested version is too old
-                    let req = self.queue.pop_front().unwrap();
+                    self.queue.pop_front();
                     Some(OpenQueueAction::FailOpen {
-                        request_id: req.request_id,
+                        request_id,
                         error: IdbError::Version(format!(
                             "Requested version {} is less than current version {}",
                             requested_version, self.current_version
@@ -133,23 +136,21 @@ impl OpenQueue {
                     })
                 } else if *requested_version == self.current_version {
                     // Same version - just open
-                    let req = self.queue.pop_front().unwrap();
+                    self.queue.pop_front();
                     Some(OpenQueueAction::OpenConnection {
-                        request_id: req.request_id,
+                        request_id,
                         version: self.current_version,
                     })
                 } else {
                     // Need to upgrade
                     if self.blocking_connections > 0 {
                         self.state = OpenQueueState::WaitingForConnections;
-                        Some(OpenQueueAction::SendBlocked {
-                            request_id: request.request_id,
-                        })
+                        Some(OpenQueueAction::SendBlocked { request_id })
                     } else {
                         self.state = OpenQueueState::RunningUpgrade;
-                        let req = self.queue.pop_front().unwrap();
+                        self.queue.pop_front();
                         Some(OpenQueueAction::StartUpgrade {
-                            request_id: req.request_id,
+                            request_id,
                             old_version: self.current_version,
                             new_version: *requested_version,
                         })
@@ -159,15 +160,11 @@ impl OpenQueue {
             OpenRequestType::Delete => {
                 if self.blocking_connections > 0 {
                     self.state = OpenQueueState::WaitingForConnections;
-                    Some(OpenQueueAction::SendBlocked {
-                        request_id: request.request_id,
-                    })
+                    Some(OpenQueueAction::SendBlocked { request_id })
                 } else {
                     self.state = OpenQueueState::RunningDelete;
-                    let req = self.queue.pop_front().unwrap();
-                    Some(OpenQueueAction::StartDelete {
-                        request_id: req.request_id,
-                    })
+                    self.queue.pop_front();
+                    Some(OpenQueueAction::StartDelete { request_id })
                 }
             }
         }
@@ -179,7 +176,11 @@ impl OpenQueue {
             return None;
         }
 
-        self.blocking_connections = 0;
+        // Only proceed if there are actually no more blocking connections
+        if self.blocking_connections > 0 {
+            return None;
+        }
+
         self.state = OpenQueueState::Idle;
         self.process_next()
     }
@@ -342,10 +343,7 @@ mod tests {
         queue.on_connection_closed();
         // Now all connections closed
         let action = queue.on_all_connections_closed();
-        assert!(matches!(
-            action,
-            Some(OpenQueueAction::StartUpgrade { .. })
-        ));
+        assert!(matches!(action, Some(OpenQueueAction::StartUpgrade { .. })));
     }
 
     #[test]
