@@ -7,3 +7,4 @@ Cargo.lock
 *.dylib
 *.rmeta
 *.d
+.cargo-tools/
