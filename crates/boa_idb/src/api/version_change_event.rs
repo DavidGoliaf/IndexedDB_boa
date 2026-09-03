@@ -25,10 +25,7 @@ impl IdBVersionChangeEventData {
 }
 
 /// `IDBVersionChangeEvent` class.
-#[derive(Debug, Trace, Finalize, boa_engine::JsData)]
-pub struct IdBVersionChangeEvent;
-
-impl Class for IdBVersionChangeEvent {
+impl Class for IdBVersionChangeEventData {
     const NAME: &'static str = "IDBVersionChangeEvent";
     const LENGTH: usize = 2;
     const ATTRIBUTES: Attribute = Attribute::all();
@@ -38,14 +35,33 @@ impl Class for IdBVersionChangeEvent {
         args: &[JsValue],
         context: &mut Context,
     ) -> JsResult<Self> {
-        // Parse event type and options
-        let _event_type = args
-            .first()
-            .unwrap_or(&JsValue::undefined())
-            .to_string(context)?
-            .to_std_string_escaped();
-
-        Ok(IdBVersionChangeEvent)
+        // `new IDBVersionChangeEvent(type, init)` — init is optional.
+        let mut old_version = 0u64;
+        let mut new_version = None;
+        if let Some(init) = args.get(1) {
+            if let Some(obj) = init.as_object() {
+                if let Ok(v) = obj.get(js_string!("oldVersion"), context) {
+                    if !v.is_undefined() {
+                        let n = v.to_number(context)?;
+                        if n.is_finite() && n >= 0.0 {
+                            old_version = n.trunc() as u64;
+                        }
+                    }
+                }
+                if let Ok(v) = obj.get(js_string!("newVersion"), context) {
+                    if !v.is_undefined() && !v.is_null() {
+                        let n = v.to_number(context)?;
+                        if n.is_finite() && n >= 0.0 {
+                            new_version = Some(n.trunc() as u64);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(Self {
+            old_version,
+            new_version,
+        })
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {

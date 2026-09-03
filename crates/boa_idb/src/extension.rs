@@ -68,6 +68,7 @@ impl IndexedDbExtension {
         // 3. Register DOM shim classes
         context.register_global_class::<crate::dom::exception::DomException>()?;
         context.register_global_class::<crate::dom::event::EventDataHelper>()?;
+        context.register_global_class::<crate::dom::string_list::DomStringListData>()?;
 
         // 4. Register IDB API classes
         context.register_global_class::<crate::api::request::IdBRequest>()?;
@@ -76,13 +77,14 @@ impl IndexedDbExtension {
         context.register_global_class::<crate::api::database::IdBDatabase>()?;
         context.register_global_class::<crate::api::transaction::IdBTransaction>()?;
         context.register_global_class::<crate::api::object_store::IdBObjectStore>()?;
-        context.register_global_class::<crate::api::index::IdBIndex>()?;
+        context.register_global_class::<crate::api::index::IdBIndexData>()?;
         context.register_global_class::<crate::api::key_range::IdBKeyRange>()?;
-        context.register_global_class::<crate::api::record::IdBRecord>()?;
-        context.register_global_class::<crate::api::cursor::IdBCursor>()?;
-        context.register_global_class::<crate::api::cursor::IdBCursorWithValue>()?;
+        context.register_global_class::<crate::api::record::IdBRecordData>()?;
+        context.register_global_class::<crate::api::cursor::IdBCursorData>()?;
+        context.register_global_class::<crate::api::cursor::IdBCursorWithValueData>()?;
         context
-            .register_global_class::<crate::api::version_change_event::IdBVersionChangeEvent>()?;
+            .register_global_class::<crate::api::version_change_event::IdBVersionChangeEventData>(
+            )?;
 
         // 5. Set 'indexedDB' on globalThis as a singleton IDBFactory
         let factory_obj = IdBFactory::from_data(IdBFactory, context)?;

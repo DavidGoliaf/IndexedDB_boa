@@ -8,5 +8,6 @@ pub mod key_range;
 pub mod object_store;
 pub mod record;
 pub mod request;
+pub mod support;
 pub mod transaction;
 pub mod version_change_event;

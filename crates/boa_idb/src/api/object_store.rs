@@ -6,9 +6,12 @@ use boa_engine::property::Attribute;
 use boa_engine::{Context, JsNativeError, JsObject, JsResult, JsValue, js_string};
 use boa_gc::{Finalize, Trace};
 use boa_idb_core::key::path::KeyPath;
+use boa_idb_core::proto::SourceRef;
 
+use crate::api::support::{active_txn_id, issue_request, parse_get_all_args, query_to_range};
 use crate::convert::key::value_to_key;
-use crate::convert::value::{deserialize_from_storage, serialize_for_storage};
+use crate::convert::value::serialize_for_storage;
+use crate::driver::PendingOp;
 use crate::runtime::IdbRuntime;
 
 /// Native data for `IDBObjectStore`.
@@ -23,6 +26,8 @@ pub struct IdBObjectStore {
     #[unsafe_ignore_trace]
     pub auto_increment: bool,
     pub transaction: JsObject,
+    /// Cached `IDBIndex` handles by name (one handle per index, §2.6.1).
+    pub indexes: boa_gc::GcRefCell<std::collections::HashMap<String, JsObject>>,
 }
 
 impl IdBObjectStore {
@@ -39,8 +44,113 @@ impl IdBObjectStore {
             key_path,
             auto_increment,
             transaction,
+            indexes: boa_gc::GcRefCell::default(),
         }
     }
+}
+
+/// Brand-checks `this` and splits off owned store data.
+fn store_of(this: &JsValue, context: &mut Context) -> JsResult<(JsObject, u64, JsObject)> {
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("'this' is not an IDBObjectStore"))?;
+    let (store_id, txn_obj) = {
+        let data = obj
+            .downcast_ref::<IdBObjectStore>()
+            .ok_or_else(|| JsNativeError::typ().with_message("'this' is not an IDBObjectStore"))?;
+        (data.store_id, data.transaction.clone())
+    };
+    let txn_id = active_txn_id(context, &txn_obj)?;
+    Ok((obj, store_id, txn_obj))
+}
+
+/// Requires a readwrite transaction; throws `ReadOnlyError` otherwise.
+fn require_readwrite(context: &mut Context, txn_obj: &JsObject) -> JsResult<()> {
+    let readonly = txn_obj
+        .downcast_ref::<crate::api::transaction::IdBTransaction>()
+        .is_some_and(|d| d.mode == boa_idb_core::proto::TxnMode::ReadOnly);
+    if readonly {
+        return Err(crate::dom::exception::throw_idb_error(
+            &boa_idb_core::error::IdbError::ReadOnly,
+            context,
+        ));
+    }
+    Ok(())
+}
+
+/// Shared openCursor/openKeyCursor implementation.
+fn open_cursor_impl(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+    key_only: bool,
+) -> JsResult<JsValue> {
+    let (obj, store_id, txn_obj) = store_of(this, context)?;
+    let default_val = JsValue::undefined();
+    let query = args.first().unwrap_or(&default_val);
+    let range = query_to_range(query, context)?;
+    let direction = match args.get(1) {
+        Some(v) if !v.is_undefined() => crate::api::support::parse_direction(v, context)?,
+        _ => boa_idb_core::proto::Direction::Next,
+    };
+    let txn_id = active_txn_id(context, &txn_obj)?;
+    Ok(JsValue::from(issue_request(
+        context,
+        txn_id,
+        PendingOp::OpenCursor {
+            source: SourceRef::Store(store_id),
+            range,
+            direction,
+            key_only,
+        },
+        Some(obj),
+    )?))
+}
+
+/// Shared put/add implementation.
+fn put_impl(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+    no_overwrite: bool,
+) -> JsResult<JsValue> {
+    let (obj, store_id, txn_obj) = store_of(this, context)?;
+    require_readwrite(context, &txn_obj)?;
+
+    let default_val = JsValue::undefined();
+    let value_js = args.first().unwrap_or(&default_val);
+    let explicit_key = args.get(1).filter(|k| !k.is_undefined());
+
+    // Structured clone runs synchronously (AD-2); DataCloneError throws sync.
+    let sc_value = serialize_for_storage(value_js, context).map_err(|e| {
+        crate::dom::exception::throw_idb_error(
+            &boa_idb_core::error::IdbError::DataClone(e.to_string()),
+            context,
+        )
+    })?;
+
+    let key = explicit_key
+        .map(|k| value_to_key(k, context))
+        .transpose()
+        .map_err(|e| {
+            crate::dom::exception::throw_idb_error(
+                &boa_idb_core::error::IdbError::Data(e.to_string()),
+                context,
+            )
+        })?;
+
+    let txn_id = active_txn_id(context, &txn_obj)?;
+    Ok(JsValue::from(issue_request(
+        context,
+        txn_id,
+        PendingOp::Put {
+            store_id,
+            value: sc_value,
+            explicit_key: key,
+            no_overwrite,
+        },
+        Some(obj),
+    )?))
 }
 
 impl Class for IdBObjectStore {
@@ -62,7 +172,7 @@ impl Class for IdBObjectStore {
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
         let realm = class.context().realm().clone();
 
-        // name getter/setter
+        // name getter/setter (rename only in a live upgrade transaction)
         let name_getter = NativeFunction::from_fn_ptr(|this, _args, _ctx| {
             if let Some(obj) = this.as_object() {
                 if let Some(data) = obj.downcast_ref::<IdBObjectStore>() {
@@ -72,15 +182,62 @@ impl Class for IdBObjectStore {
             Ok(JsValue::undefined())
         })
         .to_js_function(&realm);
+        let set_name_fn = NativeFunction::from_fn_ptr(|this, args, context| {
+            let obj = this.as_object().ok_or_else(|| {
+                JsNativeError::typ().with_message("'this' is not an IDBObjectStore")
+            })?;
+            let (_store_id, txn_obj, old_name) = {
+                let data = obj.downcast_ref::<IdBObjectStore>().ok_or_else(|| {
+                    JsNativeError::typ().with_message("'this' is not an IDBObjectStore")
+                })?;
+                (data.store_id, data.transaction.clone(), data.name.clone())
+            };
+            let new_name = args
+                .first()
+                .unwrap_or(&JsValue::undefined())
+                .to_string(context)?
+                .to_std_string_escaped();
+            if new_name == old_name {
+                return Ok(JsValue::undefined());
+            }
+            let txn_id = active_txn_id(context, &txn_obj)?;
+            // Upgrade-only: the driver validates versionchange mode.
+            let driver_handle = context
+                .get_data::<IdbRuntime>()
+                .map(|runtime| runtime.driver.clone());
+            let Some(driver_handle) = driver_handle else {
+                return Err(JsNativeError::error()
+                    .with_message("IndexedDB not initialized")
+                    .into());
+            };
+            {
+                let mut d = crate::runtime::lock_mutex(&driver_handle);
+                crate::driver::schema_rename_store(&mut d, txn_id, &old_name, &new_name)
+            }
+            .map_err(|e| crate::dom::exception::throw_idb_error(&e, context))?;
+            if let Some(mut data) = obj.downcast_mut::<IdBObjectStore>() {
+                data.name.clone_from(&new_name);
+            }
+            // The cached handle keeps identity; re-key under the new name.
+            if let Some(txn_data) =
+                txn_obj.downcast_ref::<crate::api::transaction::IdBTransaction>()
+            {
+                let mut stores = txn_data.stores.borrow_mut();
+                stores.remove(&old_name);
+                stores.insert(new_name, obj.clone());
+            }
+            Ok(JsValue::undefined())
+        })
+        .to_js_function(&realm);
 
         class.accessor(
             js_string!("name"),
             Some(name_getter),
-            None,
-            Attribute::READONLY,
+            Some(set_name_fn),
+            Attribute::all(),
         );
 
-        // keyPath getter
+        // keyPath getter (fresh Array per access for sequence paths)
         let key_path_getter = NativeFunction::from_fn_ptr(|this, _args, ctx| {
             if let Some(obj) = this.as_object() {
                 if let Some(data) = obj.downcast_ref::<IdBObjectStore>() {
@@ -152,9 +309,24 @@ impl Class for IdBObjectStore {
             Attribute::READONLY,
         );
 
-        // indexNames getter
-        let index_names_getter = NativeFunction::from_fn_ptr(|_this, _args, _ctx| {
-            // TODO: return actual index names
+        // indexNames getter (DOMStringList)
+        let index_names_getter = NativeFunction::from_fn_ptr(|this, _args, ctx| {
+            if let Some(obj) = this.as_object() {
+                if let Some(data) = obj.downcast_ref::<IdBObjectStore>() {
+                    let (txn_id, store_id) = (data.transaction.clone(), data.store_id);
+                    let txn_id = active_txn_id(ctx, &txn_id).unwrap_or(u64::MAX);
+                    let names: Vec<String> = ctx
+                        .get_data::<IdbRuntime>()
+                        .map(|runtime| {
+                            let d = crate::runtime::lock_mutex(&runtime.driver);
+                            crate::driver::store_index_names(&d, txn_id, store_id)
+                        })
+                        .unwrap_or_default();
+                    return Ok(JsValue::from(crate::dom::string_list::dom_string_list(
+                        names, ctx,
+                    )?));
+                }
+            }
             Ok(JsValue::undefined())
         })
         .to_js_function(&realm);
@@ -166,426 +338,348 @@ impl Class for IdBObjectStore {
             Attribute::READONLY,
         );
 
-        // put(value, key) -> IDBRequest
+        // put(value, key?) / add(value, key?)
         class.method(
             js_string!("put"),
             1,
-            NativeFunction::from_fn_ptr(|this, args, context| {
-                let obj = this.as_object().ok_or_else(|| {
-                    JsNativeError::typ().with_message("'this' is not an IDBObjectStore")
-                })?;
-                let data = obj.downcast_ref::<IdBObjectStore>().ok_or_else(|| {
-                    JsNativeError::typ().with_message("'this' is not an IDBObjectStore")
-                })?;
-
-                // Check transaction is active
-                let txn_data = data
-                    .transaction
-                    .downcast_ref::<crate::api::transaction::IdBTransaction>()
-                    .ok_or_else(|| {
-                        JsNativeError::typ().with_message("Transaction data not found")
-                    })?;
-                if !txn_data.active {
-                    return Err(JsNativeError::error()
-                        .with_message("Transaction is not active")
-                        .into());
-                }
-
-                let default_val = JsValue::undefined();
-                let value_js = args.first().unwrap_or(&default_val);
-                let explicit_key = args.get(1).filter(|k| !k.is_undefined());
-
-                // Serialize value synchronously (AD-2)
-                let mut sc_value = serialize_for_storage(value_js, context)?;
-
-                // Convert explicit key if provided
-                let key = explicit_key
-                    .map(|k| value_to_key(k, context))
-                    .transpose()
-                    .map_err(|e| JsNativeError::typ().with_message(e.to_string()))?;
-
-                // Execute via engine
-                let runtime = context.get_data::<IdbRuntime>().ok_or_else(|| {
-                    JsNativeError::error().with_message("IndexedDB not initialized")
-                })?;
-
-                let result = runtime.with_engine(|engine| {
-                    engine.put(
-                        txn_data.txn_id,
-                        data.store_id,
-                        &mut sc_value,
-                        key.as_ref(),
-                        false,
-                    )
-                });
-
-                match result {
-                    Ok(key) => {
-                        // Create IDBRequest with result
-                        let req_data = crate::api::request::IdBRequest::new(0);
-                        let req_obj =
-                            crate::api::request::IdBRequest::from_data(req_data, context)?;
-                        if let Some(mut req) =
-                            req_obj.downcast_mut::<crate::api::request::IdBRequest>()
-                        {
-                            req.ready_state = crate::api::request::ReadyState::Done;
-                            // Result is the key
-                            req.result = Some(crate::convert::key::key_to_value(&key, context)?);
-                        }
-                        Ok(JsValue::from(req_obj))
-                    }
-                    Err(e) => {
-                        // Create IDBRequest with error
-                        let req_data = crate::api::request::IdBRequest::new(0);
-                        let req_obj =
-                            crate::api::request::IdBRequest::from_data(req_data, context)?;
-                        if let Some(mut req) =
-                            req_obj.downcast_mut::<crate::api::request::IdBRequest>()
-                        {
-                            req.ready_state = crate::api::request::ReadyState::Done;
-                            req.error = Some(crate::dom::exception::constraint_error(
-                                &e.to_string(),
-                                context,
-                            )?);
-                        }
-                        Ok(JsValue::from(req_obj))
-                    }
-                }
-            }),
+            NativeFunction::from_fn_ptr(|this, args, context| put_impl(this, args, context, false)),
         );
-
-        // add(value, key) -> IDBRequest
         class.method(
             js_string!("add"),
             1,
-            NativeFunction::from_fn_ptr(|this, args, context| {
-                let obj = this.as_object().ok_or_else(|| {
-                    JsNativeError::typ().with_message("'this' is not an IDBObjectStore")
-                })?;
-                let data = obj.downcast_ref::<IdBObjectStore>().ok_or_else(|| {
-                    JsNativeError::typ().with_message("'this' is not an IDBObjectStore")
-                })?;
-
-                let txn_data = data
-                    .transaction
-                    .downcast_ref::<crate::api::transaction::IdBTransaction>()
-                    .ok_or_else(|| {
-                        JsNativeError::typ().with_message("Transaction data not found")
-                    })?;
-                if !txn_data.active {
-                    return Err(JsNativeError::error()
-                        .with_message("Transaction is not active")
-                        .into());
-                }
-
-                let default_val = JsValue::undefined();
-                let value_js = args.first().unwrap_or(&default_val);
-                let explicit_key = args.get(1).filter(|k| !k.is_undefined());
-
-                let mut sc_value = serialize_for_storage(value_js, context)?;
-                let key = explicit_key
-                    .map(|k| value_to_key(k, context))
-                    .transpose()
-                    .map_err(|e| JsNativeError::typ().with_message(e.to_string()))?;
-
-                let runtime = context.get_data::<IdbRuntime>().ok_or_else(|| {
-                    JsNativeError::error().with_message("IndexedDB not initialized")
-                })?;
-
-                let result = runtime.with_engine(|engine| {
-                    engine.put(
-                        txn_data.txn_id,
-                        data.store_id,
-                        &mut sc_value,
-                        key.as_ref(),
-                        true,
-                    )
-                });
-
-                match result {
-                    Ok(key) => {
-                        let req_data = crate::api::request::IdBRequest::new(0);
-                        let req_obj =
-                            crate::api::request::IdBRequest::from_data(req_data, context)?;
-                        if let Some(mut req) =
-                            req_obj.downcast_mut::<crate::api::request::IdBRequest>()
-                        {
-                            req.ready_state = crate::api::request::ReadyState::Done;
-                            req.result = Some(crate::convert::key::key_to_value(&key, context)?);
-                        }
-                        Ok(JsValue::from(req_obj))
-                    }
-                    Err(e) => {
-                        let req_data = crate::api::request::IdBRequest::new(0);
-                        let req_obj =
-                            crate::api::request::IdBRequest::from_data(req_data, context)?;
-                        if let Some(mut req) =
-                            req_obj.downcast_mut::<crate::api::request::IdBRequest>()
-                        {
-                            req.ready_state = crate::api::request::ReadyState::Done;
-                            req.error = Some(crate::dom::exception::constraint_error(
-                                &e.to_string(),
-                                context,
-                            )?);
-                        }
-                        Ok(JsValue::from(req_obj))
-                    }
-                }
-            }),
+            NativeFunction::from_fn_ptr(|this, args, context| put_impl(this, args, context, true)),
         );
 
-        // get(query) -> IDBRequest
+        // get(query)
         class.method(
             js_string!("get"),
             1,
             NativeFunction::from_fn_ptr(|this, args, context| {
-                let obj = this.as_object().ok_or_else(|| {
-                    JsNativeError::typ().with_message("'this' is not an IDBObjectStore")
-                })?;
-                let data = obj.downcast_ref::<IdBObjectStore>().ok_or_else(|| {
-                    JsNativeError::typ().with_message("'this' is not an IDBObjectStore")
-                })?;
-
-                let txn_data = data
-                    .transaction
-                    .downcast_ref::<crate::api::transaction::IdBTransaction>()
-                    .ok_or_else(|| {
-                        JsNativeError::typ().with_message("Transaction data not found")
-                    })?;
-
+                let (obj, store_id, txn_obj) = store_of(this, context)?;
                 let default_val = JsValue::undefined();
                 let query = args.first().unwrap_or(&default_val);
-                let key = value_to_key(query, context)
-                    .map_err(|e| JsNativeError::typ().with_message(e.to_string()))?;
-
-                let runtime = context.get_data::<IdbRuntime>().ok_or_else(|| {
-                    JsNativeError::error().with_message("IndexedDB not initialized")
-                })?;
-
-                let result = runtime.with_engine(|engine| {
-                    engine.get(
-                        txn_data.txn_id,
-                        boa_idb_core::proto::SourceRef::Store(data.store_id),
-                        &key,
-                    )
-                });
-
-                match result {
-                    Ok(Some(sc_value)) => {
-                        let req_data = crate::api::request::IdBRequest::new(0);
-                        let req_obj =
-                            crate::api::request::IdBRequest::from_data(req_data, context)?;
-                        if let Some(mut req) =
-                            req_obj.downcast_mut::<crate::api::request::IdBRequest>()
-                        {
-                            req.ready_state = crate::api::request::ReadyState::Done;
-                            req.result = Some(deserialize_from_storage(&sc_value, context)?);
-                        }
-                        Ok(JsValue::from(req_obj))
-                    }
-                    Ok(None) => {
-                        let req_data = crate::api::request::IdBRequest::new(0);
-                        let req_obj =
-                            crate::api::request::IdBRequest::from_data(req_data, context)?;
-                        if let Some(mut req) =
-                            req_obj.downcast_mut::<crate::api::request::IdBRequest>()
-                        {
-                            req.ready_state = crate::api::request::ReadyState::Done;
-                            req.result = Some(JsValue::undefined());
-                        }
-                        Ok(JsValue::from(req_obj))
-                    }
-                    Err(e) => Err(JsNativeError::error()
-                        .with_message(format!("get() failed: {e}"))
-                        .into()),
-                }
+                let range = query_to_range(query, context)?;
+                let txn_id = active_txn_id(context, &txn_obj)?;
+                Ok(JsValue::from(issue_request(
+                    context,
+                    txn_id,
+                    PendingOp::Get {
+                        source: SourceRef::Store(store_id),
+                        range,
+                    },
+                    Some(obj),
+                )?))
             }),
         );
 
-        // getKey(query) -> IDBRequest
+        // getKey(query)
         class.method(
             js_string!("getKey"),
             1,
-            NativeFunction::from_fn_ptr(|_this, args, context| {
-                let _query = args.first().unwrap_or(&JsValue::undefined());
-                Err(JsNativeError::error()
-                    .with_message("getKey() is not yet fully implemented")
-                    .into())
+            NativeFunction::from_fn_ptr(|this, args, context| {
+                let (obj, store_id, txn_obj) = store_of(this, context)?;
+                let default_val = JsValue::undefined();
+                let query = args.first().unwrap_or(&default_val);
+                let range = query_to_range(query, context)?;
+                let txn_id = active_txn_id(context, &txn_obj)?;
+                Ok(JsValue::from(issue_request(
+                    context,
+                    txn_id,
+                    PendingOp::GetKey {
+                        source: SourceRef::Store(store_id),
+                        range,
+                    },
+                    Some(obj),
+                )?))
             }),
         );
 
-        // getAll(query, count) -> IDBRequest
+        // getAll(query?, count?) / getAllKeys / getAllRecords
         class.method(
             js_string!("getAll"),
             0,
-            NativeFunction::from_fn_ptr(|_this, _args, _ctx| {
-                Err(JsNativeError::error()
-                    .with_message("getAll() is not yet fully implemented")
-                    .into())
+            NativeFunction::from_fn_ptr(|this, args, context| {
+                let (obj, store_id, txn_obj) = store_of(this, context)?;
+                let parsed = crate::api::support::parse_get_all_args(args, context)?;
+                let txn_id = active_txn_id(context, &txn_obj)?;
+                Ok(JsValue::from(issue_request(
+                    context,
+                    txn_id,
+                    PendingOp::GetAll {
+                        source: SourceRef::Store(store_id),
+                        range: parsed.range,
+                        limit: parsed.limit,
+                        keys_only: false,
+                    },
+                    Some(obj),
+                )?))
+            }),
+        );
+        class.method(
+            js_string!("getAllKeys"),
+            0,
+            NativeFunction::from_fn_ptr(|this, args, context| {
+                let (obj, store_id, txn_obj) = store_of(this, context)?;
+                let parsed = crate::api::support::parse_get_all_args(args, context)?;
+                let txn_id = active_txn_id(context, &txn_obj)?;
+                Ok(JsValue::from(issue_request(
+                    context,
+                    txn_id,
+                    PendingOp::GetAll {
+                        source: SourceRef::Store(store_id),
+                        range: parsed.range,
+                        limit: parsed.limit,
+                        keys_only: true,
+                    },
+                    Some(obj),
+                )?))
+            }),
+        );
+        class.method(
+            js_string!("getAllRecords"),
+            0,
+            NativeFunction::from_fn_ptr(|this, args, context| {
+                let (obj, store_id, txn_obj) = store_of(this, context)?;
+                let parsed = crate::api::support::parse_get_all_args(args, context)?;
+                let txn_id = active_txn_id(context, &txn_obj)?;
+                Ok(JsValue::from(issue_request(
+                    context,
+                    txn_id,
+                    PendingOp::GetAllRecords {
+                        source: SourceRef::Store(store_id),
+                        range: parsed.range,
+                        limit: parsed.limit,
+                        direction: parsed.direction,
+                    },
+                    Some(obj),
+                )?))
             }),
         );
 
-        // delete(query) -> IDBRequest
+        // delete(query)
         class.method(
             js_string!("delete"),
+            1,
+            NativeFunction::from_fn_ptr(|this, args, context| {
+                let (obj, store_id, txn_obj) = store_of(this, context)?;
+                require_readwrite(context, &txn_obj)?;
+                let default_val = JsValue::undefined();
+                let query = args.first().unwrap_or(&default_val);
+                let range = query_to_range(query, context)?;
+                let txn_id = active_txn_id(context, &txn_obj)?;
+                Ok(JsValue::from(issue_request(
+                    context,
+                    txn_id,
+                    PendingOp::Delete { store_id, range },
+                    Some(obj),
+                )?))
+            }),
+        );
+
+        // clear()
+        class.method(
+            js_string!("clear"),
+            0,
+            NativeFunction::from_fn_ptr(|this, _args, context| {
+                let (obj, store_id, txn_obj) = store_of(this, context)?;
+                require_readwrite(context, &txn_obj)?;
+                let txn_id = active_txn_id(context, &txn_obj)?;
+                Ok(JsValue::from(issue_request(
+                    context,
+                    txn_id,
+                    PendingOp::Clear { store_id },
+                    Some(obj),
+                )?))
+            }),
+        );
+
+        // count(query?)
+        class.method(
+            js_string!("count"),
+            0,
+            NativeFunction::from_fn_ptr(|this, args, context| {
+                let (obj, store_id, txn_obj) = store_of(this, context)?;
+                let default_val = JsValue::undefined();
+                let query = args.first().unwrap_or(&default_val);
+                let range = query_to_range(query, context)?;
+                let txn_id = active_txn_id(context, &txn_obj)?;
+                Ok(JsValue::from(issue_request(
+                    context,
+                    txn_id,
+                    PendingOp::Count {
+                        source: SourceRef::Store(store_id),
+                        range,
+                    },
+                    Some(obj),
+                )?))
+            }),
+        );
+
+        // openCursor(query?, direction?)
+        class.method(
+            js_string!("openCursor"),
+            0,
+            NativeFunction::from_fn_ptr(|this, args, context| {
+                open_cursor_impl(this, args, context, false)
+            }),
+        );
+
+        // openKeyCursor(query?, direction?)
+        class.method(
+            js_string!("openKeyCursor"),
+            0,
+            NativeFunction::from_fn_ptr(|this, args, context| {
+                open_cursor_impl(this, args, context, true)
+            }),
+        );
+
+        // index(name) -> IDBIndex (same handle per index, §2.6.1)
+        class.method(
+            js_string!("index"),
             1,
             NativeFunction::from_fn_ptr(|this, args, context| {
                 let obj = this.as_object().ok_or_else(|| {
                     JsNativeError::typ().with_message("'this' is not an IDBObjectStore")
                 })?;
-                let data = obj.downcast_ref::<IdBObjectStore>().ok_or_else(|| {
-                    JsNativeError::typ().with_message("'this' is not an IDBObjectStore")
-                })?;
-
-                let txn_data = data
-                    .transaction
-                    .downcast_ref::<crate::api::transaction::IdBTransaction>()
-                    .ok_or_else(|| {
-                        JsNativeError::typ().with_message("Transaction data not found")
+                let (store_id, txn_obj) = {
+                    let data = obj.downcast_ref::<IdBObjectStore>().ok_or_else(|| {
+                        JsNativeError::typ().with_message("'this' is not an IDBObjectStore")
                     })?;
-                if !txn_data.active {
-                    return Err(JsNativeError::error()
-                        .with_message("Transaction is not active")
-                        .into());
-                }
+                    (data.store_id, data.transaction.clone())
+                };
+                let txn_id = active_txn_id(context, &txn_obj).unwrap_or(u64::MAX);
+                let name = args
+                    .first()
+                    .unwrap_or(&JsValue::undefined())
+                    .to_string(context)?
+                    .to_std_string_escaped();
 
-                let default_val = JsValue::undefined();
-                let query = args.first().unwrap_or(&default_val);
-                let key = value_to_key(query, context)
-                    .map_err(|e| JsNativeError::typ().with_message(e.to_string()))?;
-
-                let runtime = context.get_data::<IdbRuntime>().ok_or_else(|| {
-                    JsNativeError::error().with_message("IndexedDB not initialized")
-                })?;
-
-                let result = runtime
-                    .with_engine(|engine| engine.delete(txn_data.txn_id, data.store_id, &key));
-
-                match result {
-                    Ok(_existed) => {
-                        let req_data = crate::api::request::IdBRequest::new(0);
-                        let req_obj =
-                            crate::api::request::IdBRequest::from_data(req_data, context)?;
-                        if let Some(mut req) =
-                            req_obj.downcast_mut::<crate::api::request::IdBRequest>()
-                        {
-                            req.ready_state = crate::api::request::ReadyState::Done;
-                        }
-                        Ok(JsValue::from(req_obj))
+                if let Some(data) = obj.downcast_ref::<IdBObjectStore>() {
+                    if let Some(cached) = data.indexes.borrow().get(&name).cloned() {
+                        return Ok(JsValue::from(cached));
                     }
-                    Err(e) => Err(JsNativeError::error()
-                        .with_message(format!("delete() failed: {e}"))
-                        .into()),
-                }
-            }),
-        );
-
-        // clear() -> IDBRequest
-        class.method(
-            js_string!("clear"),
-            0,
-            NativeFunction::from_fn_ptr(|this, _args, context| {
-                let obj = this.as_object().ok_or_else(|| {
-                    JsNativeError::typ().with_message("'this' is not an IDBObjectStore")
-                })?;
-                let data = obj.downcast_ref::<IdBObjectStore>().ok_or_else(|| {
-                    JsNativeError::typ().with_message("'this' is not an IDBObjectStore")
-                })?;
-
-                let txn_data = data
-                    .transaction
-                    .downcast_ref::<crate::api::transaction::IdBTransaction>()
-                    .ok_or_else(|| {
-                        JsNativeError::typ().with_message("Transaction data not found")
-                    })?;
-                if !txn_data.active {
-                    return Err(JsNativeError::error()
-                        .with_message("Transaction is not active")
-                        .into());
                 }
 
-                let runtime = context.get_data::<IdbRuntime>().ok_or_else(|| {
-                    JsNativeError::error().with_message("IndexedDB not initialized")
-                })?;
-
-                let result =
-                    runtime.with_engine(|engine| engine.clear(txn_data.txn_id, data.store_id));
-
-                match result {
-                    Ok(()) => {
-                        let req_data = crate::api::request::IdBRequest::new(0);
-                        let req_obj =
-                            crate::api::request::IdBRequest::from_data(req_data, context)?;
-                        if let Some(mut req) =
-                            req_obj.downcast_mut::<crate::api::request::IdBRequest>()
-                        {
-                            req.ready_state = crate::api::request::ReadyState::Done;
-                        }
-                        Ok(JsValue::from(req_obj))
+                let meta = match context.get_data::<IdbRuntime>() {
+                    Some(runtime) => {
+                        let d = crate::runtime::lock_mutex(&runtime.driver);
+                        crate::driver::store_index_view(&d, txn_id, store_id, &name).ok()
                     }
-                    Err(e) => Err(JsNativeError::error()
-                        .with_message(format!("clear() failed: {e}"))
-                        .into()),
+                    None => None,
+                };
+                let Some(meta) = meta else {
+                    return Err(crate::dom::exception::throw_idb_error(
+                        &boa_idb_core::error::IdbError::NotFound(format!(
+                            "Index '{name}' not found"
+                        )),
+                        context,
+                    ));
+                };
+                let index_obj = crate::api::index::IdBIndexData::from_data(
+                    crate::api::index::IdBIndexData::new(
+                        meta.id,
+                        meta.name.to_string(),
+                        meta.key_path,
+                        meta.unique,
+                        meta.multi_entry,
+                        obj.clone(),
+                    ),
+                    context,
+                )?;
+                if let Some(data) = obj.downcast_ref::<IdBObjectStore>() {
+                    data.indexes.borrow_mut().insert(name, index_obj.clone());
                 }
+                Ok(JsValue::from(index_obj))
             }),
         );
 
-        // count(query) -> IDBRequest
-        class.method(
-            js_string!("count"),
-            0,
-            NativeFunction::from_fn_ptr(|_this, _args, _ctx| {
-                Err(JsNativeError::error()
-                    .with_message("count() is not yet fully implemented")
-                    .into())
-            }),
-        );
-
-        // openCursor(query, direction) -> IDBRequest
-        class.method(
-            js_string!("openCursor"),
-            0,
-            NativeFunction::from_fn_ptr(|_this, _args, _ctx| {
-                Err(JsNativeError::error()
-                    .with_message("openCursor() is not yet fully implemented")
-                    .into())
-            }),
-        );
-
-        // openKeyCursor(query, direction) -> IDBRequest
-        class.method(
-            js_string!("openKeyCursor"),
-            0,
-            NativeFunction::from_fn_ptr(|_this, _args, _ctx| {
-                Err(JsNativeError::error()
-                    .with_message("openKeyCursor() is not yet fully implemented")
-                    .into())
-            }),
-        );
-
-        // index(name) -> IDBIndex
-        class.method(
-            js_string!("index"),
-            1,
-            NativeFunction::from_fn_ptr(|_this, args, context| {
-                let _name = args.first().unwrap_or(&JsValue::undefined());
-                Err(JsNativeError::error()
-                    .with_message("index() is not yet fully implemented")
-                    .into())
-            }),
-        );
-
-        // createIndex(name, keyPath, options) -> IDBIndex
+        // createIndex(name, keyPath, options?)
         class.method(
             js_string!("createIndex"),
             2,
-            NativeFunction::from_fn_ptr(|_this, args, context| {
-                let _name = args.first().unwrap_or(&JsValue::undefined());
-                let _key_path = args.get(1);
-                let _options = args.get(2);
-                Err(JsNativeError::error()
-                    .with_message("createIndex() is not yet fully implemented")
-                    .into())
+            NativeFunction::from_fn_ptr(|this, args, context| {
+                let obj = this.as_object().ok_or_else(|| {
+                    JsNativeError::typ().with_message("'this' is not an IDBObjectStore")
+                })?;
+                let (store_name, txn_obj) = {
+                    let data = obj.downcast_ref::<IdBObjectStore>().ok_or_else(|| {
+                        JsNativeError::typ().with_message("'this' is not an IDBObjectStore")
+                    })?;
+                    (data.name.clone(), data.transaction.clone())
+                };
+                let txn_id = active_txn_id(context, &txn_obj)?;
+
+                let name = args
+                    .first()
+                    .unwrap_or(&JsValue::undefined())
+                    .to_string(context)?
+                    .to_std_string_escaped();
+                let kp_val = args.get(1).cloned().unwrap_or(JsValue::undefined());
+                let key_path = crate::convert::webidl::to_key_path_argument(&kp_val, context)?;
+                let Some(key_path) = key_path else {
+                    return Err(JsNativeError::typ()
+                        .with_message("createIndex requires a keyPath")
+                        .into());
+                };
+                let (unique, multi_entry) = match args.get(2) {
+                    Some(opts) => match opts.as_object() {
+                        Some(opts_obj) => {
+                            let unique = opts_obj
+                                .get(js_string!("unique"), context)
+                                .map(|v| v.to_boolean())
+                                .unwrap_or(false);
+                            let multi_entry = opts_obj
+                                .get(js_string!("multiEntry"), context)
+                                .map(|v| v.to_boolean())
+                                .unwrap_or(false);
+                            (unique, multi_entry)
+                        }
+                        None => (false, false),
+                    },
+                    None => (false, false),
+                };
+
+                let driver_handle = context
+                    .get_data::<IdbRuntime>()
+                    .map(|runtime| runtime.driver.clone());
+                let meta = match driver_handle {
+                    Some(handle) => {
+                        let mut d = crate::runtime::lock_mutex(&handle);
+                        crate::driver::schema_create_index(
+                            &mut d,
+                            txn_id,
+                            &store_name,
+                            &name,
+                            key_path,
+                            unique,
+                            multi_entry,
+                        )
+                    }
+                    None => Err(boa_idb_core::error::IdbError::Unknown(
+                        "IndexedDB not initialized".into(),
+                    )),
+                };
+                let meta = match meta {
+                    Ok(meta) => meta,
+                    Err(e) => {
+                        return Err(crate::dom::exception::throw_idb_error(&e, context));
+                    }
+                };
+                let index_obj = crate::api::index::IdBIndexData::from_data(
+                    crate::api::index::IdBIndexData::new(
+                        meta.id,
+                        meta.name.to_string(),
+                        meta.key_path,
+                        meta.unique,
+                        meta.multi_entry,
+                        obj.clone(),
+                    ),
+                    context,
+                )?;
+                if let Some(data) = obj.downcast_ref::<IdBObjectStore>() {
+                    data.indexes.borrow_mut().insert(name, index_obj.clone());
+                }
+                Ok(JsValue::from(index_obj))
             }),
         );
 
@@ -593,11 +687,42 @@ impl Class for IdBObjectStore {
         class.method(
             js_string!("deleteIndex"),
             1,
-            NativeFunction::from_fn_ptr(|_this, args, context| {
-                let _name = args.first().unwrap_or(&JsValue::undefined());
-                Err(JsNativeError::error()
-                    .with_message("deleteIndex() is not yet fully implemented")
-                    .into())
+            NativeFunction::from_fn_ptr(|this, args, context| {
+                let obj = this.as_object().ok_or_else(|| {
+                    JsNativeError::typ().with_message("'this' is not an IDBObjectStore")
+                })?;
+                let (store_name, txn_obj) = {
+                    let data = obj.downcast_ref::<IdBObjectStore>().ok_or_else(|| {
+                        JsNativeError::typ().with_message("'this' is not an IDBObjectStore")
+                    })?;
+                    (data.name.clone(), data.transaction.clone())
+                };
+                let txn_id = active_txn_id(context, &txn_obj)?;
+                let name = args
+                    .first()
+                    .unwrap_or(&JsValue::undefined())
+                    .to_string(context)?
+                    .to_std_string_escaped();
+
+                let driver_handle = context
+                    .get_data::<IdbRuntime>()
+                    .map(|runtime| runtime.driver.clone());
+                let result = driver_handle.map(|handle| {
+                    let mut d = crate::runtime::lock_mutex(&handle);
+                    crate::driver::schema_delete_index(&mut d, txn_id, &store_name, &name)
+                });
+                match result {
+                    Some(Ok(())) => {
+                        if let Some(data) = obj.downcast_ref::<IdBObjectStore>() {
+                            data.indexes.borrow_mut().remove(&name);
+                        }
+                        Ok(JsValue::undefined())
+                    }
+                    Some(Err(e)) => Err(crate::dom::exception::throw_idb_error(&e, context)),
+                    None => Err(JsNativeError::error()
+                        .with_message("IndexedDB not initialized")
+                        .into()),
+                }
             }),
         );
 

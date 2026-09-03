@@ -82,19 +82,27 @@ pub fn add_event_target_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
             }
 
             if let Some(obj) = this.as_object() {
-                if let Some(data) = obj.downcast_ref::<EventTargetData>() {
-                    let mut listeners = data.listeners.borrow_mut();
-                    let listener_id = data.next_listener_id.get();
-                    data.next_listener_id.set(listener_id + 1);
-                    listeners.push(EventListenerEntry {
-                        event_type,
-                        callback,
-                        capture,
-                        once,
-                        passive,
-                        id: listener_id,
+                // Duplicate (same type/callback/capture) registrations are ignored.
+                // The id is computed before taking the mutable borrow: helpers
+                // re-borrow the object, which would panic while borrowed.
+                let id = next_listener_id(&obj);
+                with_listeners_mut(&obj, |listeners| {
+                    let duplicate = listeners.iter().any(|l| {
+                        l.event_type == event_type
+                            && values_equal(&l.callback, &callback)
+                            && l.capture == capture
                     });
-                }
+                    if !duplicate {
+                        listeners.push(EventListenerEntry {
+                            event_type,
+                            callback,
+                            capture,
+                            once,
+                            passive,
+                            id,
+                        });
+                    }
+                });
             }
 
             Ok(JsValue::undefined())
@@ -126,14 +134,13 @@ pub fn add_event_target_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
             }
 
             if let Some(obj) = this.as_object() {
-                if let Some(data) = obj.downcast_ref::<EventTargetData>() {
-                    let mut listeners = data.listeners.borrow_mut();
+                with_listeners_mut(&obj, |listeners| {
                     listeners.retain(|l| {
                         !(l.event_type == event_type
                             && values_equal(&l.callback, &callback)
                             && l.capture == capture)
                     });
-                }
+                });
             }
 
             Ok(JsValue::undefined())
@@ -184,4 +191,71 @@ fn values_equal(a: &JsValue, b: &JsValue) -> bool {
         return a == b;
     }
     false
+}
+
+/// Equality helper used by event-listener removal across IDB classes.
+pub fn listener_equal(a: &JsValue, b: &JsValue) -> bool {
+    values_equal(a, b)
+}
+
+/// Runs `f` against the listener list of any IDB event target.
+///
+/// IDB objects carry their listeners in their own native data
+/// (`IdBRequest`, `IdBTransaction`, `IdBDatabase`), not in a shared
+/// `EventTargetData`, so dispatch and `addEventListener` must go through
+/// this dispatcher instead of downcasting to a single type.
+pub fn with_listeners_mut<R>(
+    obj: &JsObject,
+    f: impl FnOnce(&mut Vec<EventListenerEntry>) -> R,
+) -> Option<R> {
+    if let Some(data) = obj.downcast_ref::<crate::api::request::IdBOpenDBRequest>() {
+        return Some(f(&mut data.request.listeners.borrow_mut()));
+    }
+    if let Some(data) = obj.downcast_ref::<crate::api::request::IdBRequest>() {
+        return Some(f(&mut data.listeners.borrow_mut()));
+    }
+    if let Some(data) = obj.downcast_ref::<crate::api::transaction::IdBTransaction>() {
+        return Some(f(&mut data.listeners.borrow_mut()));
+    }
+    if let Some(data) = obj.downcast_ref::<crate::api::database::IdBDatabase>() {
+        return Some(f(&mut data.listeners.borrow_mut()));
+    }
+    if let Some(data) = obj.downcast_ref::<EventTargetData>() {
+        let mut listeners = data.listeners.borrow_mut();
+        return Some(f(&mut listeners));
+    }
+    None
+}
+
+/// Snapshots `(id, callback, once)` listeners of `event_type` in registration order.
+pub fn snapshot_listeners(obj: &JsObject, event_type: &str) -> Vec<(u64, JsValue, bool)> {
+    let mut out = Vec::new();
+    with_listeners_mut(obj, |listeners| {
+        // Next listener id for deduplication of re-added entries is kept
+        // simple: capture order is registration order.
+        for l in listeners.iter() {
+            if l.event_type == event_type {
+                out.push((l.id, l.callback.clone(), l.once));
+            }
+        }
+    });
+    out
+}
+
+/// Removes a listener by its registration id.
+pub fn remove_listener_by_id(obj: &JsObject, id: u64) {
+    with_listeners_mut(obj, |listeners| {
+        listeners.retain(|l| l.id != id);
+    });
+}
+
+/// Next listener id for an object (max existing id + 1).
+pub fn next_listener_id(obj: &JsObject) -> u64 {
+    let mut next = 0;
+    with_listeners_mut(obj, |listeners| {
+        for l in listeners.iter() {
+            next = next.max(l.id + 1);
+        }
+    });
+    next
 }

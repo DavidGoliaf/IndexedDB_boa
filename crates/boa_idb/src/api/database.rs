@@ -20,6 +20,13 @@ pub struct IdBDatabase {
     #[unsafe_ignore_trace]
     pub version: u64,
     pub closed: bool,
+    /// Versionchange transaction id during an upgrade (if any).
+    #[unsafe_ignore_trace]
+    pub upgrade_txn_id: Option<u64>,
+    /// Listeners registered through `addEventListener`.
+    pub listeners: boa_gc::GcRefCell<Vec<crate::dom::event_target::EventListenerEntry>>,
+    /// Attribute handlers (`onabort`, `onerror`, `onclose`, `onversionchange`).
+    pub attr_handlers: boa_gc::GcRefCell<std::collections::HashMap<String, JsValue>>,
 }
 
 impl IdBDatabase {
@@ -29,7 +36,17 @@ impl IdBDatabase {
             name,
             version,
             closed: false,
+            upgrade_txn_id: None,
+            listeners: boa_gc::GcRefCell::default(),
+            attr_handlers: boa_gc::GcRefCell::default(),
         }
+    }
+
+    /// Sets an attribute handler (`onversionchange` → `versionchange`).
+    pub fn set_handler(&self, name: &str, value: JsValue) {
+        self.attr_handlers
+            .borrow_mut()
+            .insert(name.to_string(), value);
     }
 }
 
@@ -76,28 +93,30 @@ impl Class for IdBDatabase {
         })
         .to_js_function(&realm);
 
-        // objectStoreNames getter
+        // objectStoreNames getter (DOMStringList, code-unit sorted)
         let store_names_getter = NativeFunction::from_fn_ptr(|this, _args, ctx| {
             if let Some(obj) = this.as_object() {
                 if let Some(data) = obj.downcast_ref::<IdBDatabase>() {
-                    let runtime = ctx.get_data::<IdbRuntime>().ok_or_else(|| {
-                        JsNativeError::error().with_message("IndexedDB not initialized")
-                    })?;
-                    let names = runtime.with_engine(|engine| {
-                        engine
-                            .get_db_meta(&data.name)
-                            .map(|meta| {
-                                meta.stores
-                                    .iter()
-                                    .filter(|s| !s.deleted)
-                                    .map(|s| JsValue::from(js_string!(s.name.to_string().as_str())))
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_default()
+                    let (name, upgrade_txn) = (data.name.clone(), data.upgrade_txn_id);
+                    let driver_handle = ctx
+                        .get_data::<IdbRuntime>()
+                        .map(|runtime| runtime.driver.clone());
+                    let mut names =
+                        crate::runtime::with_engine(ctx, |engine| match driver_handle {
+                            Some(driver) => {
+                                let guard = crate::runtime::lock_mutex(&driver);
+                                crate::driver::db_store_names(engine, &guard, &name, upgrade_txn)
+                            }
+                            None => Vec::new(),
+                        })?;
+                    names.sort_by(|a, b| {
+                        a.encode_utf16()
+                            .collect::<Vec<_>>()
+                            .cmp(&b.encode_utf16().collect::<Vec<_>>())
                     });
-                    return Ok(JsValue::from(
-                        boa_engine::object::builtins::JsArray::from_iter(names, ctx),
-                    ));
+                    return Ok(JsValue::from(crate::dom::string_list::dom_string_list(
+                        names, ctx,
+                    )?));
                 }
             }
             Ok(JsValue::undefined())
@@ -123,7 +142,11 @@ impl Class for IdBDatabase {
             Attribute::READONLY,
         );
 
-        // createObjectStore(name, options) -> IDBObjectStore
+        // createObjectStore(name, options) -> IDBObjectStore.
+        //
+        // Upgrade-only: the connection must carry a live versionchange
+        // transaction. Executes synchronously against it (same atomic unit as
+        // the queued upgrade work).
         class.method(
             js_string!("createObjectStore"),
             1,
@@ -131,13 +154,17 @@ impl Class for IdBDatabase {
                 let obj = this.as_object().ok_or_else(|| {
                     JsNativeError::typ().with_message("'this' is not an IDBDatabase")
                 })?;
-                let data = obj.downcast_ref::<IdBDatabase>().ok_or_else(|| {
-                    JsNativeError::typ().with_message("'this' is not an IDBDatabase")
-                })?;
-                if data.closed {
-                    return Err(JsNativeError::error()
-                        .with_message("The database has been closed.")
-                        .into());
+                let (upgrade_txn, closed) = {
+                    let data = obj.downcast_ref::<IdBDatabase>().ok_or_else(|| {
+                        JsNativeError::typ().with_message("'this' is not an IDBDatabase")
+                    })?;
+                    (data.upgrade_txn_id, data.closed)
+                };
+                if closed {
+                    return crate::dom::exception::throw_invalid_state_error(
+                        "The database connection is closed.",
+                        context,
+                    );
                 }
 
                 let name = args
@@ -161,40 +188,51 @@ impl Class for IdBDatabase {
                     }
                 }
 
+                let Some(txn_id) = upgrade_txn else {
+                    return crate::dom::exception::throw_invalid_state_error(
+                        "createObjectStore requires a versionchange transaction.",
+                        context,
+                    );
+                };
+
                 let runtime = context.get_data::<IdbRuntime>().ok_or_else(|| {
                     JsNativeError::error().with_message("IndexedDB not initialized")
                 })?;
-
-                // Need a versionchange transaction to create stores
-                // For now, create directly via engine
-                let result: Result<u64, boa_idb_core::error::IdbError> =
-                    runtime.with_engine(|engine| {
-                        // Find or create a versionchange transaction
-                        let txn_id = engine.begin_transaction(
-                            data.connection_id,
-                            boa_idb_core::proto::TxnMode::VersionChange,
-                            &[],
-                            boa_idb_core::proto::Durability::Default,
-                        )?;
-                        let store_id =
-                            engine.create_object_store(txn_id, &name, key_path, auto_increment)?;
-                        engine.commit_transaction(txn_id)?;
-                        Ok(store_id)
-                    });
-
-                match result {
-                    Ok(_store_id) => {
-                        // Return a placeholder IDBObjectStore
-                        Err(JsNativeError::error()
-                            .with_message(
-                                "createObjectStore: IDBObjectStore return not yet implemented",
-                            )
-                            .into())
-                    }
-                    Err(e) => Err(JsNativeError::error()
-                        .with_message(format!("createObjectStore failed: {e}"))
-                        .into()),
+                let meta = {
+                    let mut d = crate::runtime::lock_mutex(&runtime.driver);
+                    crate::driver::schema_create_store(
+                        &mut d,
+                        txn_id,
+                        &name,
+                        key_path,
+                        auto_increment,
+                    )
                 }
+                .map_err(|e| crate::dom::exception::throw_idb_error(&e, context))?;
+
+                let txn_obj = crate::runtime::txn_object(context, txn_id).ok_or_else(|| {
+                    JsNativeError::error().with_message("Upgrade transaction is gone")
+                })?;
+                let store_obj = crate::api::object_store::IdBObjectStore::from_data(
+                    crate::api::object_store::IdBObjectStore {
+                        store_id: meta.id,
+                        name: meta.name.to_string(),
+                        key_path: Some(meta.key_path),
+                        auto_increment: meta.auto_increment,
+                        transaction: txn_obj.clone(),
+                        indexes: boa_gc::GcRefCell::default(),
+                    },
+                    context,
+                )?;
+                // Same-handle cache (§2.6.1).
+                if let Some(data) =
+                    txn_obj.downcast_ref::<crate::api::transaction::IdBTransaction>()
+                {
+                    data.stores
+                        .borrow_mut()
+                        .insert(meta.name.to_string(), store_obj.clone());
+                }
+                Ok(JsValue::from(store_obj))
             }),
         );
 
@@ -206,28 +244,53 @@ impl Class for IdBDatabase {
                 let obj = this.as_object().ok_or_else(|| {
                     JsNativeError::typ().with_message("'this' is not an IDBDatabase")
                 })?;
-                let data = obj.downcast_ref::<IdBDatabase>().ok_or_else(|| {
-                    JsNativeError::typ().with_message("'this' is not an IDBDatabase")
-                })?;
-                if data.closed {
-                    return Err(JsNativeError::error()
-                        .with_message("The database has been closed.")
-                        .into());
+                let (upgrade_txn, closed) = {
+                    let data = obj.downcast_ref::<IdBDatabase>().ok_or_else(|| {
+                        JsNativeError::typ().with_message("'this' is not an IDBDatabase")
+                    })?;
+                    (data.upgrade_txn_id, data.closed)
+                };
+                if closed {
+                    return crate::dom::exception::throw_invalid_state_error(
+                        "The database connection is closed.",
+                        context,
+                    );
                 }
 
-                let _name = args
+                let name = args
                     .first()
                     .unwrap_or(&JsValue::undefined())
-                    .to_string(context)?;
+                    .to_string(context)?
+                    .to_std_string_escaped();
 
-                // TODO: implement deleteObjectStore via engine
-                Err(JsNativeError::error()
-                    .with_message("deleteObjectStore() is not yet fully implemented")
-                    .into())
+                let Some(txn_id) = upgrade_txn else {
+                    return crate::dom::exception::throw_invalid_state_error(
+                        "deleteObjectStore requires a versionchange transaction.",
+                        context,
+                    );
+                };
+
+                let runtime = context.get_data::<IdbRuntime>().ok_or_else(|| {
+                    JsNativeError::error().with_message("IndexedDB not initialized")
+                })?;
+                {
+                    let mut d = crate::runtime::lock_mutex(&runtime.driver);
+                    crate::driver::schema_delete_store(&mut d, txn_id, &name)
+                }
+                .map_err(|e| crate::dom::exception::throw_idb_error(&e, context))?;
+                // Drop the cached handle.
+                if let Some(txn_obj) = crate::runtime::txn_object(context, txn_id) {
+                    if let Some(data) =
+                        txn_obj.downcast_ref::<crate::api::transaction::IdBTransaction>()
+                    {
+                        data.stores.borrow_mut().remove(&name);
+                    }
+                }
+                Ok(JsValue::undefined())
             }),
         );
 
-        // transaction(storeNames, mode, options) -> IDBTransaction
+        // transaction(storeNames, mode?, options?) -> IDBTransaction
         class.method(
             js_string!("transaction"),
             1,
@@ -235,82 +298,166 @@ impl Class for IdBDatabase {
                 let obj = this.as_object().ok_or_else(|| {
                     JsNativeError::typ().with_message("'this' is not an IDBDatabase")
                 })?;
-                let data = obj.downcast_ref::<IdBDatabase>().ok_or_else(|| {
-                    JsNativeError::typ().with_message("'this' is not an IDBDatabase")
-                })?;
-                if data.closed {
-                    return Err(JsNativeError::error()
-                        .with_message("The database has been closed.")
-                        .into());
+                let (conn_id, db_name, closed, upgrade_txn) = {
+                    let data = obj.downcast_ref::<IdBDatabase>().ok_or_else(|| {
+                        JsNativeError::typ().with_message("'this' is not an IDBDatabase")
+                    })?;
+                    (
+                        data.connection_id,
+                        data.name.clone(),
+                        data.closed,
+                        data.upgrade_txn_id,
+                    )
+                };
+                if closed {
+                    return crate::dom::exception::throw_invalid_state_error(
+                        "The database connection is closed.",
+                        context,
+                    );
                 }
 
-                // Parse store names
+                // Parse store names (DOMString or sequence<DOMString>).
                 let binding = JsValue::undefined();
                 let store_names_val = args.first().unwrap_or(&binding);
-                let store_names: Vec<String> = if let Some(arr) = store_names_val.as_object() {
-                    if arr.is_array() {
-                        let length =
-                            boa_engine::object::builtins::JsArray::from_object(arr.clone())?
-                                .length(context)? as u32;
-                        let mut names = Vec::with_capacity(length as usize);
-                        for i in 0..length {
-                            let elem = arr.get(i, context)?;
-                            names.push(elem.to_string(context)?.to_std_string_escaped());
+                let store_names =
+                    crate::convert::webidl::to_sequence_of_dom_strings(store_names_val, context)?
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect::<Vec<_>>();
+                if store_names.is_empty() {
+                    return Err(crate::dom::exception::throw_idb_error(
+                        &boa_idb_core::error::IdbError::InvalidAccess(
+                            "Transaction scope must not be empty.".into(),
+                        ),
+                        context,
+                    ));
+                }
+
+                // Parse mode (invalid → TypeError).
+                let mode = match args.get(1) {
+                    None => boa_idb_core::proto::TxnMode::ReadOnly,
+                    Some(m) if m.is_undefined() => boa_idb_core::proto::TxnMode::ReadOnly,
+                    Some(m) => {
+                        let mode_str = m.to_string(context)?.to_std_string_escaped();
+                        match mode_str.as_str() {
+                            "readonly" => boa_idb_core::proto::TxnMode::ReadOnly,
+                            "readwrite" => boa_idb_core::proto::TxnMode::ReadWrite,
+                            _ => {
+                                return Err(JsNativeError::typ()
+                                    .with_message(format!("Invalid transaction mode '{mode_str}'"))
+                                    .into());
+                            }
                         }
-                        names
-                    } else {
-                        vec![store_names_val.to_string(context)?.to_std_string_escaped()]
                     }
-                } else {
-                    vec![store_names_val.to_string(context)?.to_std_string_escaped()]
                 };
 
-                // Parse mode
-                let mode = if let Some(m) = args.get(1) {
-                    let mode_str = m.to_string(context)?.to_std_string_escaped();
-                    match mode_str.as_str() {
-                        "readwrite" => boa_idb_core::proto::TxnMode::ReadWrite,
-                        "readonly" => boa_idb_core::proto::TxnMode::ReadOnly,
-                        "versionchange" => boa_idb_core::proto::TxnMode::VersionChange,
-                        _ => boa_idb_core::proto::TxnMode::ReadOnly,
+                // Parse durability option.
+                let mut durability = boa_idb_core::proto::Durability::Default;
+                if let Some(opts) = args.get(2) {
+                    if let Some(opts_obj) = opts.as_object() {
+                        if let Ok(d) = opts_obj.get(js_string!("durability"), context) {
+                            if !d.is_undefined() {
+                                let s = d.to_string(context)?.to_std_string_escaped();
+                                durability = match s.as_str() {
+                                    "default" => boa_idb_core::proto::Durability::Default,
+                                    "strict" => boa_idb_core::proto::Durability::Strict,
+                                    "relaxed" => boa_idb_core::proto::Durability::Relaxed,
+                                    _ => {
+                                        return Err(JsNativeError::typ()
+                                            .with_message(format!("Invalid durability '{s}'"))
+                                            .into());
+                                    }
+                                };
+                            }
+                        }
                     }
-                } else {
-                    boa_idb_core::proto::TxnMode::ReadOnly
-                };
+                }
 
                 let runtime = context.get_data::<IdbRuntime>().ok_or_else(|| {
                     JsNativeError::error().with_message("IndexedDB not initialized")
                 })?;
 
-                let name_refs: Vec<&str> = store_names.iter().map(|s| s.as_str()).collect();
-                let result = runtime.with_engine(|engine| {
-                    engine.begin_transaction(
-                        data.connection_id,
-                        mode,
-                        &name_refs,
-                        boa_idb_core::proto::Durability::Default,
-                    )
-                });
-
-                match result {
-                    Ok(txn_id) => {
-                        // Create IDBTransaction object
-                        let txn_data = crate::api::transaction::IdBTransaction {
-                            txn_id,
-                            mode,
-                            db: obj.clone(),
-                            active: true,
-                            durability: boa_idb_core::proto::Durability::Default,
-                            scope: Vec::new(),
-                        };
-                        let txn_obj =
-                            crate::api::transaction::IdBTransaction::from_data(txn_data, context)?;
-                        Ok(JsValue::from(txn_obj))
+                // A live upgrade transaction on this connection blocks normal ones.
+                let blocked = {
+                    let d = crate::runtime::lock_mutex(&runtime.driver);
+                    match upgrade_txn {
+                        Some(id) => d.txns.get(&id).is_some_and(|t| !t.finished),
+                        None => false,
                     }
-                    Err(e) => Err(JsNativeError::error()
-                        .with_message(format!("transaction() failed: {e}"))
-                        .into()),
+                };
+                if blocked {
+                    return crate::dom::exception::throw_invalid_state_error(
+                        "An upgrade transaction is running on this connection.",
+                        context,
+                    );
                 }
+
+                // Resolve names to ids against committed metadata.
+                // (Driver handle cloned first: the engine closure must not
+                // capture borrows of `context`.)
+                let driver_handle = context
+                    .get_data::<IdbRuntime>()
+                    .map(|runtime| runtime.driver.clone());
+                let scope: Vec<u64> = crate::runtime::with_engine(context, |engine| {
+                    let db = engine.open_db_handle(&db_name)?;
+                    let meta = db.metadata().clone();
+                    store_names
+                        .iter()
+                        .map(|name| {
+                            let uname = boa_idb_core::key::utf16::Utf16String::from(name.as_str());
+                            meta.stores
+                                .iter()
+                                .find(|s| !s.deleted && s.name == uname)
+                                .map(|s| s.id)
+                                .ok_or_else(|| {
+                                    boa_idb_core::error::IdbError::NotFound(format!(
+                                        "Object store '{name}' not found"
+                                    ))
+                                })
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })?
+                .map_err(|e| crate::dom::exception::throw_idb_error(&e, context))?;
+
+                let txn_obj = crate::api::transaction::IdBTransaction::from_data(
+                    crate::api::transaction::IdBTransaction::new(0, mode, obj.clone()),
+                    context,
+                )?;
+                // Clone the driver handle first: the engine closure must not
+                // capture `context` (already mutably borrowed by `with_engine`).
+                let driver_handle = context
+                    .get_data::<IdbRuntime>()
+                    .map(|runtime| runtime.driver.clone());
+                let txn_id = crate::runtime::with_engine(context, |engine| {
+                    let Some(handle) = driver_handle else {
+                        return Err(boa_idb_core::error::IdbError::Unknown(
+                            "IndexedDB not initialized".into(),
+                        ));
+                    };
+                    let mut d = crate::runtime::lock_mutex(&handle);
+                    crate::driver::create_txn(
+                        engine,
+                        &mut d,
+                        conn_id,
+                        db_name.clone(),
+                        mode,
+                        scope.clone(),
+                        durability,
+                    )
+                })?
+                .map_err(|e| crate::dom::exception::throw_idb_error(&e, context))?;
+                if let Some(mut data) =
+                    txn_obj.downcast_mut::<crate::api::transaction::IdBTransaction>()
+                {
+                    data.txn_id = txn_id;
+                    data.mode = mode;
+                    data.active = true;
+                    data.finished = false;
+                    data.scope = scope;
+                }
+                crate::runtime::register_txn(context, txn_id, txn_obj.clone());
+                crate::runtime::schedule_pump(context);
+                Ok(JsValue::from(txn_obj))
             }),
         );
 
@@ -320,16 +467,14 @@ impl Class for IdBDatabase {
             0,
             NativeFunction::from_fn_ptr(|this, _args, context| {
                 if let Some(obj) = this.as_object() {
+                    let conn = obj
+                        .downcast_ref::<IdBDatabase>()
+                        .map(|data| data.connection_id);
                     if let Some(mut data) = obj.downcast_mut::<IdBDatabase>() {
-                        if !data.closed {
-                            data.closed = true;
-                            let runtime = context.get_data::<IdbRuntime>().ok_or_else(|| {
-                                JsNativeError::error().with_message("IndexedDB not initialized")
-                            })?;
-                            runtime.with_engine(|engine| {
-                                engine.close_connection(data.connection_id);
-                            });
-                        }
+                        data.closed = true;
+                    }
+                    if let Some(conn_id) = conn {
+                        crate::driver::on_connection_closed(context, conn_id);
                     }
                 }
                 Ok(JsValue::undefined())
@@ -340,12 +485,32 @@ impl Class for IdBDatabase {
         class.accessor(
             js_string!("onversionchange"),
             Some(
-                NativeFunction::from_fn_ptr(|_this, _args, _ctx| Ok(JsValue::null()))
-                    .to_js_function(&realm),
+                NativeFunction::from_fn_ptr(|this, _args, _ctx| {
+                    if let Some(obj) = this.as_object() {
+                        if let Some(data) = obj.downcast_ref::<IdBDatabase>() {
+                            return Ok(data
+                                .attr_handlers
+                                .borrow()
+                                .get("versionchange")
+                                .cloned()
+                                .unwrap_or(JsValue::null()));
+                        }
+                    }
+                    Ok(JsValue::null())
+                })
+                .to_js_function(&realm),
             ),
             Some(
-                NativeFunction::from_fn_ptr(|_this, _args, _ctx| Ok(JsValue::undefined()))
-                    .to_js_function(&realm),
+                NativeFunction::from_fn_ptr(|this, args, _ctx| {
+                    let value = args.first().cloned().unwrap_or(JsValue::null());
+                    if let Some(obj) = this.as_object() {
+                        if let Some(data) = obj.downcast_ref::<IdBDatabase>() {
+                            data.set_handler("versionchange", value);
+                        }
+                    }
+                    Ok(JsValue::undefined())
+                })
+                .to_js_function(&realm),
             ),
             Attribute::all(),
         );

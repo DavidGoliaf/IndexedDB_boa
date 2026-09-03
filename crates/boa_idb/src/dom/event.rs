@@ -6,6 +6,28 @@ use boa_engine::property::Attribute;
 use boa_engine::{Context, JsObject, JsResult, JsValue, js_string};
 use boa_gc::{Finalize, Trace};
 
+/// Creates a DOM `Event` object with the given type (not cancelable).
+pub fn create_event_object(event_type: &str, context: &mut Context) -> JsValue {
+    create_event_object_cancelable(event_type, false, context)
+}
+
+/// Creates a DOM `Event` object with the given type and cancelability.
+///
+/// IDB request `error` events are cancelable: calling `preventDefault()` on
+/// them keeps the transaction alive (§2.8).
+pub fn create_event_object_cancelable(
+    event_type: &str,
+    cancelable: bool,
+    context: &mut Context,
+) -> JsValue {
+    let data = EventData::new(event_type.to_string(), false, cancelable);
+    let helper = EventDataHelper { data };
+    match EventDataHelper::from_data(helper, context) {
+        Ok(obj) => obj.into(),
+        Err(_) => JsValue::null(),
+    }
+}
+
 pub const NONE: u8 = 0;
 pub const CAPTURING_PHASE: u8 = 1;
 pub const AT_TARGET: u8 = 2;

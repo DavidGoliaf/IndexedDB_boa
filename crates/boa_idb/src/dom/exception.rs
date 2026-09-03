@@ -3,7 +3,7 @@
 use boa_engine::class::{Class, ClassBuilder};
 use boa_engine::native_function::NativeFunction;
 use boa_engine::property::Attribute;
-use boa_engine::{Context, JsNativeError, JsResult, JsValue, js_string};
+use boa_engine::{Context, JsError, JsNativeError, JsResult, JsValue, js_string};
 use boa_gc::{Finalize, Trace};
 
 /// Native data for `DOMException`.
@@ -174,6 +174,80 @@ pub fn version_error(message: &str, context: &mut Context) -> JsResult<JsValue> 
 
 pub fn invalid_state_error(message: &str, context: &mut Context) -> JsResult<JsValue> {
     create_dom_exception("InvalidStateError", message, context)
+}
+
+/// Throws a `DataError` DOMException.
+pub fn throw_data_error(message: &str, context: &mut Context) -> JsResult<JsValue> {
+    let value = data_error(message, context)?;
+    Err(boa_engine::JsError::from_opaque(value))
+}
+
+/// Throws a `ConstraintError` DOMException.
+pub fn throw_constraint_error(message: &str, context: &mut Context) -> JsResult<JsValue> {
+    let value = constraint_error(message, context)?;
+    Err(boa_engine::JsError::from_opaque(value))
+}
+
+/// Throws an `InvalidStateError` DOMException.
+pub fn throw_invalid_state_error(message: &str, context: &mut Context) -> JsResult<JsValue> {
+    let value = invalid_state_error(message, context)?;
+    Err(boa_engine::JsError::from_opaque(value))
+}
+
+/// Throws a `TransactionInactiveError` DOMException.
+pub fn throw_transaction_inactive_error(message: &str, context: &mut Context) -> JsResult<JsValue> {
+    let value = transaction_inactive_error(message, context)?;
+    Err(boa_engine::JsError::from_opaque(value))
+}
+
+/// Throws a `NotFoundError` DOMException.
+pub fn throw_not_found_error(message: &str, context: &mut Context) -> JsResult<JsValue> {
+    let value = not_found_error(message, context)?;
+    Err(boa_engine::JsError::from_opaque(value))
+}
+
+/// Throws a `VersionError` DOMException.
+pub fn throw_version_error(message: &str, context: &mut Context) -> JsResult<JsValue> {
+    let value = version_error(message, context)?;
+    Err(boa_engine::JsError::from_opaque(value))
+}
+
+/// Throws the matching DOMException for an [`IdbError`][boa_idb_core::error::IdbError].
+///
+/// Returns the throw error directly (not wrapped in `Err`): use as
+/// `return Err(throw_idb_error(&e, context))` or
+/// `.map_err(|e| throw_idb_error(&e, context))?`.
+pub fn throw_idb_error(error: &boa_idb_core::error::IdbError, context: &mut Context) -> JsError {
+    use boa_idb_core::error::IdbError as E;
+    let name = match error {
+        E::Abort => "AbortError",
+        E::Constraint(_) => "ConstraintError",
+        E::DataClone(_) => "DataCloneError",
+        E::Data(_) => "DataError",
+        E::InvalidAccess(_) => "InvalidAccessError",
+        E::InvalidState(_) => "InvalidStateError",
+        E::NotFound(_) => "NotFoundError",
+        E::NotReadable(_) => "NotReadableError",
+        E::Syntax(_) => "SyntaxError",
+        E::ReadOnly => "ReadOnlyError",
+        E::TransactionInactive => "TransactionInactiveError",
+        E::Unknown(_) => "UnknownError",
+        E::Version(_) => "VersionError",
+        E::QuotaExceeded { .. } => "QuotaExceededError",
+        // `IdbError` is non-exhaustive: future variants map here.
+        _ => "UnknownError",
+    };
+    match create_dom_exception(name, &error.to_string(), context) {
+        Ok(value) => boa_engine::JsError::from_opaque(value),
+        Err(e) => e,
+    }
+}
+
+/// Throws a `TypeError` DOMException.
+pub fn throw_type_error(message: &str) -> JsError {
+    JsNativeError::typ()
+        .with_message(message.to_string())
+        .into()
 }
 
 pub fn read_only_error(message: &str, context: &mut Context) -> JsResult<JsValue> {
