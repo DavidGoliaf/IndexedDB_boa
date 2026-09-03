@@ -9,6 +9,9 @@
 //! - [`limits`] — Security limits and quotas configuration.
 //! - [`key`] — Key types, comparison, encoding/decoding (KEY-v1), key ranges, and key paths.
 //! - [`clone`] — Intermediate `ScValue` representation and SCF-v1 binary codec.
+//! - [`proto`] — Protocol types, identifiers, and operation definitions.
+//! - [`backend`] — Backend abstraction layer (traits, errors, types, capabilities).
+//! - [`engine`] — Core engine: scheduler, transactions, key generation, store/index operations.
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
@@ -21,7 +24,10 @@
     clippy::cast_precision_loss
 )]
 
+pub mod backend;
 pub mod clone;
+pub mod engine;
 pub mod error;
 pub mod key;
 pub mod limits;
+pub mod proto;

@@ -2,10 +2,22 @@
 name = "boa_idb_memory"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "In-memory backend for IndexedDB (BTreeMap-based with snapshot isolation and undo logs)"
 
 [dependencies]
 boa_idb_core = { path = "../boa_idb_core" }
+thiserror = { workspace = true }
+indexmap = { workspace = true }
+hashbrown = { workspace = true }
+parking_lot = "0.12"
+
+[dev-dependencies]
+proptest = { workspace = true }
+rstest = { workspace = true }
 
 [lints]
 workspace = true

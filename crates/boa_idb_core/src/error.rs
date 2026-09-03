@@ -170,3 +170,21 @@ pub enum ScError {
     #[error("Unexpected end of SCF stream")]
     UnexpectedEof,
 }
+
+impl From<KeyError> for IdbError {
+    fn from(e: KeyError) -> Self {
+        IdbError::Data(e.to_string())
+    }
+}
+
+impl From<KeyPathError> for IdbError {
+    fn from(e: KeyPathError) -> Self {
+        IdbError::Data(e.to_string())
+    }
+}
+
+impl From<ScError> for IdbError {
+    fn from(e: ScError) -> Self {
+        IdbError::DataClone(e.to_string())
+    }
+}
