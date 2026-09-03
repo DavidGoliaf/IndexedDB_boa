@@ -1,34 +1,24 @@
 //! `IDBCursor` / `IDBCursorWithValue` implementation.
 
 use boa_gc::{Finalize, Trace};
-
-/// Cursor direction.
-#[derive(Debug, Clone, PartialEq, Eq, Trace, Finalize)]
-pub enum DirectionJs {
-    /// Forward.
-    Next,
-    /// Forward, unique keys only.
-    NextUnique,
-    /// Backward.
-    Prev,
-    /// Backward, unique keys only.
-    PrevUnique,
-}
+use boa_idb_core::key::value::Key;
+use boa_idb_core::proto::Direction;
 
 /// Native data for `IDBCursor`.
 #[derive(Debug, Trace, Finalize, boa_engine::JsData)]
 pub struct IdBCursorData {
     /// Cursor identifier.
+    #[unsafe_ignore_trace]
     pub cursor_id: u64,
     /// Cursor direction.
     #[unsafe_ignore_trace]
-    pub direction: DirectionJs,
-    /// Current key (encoded bytes).
+    pub direction: Direction,
+    /// Current key.
     #[unsafe_ignore_trace]
-    pub key: Vec<u8>,
-    /// Current primary key (encoded bytes).
+    pub key: Key,
+    /// Current primary key.
     #[unsafe_ignore_trace]
-    pub primary_key: Vec<u8>,
+    pub primary_key: Key,
     /// Whether the cursor has a value.
     pub has_value: bool,
 }
