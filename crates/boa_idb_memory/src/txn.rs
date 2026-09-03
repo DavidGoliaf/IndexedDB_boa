@@ -83,6 +83,11 @@ impl MemoryTxn {
     }
 
     fn check_scope(&self, store: StoreId) -> Result<(), BackendError> {
+        // Versionchange transactions span the whole database (exclusive mode,
+        // stores come and go during the upgrade), so no scope check applies.
+        if self.mode == TxnMode::VersionChange {
+            return Ok(());
+        }
         if !self.scope.contains(&store) {
             return Err(BackendError::Internal(format!(
                 "Store {store} not in transaction scope"

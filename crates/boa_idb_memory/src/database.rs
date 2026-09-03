@@ -48,7 +48,7 @@ impl Database for MemoryDatabase {
         mode: TxnMode,
         scope: &[StoreId],
         _durability: Durability,
-    ) -> Result<Box<dyn BackendTxn + '_>, BackendError> {
+    ) -> Result<Box<dyn BackendTxn + 'static>, BackendError> {
         Ok(Box::new(MemoryTxn::new(
             mode,
             scope.to_vec(),
