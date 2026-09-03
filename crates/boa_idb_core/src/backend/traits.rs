@@ -36,12 +36,17 @@ pub trait Database: Send + 'static {
     fn capabilities(&self) -> BackendCapabilities;
 
     /// Begins a new transaction.
+    ///
+    /// The returned transaction is `'static`: it must own all of its state
+    /// (or share it via `Arc`) rather than borrow the `Database`. This lets
+    /// the L1 driver own the backend transaction for the whole lifetime of
+    /// the IDB transaction (AD-6) without self-referential structs.
     fn begin(
         &mut self,
         mode: TxnMode,
         scope: &[StoreId],
         durability: Durability,
-    ) -> Result<Box<dyn BackendTxn + '_>, BackendError>;
+    ) -> Result<Box<dyn BackendTxn + 'static>, BackendError>;
 
     /// Flushes pending changes to durable storage.
     fn flush(&mut self) -> Result<(), BackendError>;

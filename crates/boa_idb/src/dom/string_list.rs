@@ -3,7 +3,7 @@
 use boa_engine::class::{Class, ClassBuilder};
 use boa_engine::native_function::NativeFunction;
 use boa_engine::property::Attribute;
-use boa_engine::{Context, JsNativeError, JsResult, JsValue, js_string};
+use boa_engine::{Context, JsNativeError, JsObject, JsResult, JsValue, js_string};
 use boa_gc::{Finalize, Trace};
 
 /// Native data for `DOMStringList`.
@@ -93,4 +93,30 @@ pub fn add_dom_string_list_methods(class: &mut ClassBuilder<'_>) -> JsResult<()>
     );
 
     Ok(())
+}
+
+/// `DOMStringList` class (constructible only by the implementation).
+impl Class for DomStringListData {
+    const NAME: &'static str = "DOMStringList";
+    const LENGTH: usize = 0;
+    const ATTRIBUTES: Attribute = Attribute::all();
+
+    fn data_constructor(
+        _new_target: &JsValue,
+        _args: &[JsValue],
+        _context: &mut Context,
+    ) -> JsResult<Self> {
+        Err(JsNativeError::typ()
+            .with_message("DOMStringList cannot be constructed directly")
+            .into())
+    }
+
+    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
+        add_dom_string_list_methods(class)
+    }
+}
+
+/// Builds a `DOMStringList` object from implementation-side names.
+pub fn dom_string_list(items: Vec<String>, context: &mut Context) -> JsResult<JsObject> {
+    DomStringListData::from_data(DomStringListData::new(items), context)
 }

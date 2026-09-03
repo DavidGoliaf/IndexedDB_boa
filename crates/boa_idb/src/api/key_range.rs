@@ -134,8 +134,20 @@ impl Class for IdBKeyRange {
             js_string!("includes"),
             1,
             NativeFunction::from_fn_ptr(|this, args, ctx| {
-                let key = value_to_key(args.first().unwrap_or(&JsValue::undefined()), ctx)
-                    .map_err(|e| JsNativeError::typ().with_message(e.to_string()))?;
+                if args.is_empty() {
+                    return Err(crate::dom::exception::throw_type_error(
+                        "IDBKeyRange.includes requires a key argument",
+                    ));
+                }
+                let key = match value_to_key(&args[0], ctx) {
+                    Ok(key) => key,
+                    Err(e) => {
+                        return crate::dom::exception::throw_data_error(
+                            &format!("Invalid key: {e}"),
+                            ctx,
+                        );
+                    }
+                };
 
                 if let Some(obj) = this.as_object() {
                     if let Some(data) = obj.downcast_ref::<IdBKeyRange>() {
@@ -175,8 +187,20 @@ impl Class for IdBKeyRange {
             js_string!("only"),
             1,
             NativeFunction::from_fn_ptr(|_this, args, ctx| {
-                let key = value_to_key(args.first().unwrap_or(&JsValue::undefined()), ctx)
-                    .map_err(|e| JsNativeError::typ().with_message(e.to_string()))?;
+                if args.is_empty() {
+                    return Err(crate::dom::exception::throw_type_error(
+                        "IDBKeyRange.only requires a key argument",
+                    ));
+                }
+                let key = match value_to_key(&args[0], ctx) {
+                    Ok(key) => key,
+                    Err(e) => {
+                        return crate::dom::exception::throw_data_error(
+                            &format!("Invalid key: {e}"),
+                            ctx,
+                        );
+                    }
+                };
                 let data = IdBKeyRange {
                     lower: Some(key.clone()),
                     upper: Some(key),
@@ -193,14 +217,26 @@ impl Class for IdBKeyRange {
             js_string!("lowerBound"),
             1,
             NativeFunction::from_fn_ptr(|_this, args, ctx| {
-                let key = value_to_key(args.first().unwrap_or(&JsValue::undefined()), ctx)
-                    .map_err(|e| JsNativeError::typ().with_message(e.to_string()))?;
+                if args.is_empty() {
+                    return Err(crate::dom::exception::throw_type_error(
+                        "IDBKeyRange.lowerBound requires a key argument",
+                    ));
+                }
+                let key = match value_to_key(&args[0], ctx) {
+                    Ok(key) => key,
+                    Err(e) => {
+                        return crate::dom::exception::throw_data_error(
+                            &format!("Invalid key: {e}"),
+                            ctx,
+                        );
+                    }
+                };
                 let open = args.get(1).is_some_and(|v| v.to_boolean());
                 let data = IdBKeyRange {
                     lower: Some(key),
                     upper: None,
                     lower_open: open,
-                    upper_open: false,
+                    upper_open: true,
                 };
                 let obj = IdBKeyRange::from_data(data, ctx)?;
                 Ok(JsValue::from(obj))
@@ -212,13 +248,25 @@ impl Class for IdBKeyRange {
             js_string!("upperBound"),
             1,
             NativeFunction::from_fn_ptr(|_this, args, ctx| {
-                let key = value_to_key(args.first().unwrap_or(&JsValue::undefined()), ctx)
-                    .map_err(|e| JsNativeError::typ().with_message(e.to_string()))?;
+                if args.is_empty() {
+                    return Err(crate::dom::exception::throw_type_error(
+                        "IDBKeyRange.upperBound requires a key argument",
+                    ));
+                }
+                let key = match value_to_key(&args[0], ctx) {
+                    Ok(key) => key,
+                    Err(e) => {
+                        return crate::dom::exception::throw_data_error(
+                            &format!("Invalid key: {e}"),
+                            ctx,
+                        );
+                    }
+                };
                 let open = args.get(1).is_some_and(|v| v.to_boolean());
                 let data = IdBKeyRange {
                     lower: None,
                     upper: Some(key),
-                    lower_open: false,
+                    lower_open: true,
                     upper_open: open,
                 };
                 let obj = IdBKeyRange::from_data(data, ctx)?;
@@ -231,10 +279,35 @@ impl Class for IdBKeyRange {
             js_string!("bound"),
             2,
             NativeFunction::from_fn_ptr(|_this, args, ctx| {
-                let lower = value_to_key(args.first().unwrap_or(&JsValue::undefined()), ctx)
-                    .map_err(|e| JsNativeError::typ().with_message(e.to_string()))?;
-                let upper = value_to_key(args.get(1).unwrap_or(&JsValue::undefined()), ctx)
-                    .map_err(|e| JsNativeError::typ().with_message(e.to_string()))?;
+                if args.len() < 2 {
+                    return Err(crate::dom::exception::throw_type_error(
+                        "IDBKeyRange.bound requires two key arguments",
+                    ));
+                }
+                let lower = match value_to_key(&args[0], ctx) {
+                    Ok(key) => key,
+                    Err(e) => {
+                        return crate::dom::exception::throw_data_error(
+                            &format!("Invalid key: {e}"),
+                            ctx,
+                        );
+                    }
+                };
+                let upper = match value_to_key(&args[1], ctx) {
+                    Ok(key) => key,
+                    Err(e) => {
+                        return crate::dom::exception::throw_data_error(
+                            &format!("Invalid key: {e}"),
+                            ctx,
+                        );
+                    }
+                };
+                if compare_keys(&lower, &upper) == Ordering::Greater {
+                    return crate::dom::exception::throw_data_error(
+                        "The lower key is greater than the upper key",
+                        ctx,
+                    );
+                }
                 let lower_open = args.get(2).is_some_and(|v| v.to_boolean());
                 let upper_open = args.get(3).is_some_and(|v| v.to_boolean());
                 let data = IdBKeyRange {

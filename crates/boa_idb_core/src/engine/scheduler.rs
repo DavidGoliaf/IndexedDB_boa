@@ -119,6 +119,17 @@ impl TransactionScheduler {
         self.running_txns.retain(|t| t.id != id);
     }
 
+    /// Forgets a transaction entirely (pending and running).
+    ///
+    /// Needed for transactions that never went through `poll_ready` (e.g.
+    /// upgrade transactions, which start with their backend already open) or
+    /// were aborted before starting: `on_txn_finished` alone would leave a
+    /// pending entry blocking the queue forever.
+    pub fn forget(&mut self, id: TxnId) {
+        self.pending_queue.retain(|t| t.id != id);
+        self.running_txns.retain(|t| t.id != id);
+    }
+
     /// Returns the number of pending transactions.
     pub fn pending_count(&self) -> usize {
         self.pending_queue.len()

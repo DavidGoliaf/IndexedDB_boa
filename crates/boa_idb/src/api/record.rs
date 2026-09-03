@@ -3,7 +3,7 @@
 use boa_engine::class::{Class, ClassBuilder};
 use boa_engine::native_function::NativeFunction;
 use boa_engine::property::Attribute;
-use boa_engine::{Context, JsNativeError, JsResult, JsValue, js_string};
+use boa_engine::{Context, JsNativeError, JsObject, JsResult, JsValue, js_string};
 use boa_gc::{Finalize, Trace};
 use boa_idb_core::key::value::Key;
 
@@ -31,11 +31,17 @@ impl IdBRecordData {
     }
 }
 
-/// `IDBRecord` class.
-#[derive(Debug, Trace, Finalize, boa_engine::JsData)]
-pub struct IdBRecord;
+/// Builds an `IDBRecord` object from a snapshot triple.
+pub fn create_record_object(
+    key: Key,
+    primary_key: Key,
+    value: boa_idb_core::clone::scvalue::ScValue,
+    context: &mut Context,
+) -> JsResult<JsObject> {
+    IdBRecordData::from_data(IdBRecordData::new(key, primary_key, value), context)
+}
 
-impl Class for IdBRecord {
+impl Class for IdBRecordData {
     const NAME: &'static str = "IDBRecord";
     const LENGTH: usize = 0;
     const ATTRIBUTES: Attribute = Attribute::all();

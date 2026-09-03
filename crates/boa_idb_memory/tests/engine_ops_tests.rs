@@ -37,7 +37,7 @@ fn open_db() -> Box<dyn Database> {
     storage.open_database("testdb").unwrap()
 }
 
-fn begin_rw(db: &mut Box<dyn Database>) -> Box<dyn BackendTxn + '_> {
+fn begin_rw(db: &mut Box<dyn Database>) -> Box<dyn BackendTxn + 'static> {
     let mut txn = db
         .begin(TxnMode::ReadWrite, &[1], Durability::Default)
         .unwrap();

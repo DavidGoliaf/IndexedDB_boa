@@ -24,6 +24,16 @@ fn create_context() -> Context {
     context
 }
 
+/// Evaluates a script, drains the Boa job queue (running the IDB pump and
+/// dispatching all events), and returns the script's own value.
+fn eval_drained(context: &mut Context, script: &str) -> boa_engine::JsValue {
+    let value = context
+        .eval(Source::from_bytes(script))
+        .expect("eval should succeed");
+    context.run_jobs().expect("jobs should run");
+    value
+}
+
 #[test]
 fn test_extension_registration() {
     let mut context = create_context();
@@ -149,11 +159,27 @@ fn test_event_constructor() {
 fn test_idb_factory_open_returns_request() {
     let mut context = create_context();
 
-    // open() should return an object with readyState
+    // open() returns a pending request synchronously...
     let result = context
         .eval(Source::from_bytes(
             r#"indexedDB.open("testdb", 1).readyState"#,
         ))
+        .expect("eval should succeed");
+    assert_eq!(result.as_string().unwrap(), js_string!("pending"));
+}
+
+#[test]
+fn test_idb_factory_open_completes_after_jobs() {
+    let mut context = create_context();
+
+    eval_drained(
+        &mut context,
+        r#"
+        globalThis.__openReq = indexedDB.open("testdb", 1);
+    "#,
+    );
+    let result = context
+        .eval(Source::from_bytes("globalThis.__openReq.readyState"))
         .expect("eval should succeed");
     assert_eq!(result.as_string().unwrap(), js_string!("done"));
 }
@@ -162,11 +188,15 @@ fn test_idb_factory_open_returns_request() {
 fn test_idb_factory_open_result_is_database() {
     let mut context = create_context();
 
+    eval_drained(
+        &mut context,
+        r#"
+        globalThis.__openReq = indexedDB.open("testdb", 1);
+    "#,
+    );
     // open() should return a request whose result is a database
     let result = context
-        .eval(Source::from_bytes(
-            r#"indexedDB.open("testdb", 1).result.name"#,
-        ))
+        .eval(Source::from_bytes("globalThis.__openReq.result.name"))
         .expect("eval should succeed");
     assert_eq!(result.as_string().unwrap(), js_string!("testdb"));
 }
@@ -175,10 +205,12 @@ fn test_idb_factory_open_result_is_database() {
 fn test_idb_factory_open_result_version() {
     let mut context = create_context();
 
+    eval_drained(
+        &mut context,
+        r#"globalThis.__openReq = indexedDB.open("testdb", 5);"#,
+    );
     let result = context
-        .eval(Source::from_bytes(
-            r#"indexedDB.open("testdb", 5).result.version"#,
-        ))
+        .eval(Source::from_bytes("globalThis.__openReq.result.version"))
         .expect("eval should succeed");
     assert_eq!(result.as_number().unwrap(), 5.0);
 }
@@ -195,16 +227,19 @@ fn test_idb_factory_open_version_zero_fails() {
 fn test_idb_factory_delete_database() {
     let mut context = create_context();
 
-    // First open a database
-    context
-        .eval(Source::from_bytes(r#"indexedDB.open("testdb", 1)"#))
-        .expect("open should succeed");
+    // Open a database and let it complete.
+    eval_drained(
+        &mut context,
+        r#"globalThis.__openReq = indexedDB.open("testdb", 1);"#,
+    );
 
-    // Then delete it
+    // Then delete it; the delete request completes after jobs run.
+    eval_drained(
+        &mut context,
+        r#"globalThis.__delReq = indexedDB.deleteDatabase("testdb");"#,
+    );
     let result = context
-        .eval(Source::from_bytes(
-            r#"indexedDB.deleteDatabase("testdb").readyState"#,
-        ))
+        .eval(Source::from_bytes("globalThis.__delReq.readyState"))
         .expect("delete should succeed");
     assert_eq!(result.as_string().unwrap(), js_string!("done"));
 }
@@ -214,13 +249,18 @@ fn test_idb_factory_databases() {
     let mut context = create_context();
 
     // Open a database first
-    context
-        .eval(Source::from_bytes(r#"indexedDB.open("testdb", 1)"#))
-        .expect("open should succeed");
+    eval_drained(&mut context, r#"indexedDB.open("testdb", 1);"#);
 
-    // List databases
+    // databases() returns a Promise; capture the settled value.
+    eval_drained(
+        &mut context,
+        r"
+        globalThis.__dbCount = -1;
+        indexedDB.databases().then(function(dbs) { globalThis.__dbCount = dbs.length; });
+    ",
+    );
     let result = context
-        .eval(Source::from_bytes("indexedDB.databases().length"))
+        .eval(Source::from_bytes("globalThis.__dbCount"))
         .expect("databases should succeed");
     assert!(result.as_number().unwrap() >= 1.0);
 }
@@ -245,11 +285,13 @@ fn test_idb_request_cannot_construct() {
 fn test_idb_database_has_transaction_method() {
     let mut context = create_context();
 
+    eval_drained(
+        &mut context,
+        r#"globalThis.__openReq = indexedDB.open("testdb", 1);"#,
+    );
     let result = context
         .eval(Source::from_bytes(
-            r#"
-            typeof indexedDB.open("testdb", 1).result.transaction
-        "#,
+            "typeof globalThis.__openReq.result.transaction",
         ))
         .expect("eval should succeed");
     assert_eq!(result.as_string().unwrap(), js_string!("function"));
@@ -259,11 +301,13 @@ fn test_idb_database_has_transaction_method() {
 fn test_idb_database_has_close_method() {
     let mut context = create_context();
 
+    eval_drained(
+        &mut context,
+        r#"globalThis.__openReq = indexedDB.open("testdb", 1);"#,
+    );
     let result = context
         .eval(Source::from_bytes(
-            r#"
-            typeof indexedDB.open("testdb", 1).result.close
-        "#,
+            "typeof globalThis.__openReq.result.close",
         ))
         .expect("eval should succeed");
     assert_eq!(result.as_string().unwrap(), js_string!("function"));
@@ -273,12 +317,12 @@ fn test_idb_database_has_close_method() {
 fn test_idb_database_name() {
     let mut context = create_context();
 
+    eval_drained(
+        &mut context,
+        r#"globalThis.__openReq = indexedDB.open("mydb", 1);"#,
+    );
     let result = context
-        .eval(Source::from_bytes(
-            r#"
-            indexedDB.open("mydb", 1).result.name
-        "#,
-        ))
+        .eval(Source::from_bytes("globalThis.__openReq.result.name"))
         .expect("eval should succeed");
     assert_eq!(result.as_string().unwrap(), js_string!("mydb"));
 }
@@ -287,12 +331,12 @@ fn test_idb_database_name() {
 fn test_idb_database_version() {
     let mut context = create_context();
 
+    eval_drained(
+        &mut context,
+        r#"globalThis.__openReq = indexedDB.open("mydb", 3);"#,
+    );
     let result = context
-        .eval(Source::from_bytes(
-            r#"
-            indexedDB.open("mydb", 3).result.version
-        "#,
-        ))
+        .eval(Source::from_bytes("globalThis.__openReq.result.version"))
         .expect("eval should succeed");
     assert_eq!(result.as_number().unwrap(), 3.0);
 }
@@ -301,15 +345,13 @@ fn test_idb_database_version() {
 fn test_structured_clone_primitives() {
     let mut context = create_context();
 
-    // Test that basic values can be stored and retrieved
-    // This tests the serialization pipeline
+    // Opening works end to end; the result is a database object.
+    eval_drained(
+        &mut context,
+        r#"globalThis.__openReq = indexedDB.open("clonetest", 1);"#,
+    );
     let result = context
-        .eval(Source::from_bytes(
-            r#"
-            let db = indexedDB.open("clonetest", 1).result;
-            typeof db
-        "#,
-        ))
+        .eval(Source::from_bytes("typeof globalThis.__openReq.result"))
         .expect("eval should succeed");
     assert_eq!(result.as_string().unwrap(), js_string!("object"));
 }
