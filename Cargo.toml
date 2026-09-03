@@ -1,0 +1,41 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/boa_idb_core",
+    "crates/boa_idb",
+    "crates/boa_idb_sqlite",
+    "crates/boa_idb_fs",
+    "crates/boa_idb_memory",
+    "crates/boa_idb_wpt",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91.0"
+license = "MIT OR Apache-2.0"
+authors = ["BoaX Developers"]
+repository = "https://github.com/boa-dev/boa"
+
+[workspace.dependencies]
+thiserror = "2.0"
+smallvec = { version = "1.13", features = ["union", "const_generics"] }
+indexmap = "2.7"
+hashbrown = "0.15"
+crc32fast = "1.4"
+num-bigint = "0.4"
+bytemuck = { version = "1.20", features = ["derive"] }
+tracing = "0.1"
+proptest = "1.6"
+rstest = "0.24"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"

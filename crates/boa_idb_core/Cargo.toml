@@ -1,0 +1,30 @@
+[package]
+name = "boa_idb_core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Core engine and codecs for IndexedDB implementation without JS dependencies"
+
+[dependencies]
+thiserror = { workspace = true }
+smallvec = { workspace = true }
+indexmap = { workspace = true }
+hashbrown = { workspace = true }
+crc32fast = { workspace = true }
+num-bigint = { workspace = true }
+bytemuck = { workspace = true }
+tracing = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+rstest = { workspace = true }
+
+[features]
+default = []
+tracing = ["dep:tracing"]
+
+[lints]
+workspace = true
