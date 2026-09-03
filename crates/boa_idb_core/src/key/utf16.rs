@@ -29,10 +29,21 @@ impl Utf16String {
     }
 
     /// Creates a `Utf16String` from a Rust `&str`.
-    pub fn from_rust_str(s: &str) -> Self {
+    ///
+    /// Named `from_str` per the project specification (TASK-01 §4.3); it does
+    /// not implement [`std::str::FromStr`] because the conversion is infallible.
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Self {
         Self {
             units: s.encode_utf16().collect(),
         }
+    }
+
+    /// Creates a `Utf16String` from a Rust `&str`.
+    ///
+    /// Alias of [`Utf16String::from_str`] kept for backward compatibility.
+    pub fn from_rust_str(s: &str) -> Self {
+        Self::from_str(s)
     }
 
     /// Returns the underlying UTF-16 code units as a slice.

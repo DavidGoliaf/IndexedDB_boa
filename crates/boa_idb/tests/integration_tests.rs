@@ -4,8 +4,8 @@
 
 use boa_engine::{Context, Source, js_string};
 use boa_idb::extension::IndexedDbExtension;
-use boa_idb_memory::MemoryBackendFactory;
 use boa_idb_core::proto::StorageKey;
+use boa_idb_memory::MemoryBackendFactory;
 use std::sync::Arc;
 
 /// Creates a Boa context with `IndexedDB` registered.

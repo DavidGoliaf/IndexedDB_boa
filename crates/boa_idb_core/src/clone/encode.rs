@@ -1,5 +1,6 @@
 //! SCF-v1 binary encoder for `ScValue`.
 
+use crate::clone::crc32c::crc32c;
 use crate::clone::scvalue::{RegExpFlags, ScErrorObject, ScTypedArrayKind, ScValue};
 use crate::clone::varint::{encode_ivarint, encode_uvarint};
 use crate::error::ScError;
@@ -27,8 +28,9 @@ const TAG_ARRAYBUFFER: u8 = 0x0F;
 const TAG_TYPEDARRAY: u8 = 0x10;
 const TAG_DATAVIEW: u8 = 0x11;
 const TAG_BOXED: u8 = 0x12;
-#[allow(dead_code)]
 const TAG_MEMO_REF: u8 = 0x13;
+/// `0x14` (`Hole`) is never emitted: sparse-array holes are encoded implicitly
+/// by omitting their indices from the `items` list of `TAG_ARRAY`.
 #[allow(dead_code)]
 const TAG_HOLE: u8 = 0x14;
 
@@ -74,7 +76,7 @@ impl<'a> ScfEncoder<'a> {
     }
 
     fn finish(mut self) -> Vec<u8> {
-        let checksum = crc32fast::hash(&self.buf);
+        let checksum = crc32c(&self.buf);
         self.buf.extend_from_slice(&checksum.to_le_bytes());
         self.buf
     }
@@ -142,6 +144,10 @@ impl<'a> ScfEncoder<'a> {
             ScValue::BoxedNumber(n) => self.encode_boxed_num(*n),
             ScValue::BoxedString(s) => self.encode_boxed_str(s),
             ScValue::BoxedBigInt(bi) => self.encode_boxed_bigint(bi),
+            ScValue::MemoRef(idx) => {
+                self.buf.push(TAG_MEMO_REF);
+                encode_uvarint(*idx as u64, &mut self.buf);
+            }
         }
         Ok(())
     }
@@ -307,6 +313,8 @@ impl<'a> ScfEncoder<'a> {
     }
 
     fn encode_arraybuffer(&mut self, data: &[u8], max_byte_length: Option<usize>) {
+        let _memo_idx = self.allocate_memo();
+
         self.buf.push(TAG_ARRAYBUFFER);
         // max_byte_length + 1, or 0 if not resizable
         match max_byte_length {
@@ -324,6 +332,8 @@ impl<'a> ScfEncoder<'a> {
         length: usize,
         buffer_memo_index: usize,
     ) {
+        let _memo_idx = self.allocate_memo();
+
         self.buf.push(TAG_TYPEDARRAY);
         self.buf.push(kind as u8);
         encode_uvarint(byte_offset as u64, &mut self.buf);
@@ -337,31 +347,45 @@ impl<'a> ScfEncoder<'a> {
         byte_length: usize,
         buffer_memo_index: usize,
     ) {
+        let _memo_idx = self.allocate_memo();
+
         self.buf.push(TAG_DATAVIEW);
         encode_uvarint(byte_offset as u64, &mut self.buf);
         encode_uvarint(byte_length as u64, &mut self.buf);
         encode_uvarint(buffer_memo_index as u64, &mut self.buf);
     }
 
+    /// Boxed values are encoded as `TAG_BOXED`, a one-byte subtag
+    /// (`BOXED_BOOL`/`BOXED_NUM`/`BOXED_STR`/`BOXED_BIGINT`), followed by the
+    /// complete tagged encoding of the wrapped primitive value (e.g.
+    /// `TAG_BOXED BOXED_NUM TAG_INT32 <varint>`). The decoder mirrors this layout.
     fn encode_boxed_bool(&mut self, b: bool) {
+        let _memo_idx = self.allocate_memo();
+
         self.buf.push(TAG_BOXED);
         self.buf.push(BOXED_BOOL);
         self.buf.push(if b { TAG_TRUE } else { TAG_FALSE });
     }
 
     fn encode_boxed_num(&mut self, n: f64) {
+        let _memo_idx = self.allocate_memo();
+
         self.buf.push(TAG_BOXED);
         self.buf.push(BOXED_NUM);
         self.encode_number(n);
     }
 
     fn encode_boxed_str(&mut self, s: &Utf16String) {
+        let _memo_idx = self.allocate_memo();
+
         self.buf.push(TAG_BOXED);
         self.buf.push(BOXED_STR);
         self.encode_string(s);
     }
 
     fn encode_boxed_bigint(&mut self, bi: &num_bigint::BigInt) {
+        let _memo_idx = self.allocate_memo();
+
         self.buf.push(TAG_BOXED);
         self.buf.push(BOXED_BIGINT);
         self.encode_bigint(bi);

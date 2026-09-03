@@ -4,6 +4,7 @@
 //! independent of any JS engine. The SCF-v1 codec serializes/deserializes
 //! `ScValue` to/from a compact binary format with CRC32C integrity checks.
 
+pub mod crc32c;
 pub mod decode;
 pub mod encode;
 pub mod scvalue;

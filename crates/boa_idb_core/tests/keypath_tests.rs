@@ -259,3 +259,62 @@ fn inject_empty_path_replaces_value() {
         .unwrap();
     assert_eq!(val, ScValue::String("replaced".into()));
 }
+
+// ===== fix-01 traversal strictness regressions =====
+
+#[test]
+fn extract_length_as_last_step() {
+    let arr = ScValue::Array {
+        elements: vec![Some(ScValue::Number(1.0)), Some(ScValue::Number(2.0))],
+        extra_props: Vec::new(),
+    };
+    let kp = KeyPath::parse_single("length").unwrap();
+    assert_eq!(
+        kp.extract(&arr).unwrap(),
+        Some(Key::Number(2.0)),
+        "array length resolves as the last step"
+    );
+
+    let s = ScValue::String("abc".into());
+    assert_eq!(
+        kp.extract(&s).unwrap(),
+        Some(Key::Number(3.0)),
+        "string length resolves as the last step"
+    );
+}
+
+#[test]
+fn extract_length_with_trailing_steps_is_none() {
+    // `length` resolves to a number; traversing further must yield None
+    // instead of silently dropping the remaining steps.
+    let arr = ScValue::Array {
+        elements: vec![Some(ScValue::Number(1.0))],
+        extra_props: Vec::new(),
+    };
+    let kp = KeyPath::parse_single("length.foo").unwrap();
+    assert_eq!(kp.extract(&arr).unwrap(), None);
+
+    let s = ScValue::String("abc".into());
+    assert_eq!(kp.extract(&s).unwrap(), None);
+}
+
+#[test]
+fn surrogate_path_traversal_without_loss() {
+    // Object keyed by a lone surrogate must be reachable through a
+    // `KeyPath::Single` holding the same code units (no lossy conversion).
+    let lone: Utf16String = [0xD800u16].as_slice().into();
+    let mut map = IndexMap::new();
+    map.insert(lone.clone(), ScValue::String("found".into()));
+    let val = ScValue::Object(map);
+
+    let kp = KeyPath::Single(lone);
+    assert_eq!(kp.extract(&val).unwrap(), Some(Key::String("found".into())));
+}
+
+#[test]
+fn lone_surrogate_identifier_rejected() {
+    use boa_idb_core::key::path::validate_identifier_name;
+    assert!(validate_identifier_name(&[0xD800]).is_err());
+    assert!(validate_identifier_name(&[0x0061]).is_ok()); // "a"
+    assert!(validate_identifier_name(&[0x200E]).is_err()); // bidi control
+}
