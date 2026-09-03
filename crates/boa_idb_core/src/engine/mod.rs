@@ -1,5 +1,6 @@
 //! Core engine modules for IndexedDB implementation.
 
+pub mod connection;
 pub mod cursor;
 pub mod keygen;
 pub mod open_queue;

@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc e2e4288f47c2f3c563ce6b0661e034c06e4cde6a11e324848026a7fd2fa033a1 # shrinks to ops = [Put { key: [], value: [], no_overwrite: false }, CommitAndRestart, Clear, Get { key: [] }]
+cc 2f42dbd2b9a763883cbf7cd0dc010414abc4d2a87fa1853938638eee3251342e # shrinks to ops = [Put { key: [0], value: [], no_overwrite: false }, CommitAndRestart, Put { key: [0], value: [], no_overwrite: false }, Clear, SavepointBegin, Clear, SavepointRollback]

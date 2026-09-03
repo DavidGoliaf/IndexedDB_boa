@@ -2,13 +2,16 @@
 
 use crate::backend::error::BackendError;
 use crate::backend::traits::BackendTxn;
-use crate::backend::types::StoreMeta;
+use crate::backend::types::{CursorSeek, IndexMeta, StoreMeta};
+use crate::clone::decode::decode_scf;
 use crate::clone::encode::encode_scf;
 use crate::clone::scvalue::ScValue;
 use crate::error::IdbError;
 use crate::key::encode::encode_key;
+use crate::key::range::EncodedRange;
 use crate::key::value::Key;
 use crate::limits::LimitConfig;
+use crate::proto::{Direction, SourceRef, StoreId};
 
 use super::keygen::KeyGenerator;
 use super::ops_index;
@@ -50,8 +53,20 @@ pub fn put(
         )));
     }
 
-    // Step 3: Update indexes
-    update_indexes_on_put(txn, store_meta, value, &key, limits)?;
+    // Step 3: Sync indexes.
+    //
+    // The core owns index maintenance (R8.1.2): the backend only stores the
+    // `(index_key, primary_key)` pairs it is told to store. When a record is
+    // overwritten, index entries that are no longer produced by the new value
+    // must be deleted first; otherwise stale entries would cause phantom
+    // cursor hits and false `unique` violations.
+    let old_value: Option<ScValue> = match &existing {
+        Some(bytes) => Some(decode_scf(bytes, limits).map_err(|e| {
+            IdbError::NotReadable(format!("Stored value for key {key:?} is corrupt: {e}"))
+        })?),
+        None => None,
+    };
+    sync_indexes_on_put(txn, store_meta, old_value.as_ref(), value, &key, limits)?;
 
     // Step 4: Encode and store
     let mut encoded_key = Vec::new();
@@ -65,12 +80,21 @@ pub fn put(
     // Step 5: Update key generator
     keygen.possibly_update(key_to_f64(&key));
 
+    // Step 6: Persist the generator so the next transaction continues the
+    // sequence instead of re-issuing the same auto-increment keys. The write
+    // goes through the backend savepoint machinery, so a request rollback
+    // restores the previous generator value together with the data.
+    txn.key_gen_set(store_id, keygen.current())
+        .map_err(backend_err)?;
+
     Ok(PutResult { key, inserted })
 }
 
 /// Executes a delete operation on a store (§6.4).
 ///
-/// Deletes records in the range and cleans up associated index entries.
+/// Deletes records in the range and removes the index entries that belonged
+/// to the deleted records. Index cleanup is computed here in the core
+/// (R8.1.2): the records are scanned first so their primary keys are known.
 pub fn delete(
     txn: &mut dyn BackendTxn,
     store_meta: &StoreMeta,
@@ -79,27 +103,66 @@ pub fn delete(
 ) -> Result<u64, IdbError> {
     let store_id = store_meta.id;
 
+    // Collect primary keys first; the backend only reports a count.
+    let doomed = collect_range_keys(txn, store_id, range)?;
+
     // Delete records and get count
     let count = txn.delete_range(store_id, range).map_err(backend_err)?;
 
-    // Note: In a full implementation, we'd iterate the range to collect
-    // primary keys of deleted records, then delete their index entries.
-    // The backend's delete_range should handle index cleanup internally.
+    // Remove index entries of the deleted records.
+    for pkey in &doomed {
+        for index in &store_meta.indexes {
+            if index.deleted {
+                continue;
+            }
+            ops_index::delete_by_primary(txn, index.id, pkey)?;
+        }
+    }
 
     Ok(count)
 }
 
 /// Executes a clear operation on a store (§6.6).
 ///
-/// Clears all records and associated index entries.
+/// Clears all records and removes every index entry that belonged to them.
 pub fn clear(txn: &mut dyn BackendTxn, store_meta: &StoreMeta) -> Result<(), IdbError> {
     let store_id = store_meta.id;
+
+    let doomed = collect_range_keys(txn, store_id, &EncodedRange::all())?;
+
     txn.clear(store_id).map_err(backend_err)?;
 
-    // Note: The backend's clear implementation should handle
-    // cleaning up index entries for the cleared store.
+    for pkey in &doomed {
+        for index in &store_meta.indexes {
+            if index.deleted {
+                continue;
+            }
+            ops_index::delete_by_primary(txn, index.id, pkey)?;
+        }
+    }
 
     Ok(())
+}
+
+/// Collects the encoded primary keys of all records in `range`.
+///
+/// Used to drive core-side index cleanup for `delete`/`clear`, since the
+/// backend deletion primitives only report counts.
+fn collect_range_keys(
+    txn: &mut dyn BackendTxn,
+    store: StoreId,
+    range: &EncodedRange,
+) -> Result<Vec<Vec<u8>>, IdbError> {
+    let mut cursor = txn
+        .scan(SourceRef::Store(store), range, Direction::Next, true)
+        .map_err(backend_err)?;
+    let mut keys = Vec::new();
+    let mut active = cursor.seek(CursorSeek::First).map_err(backend_err)?;
+    while active {
+        keys.push(cursor.current_key().to_vec());
+        active = cursor.step(1).map_err(backend_err)?;
+    }
+    Ok(keys)
 }
 
 /// Determines the key for a put operation.
@@ -156,11 +219,18 @@ fn determine_key(
     }
 }
 
-/// Updates indexes when putting a record.
-fn update_indexes_on_put(
+/// Synchronizes index entries when putting a record.
+///
+/// Computes the index-key sets produced by the old value (if the record
+/// existed) and the new value, deletes stale entries, and inserts new ones.
+/// Entries produced by both are left untouched — in particular this avoids
+/// false `unique` violations when a record is overwritten without changing
+/// its indexed keys.
+fn sync_indexes_on_put(
     txn: &mut dyn BackendTxn,
     store_meta: &StoreMeta,
-    value: &ScValue,
+    old_value: Option<&ScValue>,
+    new_value: &ScValue,
     primary_key: &Key,
     limits: &LimitConfig,
 ) -> Result<(), IdbError> {
@@ -172,24 +242,53 @@ fn update_indexes_on_put(
             continue;
         }
 
-        // Extract index key
-        if let Some(idx_key) = index.key_path.extract(value)? {
-            // Handle multiEntry
-            let keys = if index.multi_entry {
-                expand_multi_entry_key(&idx_key)
-            } else {
-                vec![idx_key]
-            };
+        let old_keys = match old_value {
+            Some(v) => index_keys_for_value(index, v, limits)?,
+            None => Vec::new(),
+        };
+        let new_keys = index_keys_for_value(index, new_value, limits)?;
 
-            for k in keys {
-                let mut idx_key_bytes = Vec::new();
-                encode_key(&k, &mut idx_key_bytes, limits)?;
-                ops_index::put(txn, index.id, &idx_key_bytes, &encoded_pk, index.unique)?;
+        for old in &old_keys {
+            if !new_keys.contains(old) {
+                ops_index::delete(txn, index.id, old, &encoded_pk)?;
+            }
+        }
+        for new in &new_keys {
+            if !old_keys.contains(new) {
+                ops_index::put(txn, index.id, new, &encoded_pk, index.unique)?;
             }
         }
     }
 
     Ok(())
+}
+
+/// Extracts the deduplicated set of encoded index keys one index derives
+/// from a value (multiEntry arrays are expanded, duplicates removed).
+///
+/// All elements are valid keys by construction here (`Key` values, not raw
+/// JS input), so there is nothing to skip — only deduplication applies.
+fn index_keys_for_value(
+    index: &IndexMeta,
+    value: &ScValue,
+    limits: &LimitConfig,
+) -> Result<Vec<Vec<u8>>, IdbError> {
+    let mut out = Vec::new();
+    if let Some(idx_key) = index.key_path.extract(value)? {
+        let keys = if index.multi_entry {
+            expand_multi_entry_key(&idx_key)
+        } else {
+            vec![idx_key]
+        };
+        for k in keys {
+            let mut bytes = Vec::new();
+            encode_key(&k, &mut bytes, limits)?;
+            if !out.contains(&bytes) {
+                out.push(bytes);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Expands a multiEntry key into individual keys.
@@ -210,9 +309,15 @@ fn key_to_f64(key: &Key) -> f64 {
 }
 
 /// Converts a backend error to an IdbError.
+///
+/// `Constraint` violations are preserved so callers (and ultimately JS via
+/// `DOMException`) observe `ConstraintError` rather than a generic `DataError`.
 #[allow(clippy::needless_pass_by_value)]
 fn backend_err(e: BackendError) -> IdbError {
-    IdbError::Data(format!("Backend error: {e}"))
+    match e {
+        BackendError::Constraint(msg) => IdbError::Constraint(msg),
+        other => IdbError::Data(format!("Backend error: {other}")),
+    }
 }
 
 #[cfg(test)]
