@@ -14,17 +14,36 @@ use crate::cursor::MemoryCursor;
 use crate::storage::{IndexKey, RecordKey, StorageState};
 
 /// Undo operation for savepoint rollback.
+///
+/// Record and index entries capture the *pending* state, not the merged read
+/// view. A pending tombstone and a missing entry both read as "absent", but
+/// rolling back to them differs: the former must re-install the tombstone
+/// (the record was deleted by an outer level), the latter must remove the
+/// entry (falling through to committed state). Logging merged values
+/// resurrects records on nested rollback.
 #[derive(Debug)]
 enum UndoOp {
-    /// Restore a record to its previous value (or delete if None).
-    RestoreRecord {
-        key: RecordKey,
-        old_value: Option<Vec<u8>>,
-    },
-    /// Restore an index entry.
-    RestoreIndex { key: IndexKey, existed: bool },
+    /// Restore a pending record entry to its previous state.
+    RestoreRecord { key: RecordKey, old: PendingSlot },
+    /// Restore a pending index entry to its previous state.
+    RestoreIndex { key: IndexKey, old: Option<bool> },
     /// Restore key generator value.
     RestoreKeyGen { store: StoreId, old_val: f64 },
+}
+
+/// Previous pending state of a record entry.
+///
+/// Three states because "reads as absent" is ambiguous: `Absent` means no
+/// pending entry (reads fall through to committed storage), while `Deleted`
+/// means a pending tombstone shadows the committed value.
+#[derive(Debug, Clone)]
+enum PendingSlot {
+    /// No pending entry.
+    Absent,
+    /// Pending tombstone (deleted in this transaction).
+    Deleted,
+    /// Pending value.
+    Value(Vec<u8>),
 }
 
 /// In-memory transaction implementation.
@@ -90,6 +109,15 @@ impl MemoryTxn {
         // Fall back to committed data
         let state = self.storage_state.read();
         state.records.get(key).cloned()
+    }
+
+    /// Captures the current pending slot of a record for the undo log.
+    fn pending_slot(&self, key: &RecordKey) -> PendingSlot {
+        match self.pending_records.get(key) {
+            None => PendingSlot::Absent,
+            Some(None) => PendingSlot::Deleted,
+            Some(Some(val)) => PendingSlot::Value(val.clone()),
+        }
     }
 
     /// Checks if a record exists (pending or committed).
@@ -162,7 +190,100 @@ impl MemoryTxn {
             }
         }
 
+        // Check pending-only entries (inserted in this transaction, not yet
+        // committed, hence invisible to the loop above).
+        for ((iid, ik, pk), existed) in &self.pending_index_entries {
+            if *iid == index_id && pk.as_slice() == primary_key && *existed {
+                if !results.contains(ik) {
+                    results.push(ik.clone());
+                }
+            }
+        }
+
         results
+    }
+
+    /// Collects index-scan entries over the merged pending/committed view.
+    ///
+    /// Entries are ordered ascending by `(index key, primary key)`; `*unique`
+    /// directions collapse each index-key group to its first entry (smallest
+    /// primary key), and `prev*` directions reverse the result.
+    fn scan_index(
+        &self,
+        store: StoreId,
+        index: IndexId,
+        range: &EncodedRange,
+        dir: Direction,
+        key_only: bool,
+    ) -> Vec<(Vec<u8>, Vec<u8>, Option<Vec<u8>>)> {
+        // Merged (index_key, primary_key) set: committed entries minus
+        // pending deletions, plus pending-only inserts.
+        let state = self.storage_state.read();
+        let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        for ((iid, idx_key, pk), _) in &state.index_entries {
+            if *iid != index || !range.contains(idx_key) {
+                continue;
+            }
+            let key = (index, idx_key.clone(), pk.clone());
+            if self
+                .pending_index_entries
+                .get(&key)
+                .copied()
+                .unwrap_or(true)
+            {
+                pairs.push((idx_key.clone(), pk.clone()));
+            }
+        }
+        for ((iid, idx_key, pk), existed) in &self.pending_index_entries {
+            if *iid != index || !*existed || !range.contains(idx_key) {
+                continue;
+            }
+            let key = (index, idx_key.clone(), pk.clone());
+            if !state.index_entries.contains_key(&key)
+                && !pairs.contains(&(idx_key.clone(), pk.clone()))
+            {
+                pairs.push((idx_key.clone(), pk.clone()));
+            }
+        }
+
+        // Resolve record values through the merged record view so index
+        // cursors (non-key-only) yield values (read-your-writes).
+        let mut entries: Vec<(Vec<u8>, Vec<u8>, Option<Vec<u8>>)> = Vec::with_capacity(pairs.len());
+        for (idx_key, pk) in pairs {
+            let value = if key_only {
+                None
+            } else {
+                self.read_record(&(store, pk.clone()))
+            };
+            entries.push((idx_key, pk, value));
+        }
+        drop(state);
+
+        // Sort by (index key, primary key) ascending.
+        entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+        // `*unique` directions yield one entry per index key — the first in
+        // sort order, i.e. the one with the smallest primary key. Reversing
+        // afterwards gives `prevunique` its groups in descending index-key
+        // order with the same representative.
+        if dir.is_unique() {
+            let mut deduped: Vec<(Vec<u8>, Vec<u8>, Option<Vec<u8>>)> =
+                Vec::with_capacity(entries.len());
+            for entry in entries {
+                let same_group = deduped
+                    .last()
+                    .is_some_and(|last: &(Vec<u8>, Vec<u8>, Option<Vec<u8>>)| last.0 == entry.0);
+                if !same_group {
+                    deduped.push(entry);
+                }
+            }
+            entries = deduped;
+        }
+        if dir.is_prev() {
+            entries.reverse();
+        }
+
+        entries
     }
 }
 
@@ -173,33 +294,49 @@ impl BackendTxn for MemoryTxn {
     }
 
     fn commit_request(&mut self) -> Result<(), BackendError> {
-        // Discard undo ops — committed request effects are permanent
-        self.undo_stack.pop();
+        let Some(ops) = self.undo_stack.pop() else {
+            return Err(BackendError::Internal(
+                "commit_request without matching begin_request".into(),
+            ));
+        };
+        // Merge into the parent level instead of discarding: an outer
+        // rollback must still undo everything, including committed inner
+        // requests (nested-savepoint semantics, AD-7).
+        if let Some(parent) = self.undo_stack.last_mut() {
+            parent.extend(ops);
+        }
         Ok(())
     }
 
     fn rollback_request(&mut self) -> Result<(), BackendError> {
-        if let Some(ops) = self.undo_stack.pop() {
-            for op in ops.into_iter().rev() {
-                match op {
-                    UndoOp::RestoreRecord { key, old_value } => match old_value {
-                        Some(val) => {
-                            self.pending_records.insert(key, Some(val));
-                        }
-                        None => {
-                            self.pending_records.remove(&key);
-                        }
-                    },
-                    UndoOp::RestoreIndex { key, existed } => {
-                        if existed {
-                            self.pending_index_entries.insert(key, true);
-                        } else {
-                            self.pending_index_entries.remove(&key);
-                        }
+        let Some(ops) = self.undo_stack.pop() else {
+            return Err(BackendError::Internal(
+                "rollback_request without matching begin_request".into(),
+            ));
+        };
+        for op in ops.into_iter().rev() {
+            match op {
+                UndoOp::RestoreRecord { key, old } => match old {
+                    PendingSlot::Value(val) => {
+                        self.pending_records.insert(key, Some(val));
                     }
-                    UndoOp::RestoreKeyGen { store, old_val } => {
-                        self.pending_key_generators.insert(store, old_val);
+                    PendingSlot::Deleted => {
+                        self.pending_records.insert(key, None);
                     }
+                    PendingSlot::Absent => {
+                        self.pending_records.remove(&key);
+                    }
+                },
+                UndoOp::RestoreIndex { key, old } => match old {
+                    Some(existed) => {
+                        self.pending_index_entries.insert(key, existed);
+                    }
+                    None => {
+                        self.pending_index_entries.remove(&key);
+                    }
+                },
+                UndoOp::RestoreKeyGen { store, old_val } => {
+                    self.pending_key_generators.insert(store, old_val);
                 }
             }
         }
@@ -336,12 +473,12 @@ impl BackendTxn for MemoryTxn {
             )));
         }
 
-        // Save old value for undo
-        let old_value = self.read_record(&map_key);
+        // Save pending state for undo (Absent = no pending entry yet).
+        let old = self.pending_slot(&map_key);
         if let Some(ops) = self.undo_stack.last_mut() {
             ops.push(UndoOp::RestoreRecord {
                 key: map_key.clone(),
-                old_value,
+                old,
             });
         }
 
@@ -363,10 +500,11 @@ impl BackendTxn for MemoryTxn {
         let old_value = self.read_record(&map_key);
         let existed = old_value.is_some();
 
+        let old = self.pending_slot(&map_key);
         if let Some(ops) = self.undo_stack.last_mut() {
             ops.push(UndoOp::RestoreRecord {
                 key: map_key.clone(),
-                old_value,
+                old,
             });
         }
 
@@ -404,23 +542,35 @@ impl BackendTxn for MemoryTxn {
             if old_value.is_some() {
                 count += 1;
             }
+            let old = self.pending_slot(key);
             if let Some(ops) = self.undo_stack.last_mut() {
                 ops.push(UndoOp::RestoreRecord {
                     key: key.clone(),
-                    old_value,
+                    old,
                 });
             }
             self.pending_records.insert(key.clone(), None);
         }
 
-        // Delete pending-only records (not already handled)
+        // Delete pending-only records (not already handled).
+        //
+        // The previous pending value is logged for undo so a rollback
+        // restores it; only records that actually exist are counted.
         for key in pending_keys {
-            if !keys_in_range.contains(&key) {
-                if self.pending_records.contains_key(&key) {
-                    count += 1;
-                    self.pending_records.remove(&key);
-                }
+            if keys_in_range.contains(&key) {
+                continue;
             }
+            if let Some(Some(val)) = self.pending_records.get(&key).cloned() {
+                if let Some(ops) = self.undo_stack.last_mut() {
+                    ops.push(UndoOp::RestoreRecord {
+                        key: key.clone(),
+                        old: PendingSlot::Value(val),
+                    });
+                }
+                self.pending_records.remove(&key);
+                count += 1;
+            }
+            // Tombstone or vanished entry: no live record, no count.
         }
 
         Ok(count)
@@ -430,36 +580,34 @@ impl BackendTxn for MemoryTxn {
         self.check_scope(store)?;
         self.check_readwrite()?;
 
-        // Remove any pending-only records for this store first
-        let pending_keys: Vec<RecordKey> = self
-            .pending_records
-            .keys()
-            .filter(|(sid, _)| *sid == store)
-            .cloned()
-            .collect();
-        for key in pending_keys {
-            self.pending_records.remove(&key);
-        }
-
-        // Collect all keys for this store from committed storage
+        // Union of committed and pending keys for this store. The undo entry
+        // for each key captures the *merged* value (including outer-level
+        // tombstones) — logging the raw committed value here would resurrect
+        // records deleted by an outer savepoint level on rollback.
         let state = self.storage_state.read();
-        let keys: Vec<RecordKey> = state
+        let mut keys: Vec<RecordKey> = state
             .records
             .keys()
             .filter(|(sid, _)| *sid == store)
             .cloned()
             .collect();
         drop(state);
+        for key in self.pending_records.keys().filter(|(sid, _)| *sid == store) {
+            if !keys.contains(key) {
+                keys.push(key.clone());
+            }
+        }
 
-        // Mark all committed records as deleted in pending
         for key in keys {
-            let old_value = self.read_record(&key);
+            let old = self.pending_slot(&key);
             if let Some(ops) = self.undo_stack.last_mut() {
                 ops.push(UndoOp::RestoreRecord {
                     key: key.clone(),
-                    old_value,
+                    old,
                 });
             }
+            // Tombstone (not removal): keeps the merged view consistent for
+            // any further reads in this transaction.
             self.pending_records.insert(key, None);
         }
 
@@ -509,10 +657,29 @@ impl BackendTxn for MemoryTxn {
                 self.check_scope(store)?;
                 let mut count: u64 = 0;
 
-                // Count committed index entries in range
+                // Merged view: committed entries, minus those deleted in
+                // pending, plus pending-only inserts.
                 let state = self.storage_state.read();
-                for ((iid, idx_key, _), _) in &state.index_entries {
-                    if *iid == index && range.contains(idx_key) {
+                for ((iid, idx_key, pk), _) in &state.index_entries {
+                    if *iid != index || !range.contains(idx_key) {
+                        continue;
+                    }
+                    let key = (index, idx_key.clone(), pk.clone());
+                    if self
+                        .pending_index_entries
+                        .get(&key)
+                        .copied()
+                        .unwrap_or(true)
+                    {
+                        count += 1;
+                    }
+                }
+                for ((iid, idx_key, pk), existed) in &self.pending_index_entries {
+                    if *iid != index || !*existed || !range.contains(idx_key) {
+                        continue;
+                    }
+                    let key = (index, idx_key.clone(), pk.clone());
+                    if !state.index_entries.contains_key(&key) {
                         count += 1;
                     }
                 }
@@ -604,30 +771,8 @@ impl BackendTxn for MemoryTxn {
             }
             SourceRef::Index { store, index } => {
                 self.check_scope(store)?;
-
-                // Collect index entries in range
-                let mut entries: Vec<(Vec<u8>, Vec<u8>, Option<Vec<u8>>)> = Vec::new();
-
-                let state = self.storage_state.read();
-                for ((iid, idx_key, pk), _) in &state.index_entries {
-                    if *iid == index && range.contains(idx_key) {
-                        entries.push((idx_key.clone(), pk.clone(), None));
-                    }
-                }
-                drop(state);
-
-                // Sort by index key, then primary key
-                entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-
-                // Apply direction
-                let cursor = match dir {
-                    Direction::Next | Direction::NextUnique => MemoryCursor::with_entries(entries),
-                    Direction::Prev | Direction::PrevUnique => {
-                        MemoryCursor::with_entries_reversed(entries)
-                    }
-                };
-
-                Ok(Box::new(cursor))
+                let entries = self.scan_index(store, index, range, dir, key_only);
+                Ok(Box::new(MemoryCursor::with_entries(entries)))
             }
         }
     }
@@ -674,10 +819,11 @@ impl BackendTxn for MemoryTxn {
             }
         }
 
+        let old = self.pending_index_entries.get(&map_key).copied();
         if let Some(ops) = self.undo_stack.last_mut() {
             ops.push(UndoOp::RestoreIndex {
                 key: map_key.clone(),
-                existed,
+                old,
             });
         }
 
@@ -692,12 +838,12 @@ impl BackendTxn for MemoryTxn {
         primary_key: &[u8],
     ) -> Result<(), BackendError> {
         let map_key = (index, idx_key.to_vec(), primary_key.to_vec());
-        let existed = self.index_entry_exists(&map_key);
+        let old = self.pending_index_entries.get(&map_key).copied();
 
         if let Some(ops) = self.undo_stack.last_mut() {
             ops.push(UndoOp::RestoreIndex {
                 key: map_key.clone(),
-                existed,
+                old,
             });
         }
 
@@ -715,12 +861,12 @@ impl BackendTxn for MemoryTxn {
 
         for idx_key in idx_keys {
             let map_key = (index, idx_key, primary_key.to_vec());
-            let existed = self.index_entry_exists(&map_key);
+            let old = self.pending_index_entries.get(&map_key).copied();
 
             if let Some(ops) = self.undo_stack.last_mut() {
                 ops.push(UndoOp::RestoreIndex {
                     key: map_key.clone(),
-                    existed,
+                    old,
                 });
             }
 

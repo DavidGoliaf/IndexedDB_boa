@@ -48,9 +48,10 @@ impl TransactionScheduler {
             let candidate = &self.pending_queue[i];
 
             if self.can_start(candidate, i) {
-                let item = self.pending_queue.remove(i).unwrap();
-                self.running_txns.push(item.clone());
-                ready.push(item.id);
+                if let Some(item) = self.pending_queue.remove(i) {
+                    self.running_txns.push(item.clone());
+                    ready.push(item.id);
+                }
             } else {
                 // If a readwrite transaction is blocked, we do NOT skip subsequent
                 // conflicting transactions to prevent starvation (FIFO fairness).

@@ -33,9 +33,10 @@ impl KeyGenerator {
 
     /// Generates a new key: returns the current value and increments by 1.
     ///
-    /// Returns `IdbError::Constraint` if the generator has reached the maximum value.
+    /// The value `2^53 - 1` itself is still issuable; only values *above* it
+    /// are rejected with `IdbError::Constraint`.
     pub fn generate(&mut self) -> Result<f64, IdbError> {
-        if self.current >= MAX_KEY {
+        if self.current > MAX_KEY {
             return Err(IdbError::Constraint(
                 "Key generator overflow: maximum value reached".into(),
             ));
@@ -60,14 +61,30 @@ impl KeyGenerator {
     }
 
     /// Commits the current request savepoint (discards the saved value).
-    pub fn commit_request(&mut self) {
-        self.save_stack.pop();
+    ///
+    /// Returns `InvalidState` if there is no matching `begin_request` — an
+    /// unbalanced savepoint stack indicates a driver bug, not a silent no-op.
+    pub fn commit_request(&mut self) -> Result<(), IdbError> {
+        if self.save_stack.pop().is_none() {
+            return Err(IdbError::InvalidState(
+                "KeyGenerator commit without matching begin".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Rolls back the generator to the last saved value.
-    pub fn rollback_request(&mut self) {
-        if let Some(saved) = self.save_stack.pop() {
-            self.current = saved;
+    ///
+    /// Returns `InvalidState` if there is no matching `begin_request`.
+    pub fn rollback_request(&mut self) -> Result<(), IdbError> {
+        match self.save_stack.pop() {
+            Some(saved) => {
+                self.current = saved;
+                Ok(())
+            }
+            None => Err(IdbError::InvalidState(
+                "KeyGenerator rollback without matching begin".into(),
+            )),
         }
     }
 }
@@ -104,7 +121,7 @@ mod tests {
         kg.begin_request();
         kg.generate().unwrap(); // current = 3
         kg.generate().unwrap(); // current = 4
-        kg.rollback_request();
+        kg.rollback_request().unwrap();
         assert_eq!(kg.current(), 2.0);
     }
 
@@ -113,13 +130,28 @@ mod tests {
         let mut kg = KeyGenerator::new(1.0);
         kg.begin_request();
         kg.generate().unwrap(); // current = 2
-        kg.commit_request();
+        kg.commit_request().unwrap();
         assert_eq!(kg.current(), 2.0);
     }
 
     #[test]
     fn test_overflow() {
+        // 2^53 - 1 itself is still issuable...
         let mut kg = KeyGenerator::new(MAX_KEY);
+        assert_eq!(kg.generate().unwrap(), MAX_KEY);
+        // ...but the next value is not representable as a key.
         assert!(kg.generate().is_err());
+    }
+
+    #[test]
+    fn test_unbalanced_commit_fails() {
+        let mut kg = KeyGenerator::new(1.0);
+        assert!(kg.commit_request().is_err());
+    }
+
+    #[test]
+    fn test_unbalanced_rollback_fails() {
+        let mut kg = KeyGenerator::new(1.0);
+        assert!(kg.rollback_request().is_err());
     }
 }

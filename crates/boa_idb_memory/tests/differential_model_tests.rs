@@ -12,8 +12,10 @@
 
 use std::collections::BTreeMap;
 
-use boa_idb_core::backend::traits::BackendFactory;
-use boa_idb_core::proto::{Durability, TxnMode};
+use boa_idb_core::backend::traits::{BackendFactory, BackendTxn};
+use boa_idb_core::backend::types::CursorSeek;
+use boa_idb_core::key::range::EncodedRange;
+use boa_idb_core::proto::{Direction, Durability, SourceRef, TxnMode};
 use boa_idb_memory::MemoryBackendFactory;
 use proptest::prelude::*;
 
@@ -21,6 +23,7 @@ use proptest::prelude::*;
 #[derive(Debug, Default)]
 struct ReferenceModel {
     records: BTreeMap<Vec<u8>, Vec<u8>>,
+    snapshots: Vec<BTreeMap<Vec<u8>, Vec<u8>>>,
 }
 
 impl ReferenceModel {
@@ -44,6 +47,29 @@ impl ReferenceModel {
     fn clear(&mut self) {
         self.records.clear();
     }
+
+    fn begin(&mut self) {
+        self.snapshots.push(self.records.clone());
+    }
+
+    fn commit(&mut self) -> Result<(), String> {
+        // Discard the snapshot; current state already holds the changes.
+        // Merging into the parent is implicit (single live map).
+        if self.snapshots.pop().is_none() {
+            return Err("unbalanced commit".into());
+        }
+        Ok(())
+    }
+
+    fn rollback(&mut self) -> Result<(), String> {
+        match self.snapshots.pop() {
+            Some(snapshot) => {
+                self.records = snapshot;
+                Ok(())
+            }
+            None => Err("unbalanced rollback".into()),
+        }
+    }
 }
 
 /// Operations for the proptest.
@@ -62,6 +88,9 @@ enum Op {
     },
     Clear,
     CommitAndRestart,
+    SavepointBegin,
+    SavepointCommit,
+    SavepointRollback,
 }
 
 fn arb_key() -> impl Strategy<Value = Vec<u8>> {
@@ -83,7 +112,32 @@ fn arb_op() -> impl Strategy<Value = Op> {
         arb_key().prop_map(|k| Op::Delete { key: k }),
         Just(Op::Clear),
         Just(Op::CommitAndRestart),
+        Just(Op::SavepointBegin),
+        Just(Op::SavepointCommit),
+        Just(Op::SavepointRollback),
     ]
+}
+
+/// Dumps the full merged record set visible inside a transaction.
+fn txn_dump(txn: &mut dyn BackendTxn) -> BTreeMap<Vec<u8>, Vec<u8>> {
+    let mut cursor = txn
+        .scan(
+            SourceRef::Store(1),
+            &EncodedRange::all(),
+            Direction::Next,
+            false,
+        )
+        .unwrap();
+    let mut map = BTreeMap::new();
+    let mut active = cursor.seek(CursorSeek::First).unwrap();
+    while active {
+        map.insert(
+            cursor.current_key().to_vec(),
+            cursor.current_value().unwrap().to_vec(),
+        );
+        active = cursor.step(1).unwrap();
+    }
+    map
 }
 
 proptest! {
@@ -99,6 +153,9 @@ proptest! {
         let mut model = ReferenceModel::default();
         let mut txn = db.begin(TxnMode::ReadWrite, &[1], Durability::Default).unwrap();
         txn.begin_request().unwrap();
+        // Mirror the transaction's base savepoint level so unbalanced
+        // commit/rollback outcomes agree on both sides.
+        model.begin();
 
         for op in &ops {
             match op {
@@ -131,8 +188,30 @@ proptest! {
                     model.clear();
                     txn.clear(1).unwrap();
                 }
+                Op::SavepointBegin => {
+                    model.begin();
+                    txn.begin_request().unwrap();
+                }
+                Op::SavepointCommit => {
+                    let model_ok = model.commit().is_ok();
+                    let txn_ok = txn.commit_request().is_ok();
+                    prop_assert_eq!(model_ok, txn_ok);
+                }
+                Op::SavepointRollback => {
+                    let model_ok = model.rollback().is_ok();
+                    let txn_ok = txn.rollback_request().is_ok();
+                    prop_assert_eq!(model_ok, txn_ok);
+                    if model_ok {
+                        // Full bidirectional state comparison after rollback.
+                        prop_assert_eq!(&model.records, &txn_dump(&mut *txn));
+                    }
+                }
                 Op::CommitAndRestart => {
-                    txn.commit_request().unwrap();
+                    // Drain all open savepoint levels on both sides (like a
+                    // real driver does before commit) to keep the stacks in
+                    // lockstep, then commit.
+                    while txn.commit_request().is_ok() {}
+                    while model.commit().is_ok() {}
                     txn.commit().unwrap();
 
                     // Verify committed state matches model
@@ -153,12 +232,14 @@ proptest! {
                     // Start new transaction
                     txn = db.begin(TxnMode::ReadWrite, &[1], Durability::Default).unwrap();
                     txn.begin_request().unwrap();
+                    model.begin();
                 }
             }
         }
 
-        // Final verification
-        txn.commit_request().unwrap();
+        // Final verification: drain, commit, and compare bidirectionally.
+        while txn.commit_request().is_ok() {}
+        while model.commit().is_ok() {}
         txn.commit().unwrap();
 
         let mut verify_txn = db.begin(TxnMode::ReadOnly, &[1], Durability::Default).unwrap();
@@ -169,6 +250,8 @@ proptest! {
             let txn_val = verify_txn.get(1, k).unwrap();
             prop_assert_eq!(model_val, txn_val);
         }
+        // No extra keys on the backend side either.
+        prop_assert_eq!(&model.records, &txn_dump(&mut *verify_txn));
 
         verify_txn.commit_request().unwrap();
         verify_txn.commit().unwrap();
