@@ -374,16 +374,72 @@ impl BackendTxn for MemoryTxn {
         Ok(existed)
     }
 
-    fn delete_range(&mut self, store: StoreId, _range: &EncodedRange) -> Result<u64, BackendError> {
+    fn delete_range(&mut self, store: StoreId, range: &EncodedRange) -> Result<u64, BackendError> {
         self.check_scope(store)?;
         self.check_readwrite()?;
-        // TODO: implement range deletion with proper range matching
-        Ok(0)
+
+        // Collect keys in range from committed storage
+        let state = self.storage_state.read();
+        let keys_in_range: Vec<RecordKey> = state
+            .records
+            .keys()
+            .filter(|(sid, key)| *sid == store && range.contains(key))
+            .cloned()
+            .collect();
+        drop(state);
+
+        // Also collect pending-only keys in range
+        let pending_keys: Vec<RecordKey> = self
+            .pending_records
+            .keys()
+            .filter(|(sid, key)| *sid == store && range.contains(key))
+            .cloned()
+            .collect();
+
+        let mut count: u64 = 0;
+
+        // Delete committed records
+        for key in &keys_in_range {
+            let old_value = self.read_record(key);
+            if old_value.is_some() {
+                count += 1;
+            }
+            if let Some(ops) = self.undo_stack.last_mut() {
+                ops.push(UndoOp::RestoreRecord {
+                    key: key.clone(),
+                    old_value,
+                });
+            }
+            self.pending_records.insert(key.clone(), None);
+        }
+
+        // Delete pending-only records (not already handled)
+        for key in pending_keys {
+            if !keys_in_range.contains(&key) {
+                if self.pending_records.contains_key(&key) {
+                    count += 1;
+                    self.pending_records.remove(&key);
+                }
+            }
+        }
+
+        Ok(count)
     }
 
     fn clear(&mut self, store: StoreId) -> Result<(), BackendError> {
         self.check_scope(store)?;
         self.check_readwrite()?;
+
+        // Remove any pending-only records for this store first
+        let pending_keys: Vec<RecordKey> = self
+            .pending_records
+            .keys()
+            .filter(|(sid, _)| *sid == store)
+            .cloned()
+            .collect();
+        for key in pending_keys {
+            self.pending_records.remove(&key);
+        }
 
         // Collect all keys for this store from committed storage
         let state = self.storage_state.read();
@@ -407,34 +463,173 @@ impl BackendTxn for MemoryTxn {
             self.pending_records.insert(key, None);
         }
 
-        // Also remove any pending-only records for this store
-        let pending_keys: Vec<RecordKey> = self
-            .pending_records
-            .keys()
-            .filter(|(sid, _)| *sid == store)
-            .cloned()
-            .collect();
-        for key in pending_keys {
-            self.pending_records.remove(&key);
-        }
-
         Ok(())
     }
 
-    fn count(&mut self, _src: SourceRef, _range: &EncodedRange) -> Result<u64, BackendError> {
-        // TODO: implement count with range matching
-        Ok(0)
+    fn count(&mut self, src: SourceRef, range: &EncodedRange) -> Result<u64, BackendError> {
+        match src {
+            SourceRef::Store(store) => {
+                self.check_scope(store)?;
+                let mut count: u64 = 0;
+
+                // Count committed records in range
+                let state = self.storage_state.read();
+                for (sid, key) in state.records.keys() {
+                    if *sid == store && range.contains(key) {
+                        // Check if not deleted in pending
+                        let pending_key = (store, key.clone());
+                        if let Some(val) = self.pending_records.get(&pending_key) {
+                            if val.is_some() {
+                                count += 1;
+                            }
+                        } else {
+                            count += 1;
+                        }
+                    }
+                }
+                drop(state);
+
+                // Count pending-only records in range
+                for ((sid, key), val) in &self.pending_records {
+                    if *sid == store && val.is_some() && range.contains(key) {
+                        // Only count if not already counted from committed
+                        let committed_exists = {
+                            let state = self.storage_state.read();
+                            state.records.contains_key(&(*sid, key.clone()))
+                        };
+                        if !committed_exists {
+                            count += 1;
+                        }
+                    }
+                }
+
+                Ok(count)
+            }
+            SourceRef::Index { store, index } => {
+                self.check_scope(store)?;
+                let mut count: u64 = 0;
+
+                // Count committed index entries in range
+                let state = self.storage_state.read();
+                for ((iid, idx_key, _), _) in &state.index_entries {
+                    if *iid == index && range.contains(idx_key) {
+                        count += 1;
+                    }
+                }
+                drop(state);
+
+                Ok(count)
+            }
+        }
     }
 
     fn scan(
         &mut self,
-        _src: SourceRef,
-        _range: &EncodedRange,
-        _dir: Direction,
-        _key_only: bool,
+        src: SourceRef,
+        range: &EncodedRange,
+        dir: Direction,
+        key_only: bool,
     ) -> Result<Box<dyn BackendCursor + '_>, BackendError> {
-        // TODO: implement scan with merged data
-        Ok(Box::new(MemoryCursor::new()))
+        match src {
+            SourceRef::Store(store) => {
+                self.check_scope(store)?;
+
+                // Collect merged records in range
+                let mut entries: Vec<(Vec<u8>, Vec<u8>, Option<Vec<u8>>)> = Vec::new();
+
+                // Add committed records
+                let state = self.storage_state.read();
+                for ((sid, key), value) in &state.records {
+                    if *sid == store && range.contains(key) {
+                        // Check if overridden by pending
+                        let pending_key = (store, key.clone());
+                        if let Some(pending_val) = self.pending_records.get(&pending_key) {
+                            if let Some(v) = pending_val {
+                                entries.push((key.clone(), key.clone(), Some(v.clone())));
+                            }
+                            // If None, record is deleted - skip
+                        } else {
+                            entries.push((key.clone(), key.clone(), Some(value.clone())));
+                        }
+                    }
+                }
+                drop(state);
+
+                // Add pending-only records
+                for ((sid, key), val) in &self.pending_records {
+                    if *sid == store && val.is_some() && range.contains(key) {
+                        // Only add if not already added from committed
+                        let committed_exists = {
+                            let state = self.storage_state.read();
+                            state.records.contains_key(&(*sid, key.clone()))
+                        };
+                        if !committed_exists {
+                            entries.push((key.clone(), key.clone(), val.clone()));
+                        }
+                    }
+                }
+
+                // Sort by key
+                entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+                // Apply direction
+                let cursor = match dir {
+                    Direction::Next | Direction::NextUnique => {
+                        if key_only {
+                            MemoryCursor::with_entries(
+                                entries
+                                    .into_iter()
+                                    .map(|(k, pk, _)| (k, pk, None))
+                                    .collect(),
+                            )
+                        } else {
+                            MemoryCursor::with_entries(entries)
+                        }
+                    }
+                    Direction::Prev | Direction::PrevUnique => {
+                        if key_only {
+                            MemoryCursor::with_entries_reversed(
+                                entries
+                                    .into_iter()
+                                    .map(|(k, pk, _)| (k, pk, None))
+                                    .collect(),
+                            )
+                        } else {
+                            MemoryCursor::with_entries_reversed(entries)
+                        }
+                    }
+                };
+
+                Ok(Box::new(cursor))
+            }
+            SourceRef::Index { store, index } => {
+                self.check_scope(store)?;
+
+                // Collect index entries in range
+                let mut entries: Vec<(Vec<u8>, Vec<u8>, Option<Vec<u8>>)> = Vec::new();
+
+                let state = self.storage_state.read();
+                for ((iid, idx_key, pk), _) in &state.index_entries {
+                    if *iid == index && range.contains(idx_key) {
+                        entries.push((idx_key.clone(), pk.clone(), None));
+                    }
+                }
+                drop(state);
+
+                // Sort by index key, then primary key
+                entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+                // Apply direction
+                let cursor = match dir {
+                    Direction::Next | Direction::NextUnique => MemoryCursor::with_entries(entries),
+                    Direction::Prev | Direction::PrevUnique => {
+                        MemoryCursor::with_entries_reversed(entries)
+                    }
+                };
+
+                Ok(Box::new(cursor))
+            }
+        }
     }
 
     fn key_gen_current(&self, store: StoreId) -> Result<f64, BackendError> {

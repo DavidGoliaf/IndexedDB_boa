@@ -52,4 +52,89 @@ impl EncodedRange {
             upper: Some((upper, upper_open)),
         }
     }
+
+    /// Checks if a key falls within this range.
+    pub fn contains(&self, key: &[u8]) -> bool {
+        // Check lower bound
+        if let Some((ref lower, open)) = self.lower {
+            match key.cmp(lower.as_slice()) {
+                std::cmp::Ordering::Less => return false,
+                std::cmp::Ordering::Equal if open => return false,
+                _ => {}
+            }
+        }
+
+        // Check upper bound
+        if let Some((ref upper, open)) = self.upper {
+            match key.cmp(upper.as_slice()) {
+                std::cmp::Ordering::Greater => return false,
+                std::cmp::Ordering::Equal if open => return false,
+                _ => {}
+            }
+        }
+
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_range_all() {
+        let range = EncodedRange::all();
+        assert!(range.contains(b"anything"));
+        assert!(range.contains(b""));
+    }
+
+    #[test]
+    fn test_range_only() {
+        let range = EncodedRange::only(b"key1".to_vec());
+        assert!(range.contains(b"key1"));
+        assert!(!range.contains(b"key0"));
+        assert!(!range.contains(b"key2"));
+    }
+
+    #[test]
+    fn test_range_lower_bound_closed() {
+        let range = EncodedRange::lower_bound(b"key1".to_vec(), false);
+        assert!(range.contains(b"key1"));
+        assert!(range.contains(b"key2"));
+        assert!(!range.contains(b"key0"));
+    }
+
+    #[test]
+    fn test_range_lower_bound_open() {
+        let range = EncodedRange::lower_bound(b"key1".to_vec(), true);
+        assert!(!range.contains(b"key1"));
+        assert!(range.contains(b"key2"));
+        assert!(!range.contains(b"key0"));
+    }
+
+    #[test]
+    fn test_range_upper_bound_closed() {
+        let range = EncodedRange::upper_bound(b"key1".to_vec(), false);
+        assert!(range.contains(b"key1"));
+        assert!(range.contains(b"key0"));
+        assert!(!range.contains(b"key2"));
+    }
+
+    #[test]
+    fn test_range_upper_bound_open() {
+        let range = EncodedRange::upper_bound(b"key1".to_vec(), true);
+        assert!(!range.contains(b"key1"));
+        assert!(range.contains(b"key0"));
+        assert!(!range.contains(b"key2"));
+    }
+
+    #[test]
+    fn test_range_bound() {
+        let range = EncodedRange::bound(b"a".to_vec(), false, b"z".to_vec(), false);
+        assert!(range.contains(b"a"));
+        assert!(range.contains(b"m"));
+        assert!(range.contains(b"z"));
+        assert!(!range.contains(b"A"));
+        assert!(!range.contains(b"zz"));
+    }
 }

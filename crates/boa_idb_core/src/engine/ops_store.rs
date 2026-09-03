@@ -103,10 +103,13 @@ pub fn clear(txn: &mut dyn BackendTxn, store_meta: &StoreMeta) -> Result<(), Idb
 }
 
 /// Determines the key for a put operation.
+///
+/// If the store has a keyPath and autoIncrement, and the key cannot be extracted,
+/// generates a new key and injects it into the value.
 fn determine_key(
     store_meta: &StoreMeta,
     keygen: &mut KeyGenerator,
-    value: &ScValue,
+    value: &mut ScValue,
     explicit_key: Option<&Key>,
 ) -> Result<Key, IdbError> {
     match (&store_meta.key_path, explicit_key) {
@@ -122,8 +125,12 @@ fn determine_key(
                     if store_meta.auto_increment {
                         let generated = keygen.generate()?;
                         let key = Key::Number(generated);
-                        // Inject key into value
-                        // Note: This requires mutable value, handled by caller
+                        // Inject key into value at the keyPath
+                        if let Err(e) = kp.inject(value, &key) {
+                            return Err(IdbError::Data(format!(
+                                "Failed to inject key into value: {e}"
+                            )));
+                        }
                         Ok(key)
                     } else {
                         Err(IdbError::Data(
@@ -225,10 +232,10 @@ mod tests {
             deleted: false,
         };
         let mut keygen = KeyGenerator::new(1.0);
-        let value = ScValue::Object(indexmap::IndexMap::new());
+        let mut value = ScValue::Object(indexmap::IndexMap::new());
 
         // Should fail because value doesn't have "id" field
-        let result = determine_key(&meta, &mut keygen, &value, None);
+        let result = determine_key(&meta, &mut keygen, &mut value, None);
         assert!(result.is_err());
     }
 
@@ -244,10 +251,10 @@ mod tests {
             deleted: false,
         };
         let mut keygen = KeyGenerator::new(1.0);
-        let value = ScValue::Object(indexmap::IndexMap::new());
+        let mut value = ScValue::Object(indexmap::IndexMap::new());
         let explicit = Key::Number(1.0);
 
-        let result = determine_key(&meta, &mut keygen, &value, Some(&explicit));
+        let result = determine_key(&meta, &mut keygen, &mut value, Some(&explicit));
         assert!(result.is_err());
     }
 
@@ -263,9 +270,9 @@ mod tests {
             deleted: false,
         };
         let mut keygen = KeyGenerator::new(1.0);
-        let value = ScValue::Object(indexmap::IndexMap::new());
+        let mut value = ScValue::Object(indexmap::IndexMap::new());
 
-        let key = determine_key(&meta, &mut keygen, &value, None).unwrap();
+        let key = determine_key(&meta, &mut keygen, &mut value, None).unwrap();
         assert_eq!(key, Key::Number(1.0));
     }
 

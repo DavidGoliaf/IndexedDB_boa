@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e2e4288f47c2f3c563ce6b0661e034c06e4cde6a11e324848026a7fd2fa033a1 # shrinks to ops = [Put { key: [], value: [], no_overwrite: false }, CommitAndRestart, Clear, Get { key: [] }]
