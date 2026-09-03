@@ -2,10 +2,34 @@
 name = "boa_idb"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "IndexedDB API 3.0 implementation for the Boa JavaScript engine"
 
 [dependencies]
 boa_idb_core = { path = "../boa_idb_core" }
+boa_idb_memory = { path = "../boa_idb_memory", optional = true }
+boa_engine = "0.22"
+boa_gc = "0.22"
+boa_runtime = { version = "0.22", optional = true }
+thiserror = { workspace = true }
+smallvec = { workspace = true }
+indexmap = { workspace = true }
+hashbrown = { workspace = true }
+parking_lot = "0.12"
+
+[dev-dependencies]
+boa_idb_memory = { path = "../boa_idb_memory" }
+proptest = { workspace = true }
+rstest = { workspace = true }
+
+[features]
+default = ["dom-shim", "memory"]
+dom-shim = []
+memory = ["dep:boa_idb_memory"]
+runtime-interop = ["dep:boa_runtime"]
 
 [lints]
 workspace = true
