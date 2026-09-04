@@ -48,6 +48,14 @@ That sits at the work-order soft limit; M6-B must stay a separate on-disk
 segments/compaction/MVCC/WPT delivery and must not grow this foundation further
 without a new work order.
 
+## Post-review durability fixes
+
+On tip after M6-A review: commit rolls back WAL on post-append failure;
+schema commits sync WAL before `meta.scf` even under Relaxed; open heals
+`meta.scf` from recovered state; `list_databases` applies WAL MetaReplace;
+`delete_database` holds `LOCK` across content removal; RO rejects
+`key_gen_set` / `index_*` (also in memory backend).
+
 ## Known gaps → M6-B
 
 - R8.3.3 compaction / immutable `seg/*.seg` not implemented.

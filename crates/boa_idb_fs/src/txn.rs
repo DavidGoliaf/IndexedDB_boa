@@ -1,6 +1,7 @@
 //! Filesystem-backed transaction with undo logs and WAL commit.
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -11,7 +12,7 @@ use boa_idb_core::key::range::EncodedRange;
 use boa_idb_core::proto::{Direction, Durability, IndexId, SourceRef, StoreId, TxnMode};
 use parking_lot::RwLock;
 
-use crate::atomic::append_and_maybe_sync;
+use crate::atomic::{append_and_maybe_sync, truncate_file};
 use crate::cursor::FsCursor;
 use crate::meta::{encode_meta, write_meta_file};
 use crate::state::{DbState, IndexKey, RecordKey};
@@ -333,6 +334,86 @@ impl FsTxn {
         }
 
         entries
+    }
+
+    fn build_commit_payload(&self) -> (Vec<WalOp>, DatabaseMeta, bool) {
+        let mut ops = Vec::new();
+        for (key, value) in &self.pending_records {
+            match value {
+                Some(val) => ops.push(WalOp::Put {
+                    store: key.0,
+                    key: key.1.clone(),
+                    value: val.clone(),
+                }),
+                None => ops.push(WalOp::Delete {
+                    store: key.0,
+                    key: key.1.clone(),
+                }),
+            }
+        }
+        for (key, exists) in &self.pending_index_entries {
+            if *exists {
+                ops.push(WalOp::IndexPut {
+                    index: key.0,
+                    idx_key: key.1.clone(),
+                    primary_key: key.2.clone(),
+                });
+            } else {
+                ops.push(WalOp::IndexDelete {
+                    index: key.0,
+                    idx_key: key.1.clone(),
+                    primary_key: key.2.clone(),
+                });
+            }
+        }
+        for (store, value) in &self.pending_key_generators {
+            ops.push(WalOp::KeyGenSet {
+                store: *store,
+                value_bits: value.to_bits(),
+            });
+        }
+
+        let mut meta = self.meta.clone();
+        for (store, value) in &self.pending_key_generators {
+            if let Some(s) = meta.stores.iter_mut().find(|s| s.id == *store) {
+                s.key_gen = *value;
+            }
+        }
+        let schema_dirty = self.schema_dirty || !self.pending_key_generators.is_empty();
+        if schema_dirty {
+            ops.push(WalOp::MetaReplace {
+                bytes: encode_meta(&meta),
+            });
+        }
+        (ops, meta, schema_dirty)
+    }
+
+    fn apply_pending_to_state(&self, meta: DatabaseMeta, txn_seq: u64, bump_seq: bool) {
+        let mut state = self.state.write();
+        if bump_seq {
+            state.next_txn_seq = txn_seq.saturating_add(1);
+        }
+        for (key, value) in &self.pending_records {
+            match value {
+                Some(val) => {
+                    state.records.insert(key.clone(), val.clone());
+                }
+                None => {
+                    state.records.remove(key);
+                }
+            }
+        }
+        for (key, exists) in &self.pending_index_entries {
+            if *exists {
+                state.index_entries.insert(key.clone(), ());
+            } else {
+                state.index_entries.remove(key);
+            }
+        }
+        for (store, value) in &self.pending_key_generators {
+            state.key_generators.insert(*store, *value);
+        }
+        state.meta = Some(meta);
     }
 }
 
@@ -854,6 +935,7 @@ impl BackendTxn for FsTxn {
     }
 
     fn key_gen_set(&mut self, store: StoreId, value: f64) -> Result<(), BackendError> {
+        self.check_readwrite()?;
         let old_val = self.key_gen_current(store)?;
 
         if let Some(ops) = self.undo_stack.last_mut() {
@@ -871,6 +953,7 @@ impl BackendTxn for FsTxn {
         primary_key: &[u8],
         unique: bool,
     ) -> Result<(), BackendError> {
+        self.check_readwrite()?;
         let map_key = (index, idx_key.to_vec(), primary_key.to_vec());
         let existed = self.index_entry_exists(&map_key);
 
@@ -903,6 +986,7 @@ impl BackendTxn for FsTxn {
         idx_key: &[u8],
         primary_key: &[u8],
     ) -> Result<(), BackendError> {
+        self.check_readwrite()?;
         let map_key = (index, idx_key.to_vec(), primary_key.to_vec());
         let old = self.pending_index_entries.get(&map_key).copied();
 
@@ -922,6 +1006,7 @@ impl BackendTxn for FsTxn {
         index: IndexId,
         primary_key: &[u8],
     ) -> Result<(), BackendError> {
+        self.check_readwrite()?;
         // Find all index entries for this primary key in this specific index
         let idx_keys = self.find_index_entries_by_primary(index, primary_key);
 
@@ -943,66 +1028,19 @@ impl BackendTxn for FsTxn {
     }
 
     fn commit(self: Box<Self>) -> Result<(), BackendError> {
+        // Readonly transactions never touch durable state.
+        if self.mode == TxnMode::ReadOnly {
+            return Ok(());
+        }
+
         let sync = self.wants_sync();
-        let mut ops = Vec::new();
-
-        for (key, value) in &self.pending_records {
-            match value {
-                Some(val) => ops.push(WalOp::Put {
-                    store: key.0,
-                    key: key.1.clone(),
-                    value: val.clone(),
-                }),
-                None => ops.push(WalOp::Delete {
-                    store: key.0,
-                    key: key.1.clone(),
-                }),
-            }
-        }
-        for (key, exists) in &self.pending_index_entries {
-            if *exists {
-                ops.push(WalOp::IndexPut {
-                    index: key.0,
-                    idx_key: key.1.clone(),
-                    primary_key: key.2.clone(),
-                });
-            } else {
-                ops.push(WalOp::IndexDelete {
-                    index: key.0,
-                    idx_key: key.1.clone(),
-                    primary_key: key.2.clone(),
-                });
-            }
-        }
-        for (store, value) in &self.pending_key_generators {
-            ops.push(WalOp::KeyGenSet {
-                store: *store,
-                value_bits: value.to_bits(),
-            });
-        }
-
-        // Sync key generators into meta.stores for persistence.
-        let mut meta = self.meta.clone();
-        for (store, value) in &self.pending_key_generators {
-            if let Some(s) = meta.stores.iter_mut().find(|s| s.id == *store) {
-                s.key_gen = *value;
-            }
-        }
-        let schema_dirty = self.schema_dirty || !self.pending_key_generators.is_empty();
-        if schema_dirty {
-            ops.push(WalOp::MetaReplace {
-                bytes: encode_meta(&meta),
-            });
-        }
-
+        let (ops, meta, schema_dirty) = self.build_commit_payload();
         let empty = ops.is_empty();
+        let wal_path = self.db_dir.join("wal").join("000001.log");
+        let wal_len_before = fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
+        let txn_seq = self.state.read().next_txn_seq;
+
         if !empty {
-            let txn_seq = {
-                let mut state = self.state.write();
-                let seq = state.next_txn_seq;
-                state.next_txn_seq = seq.saturating_add(1);
-                seq
-            };
             let frame = WalFrame {
                 txn_seq,
                 flags: FLAG_COMMIT,
@@ -1010,36 +1048,23 @@ impl BackendTxn for FsTxn {
             };
             let bytes = encode_frame(&frame)
                 .map_err(|e| BackendError::Internal(format!("encode WAL frame: {e}")))?;
-            let wal_path = self.db_dir.join("wal").join("000001.log");
-            append_and_maybe_sync(&wal_path, &bytes, sync, &self.hooks)?;
+            // Schema commits always sync the WAL before advancing meta.scf so a
+            // crash cannot leave newer meta with an older durable journal.
+            let wal_sync = sync || schema_dirty;
+            if let Err(err) = append_and_maybe_sync(&wal_path, &bytes, wal_sync, &self.hooks) {
+                let _ = truncate_file(&wal_path, wal_len_before);
+                return Err(err);
+            }
         }
 
         if schema_dirty {
-            write_meta_file(&self.db_dir, &meta, sync, &self.hooks)?;
+            if let Err(err) = write_meta_file(&self.db_dir, &meta, sync, &self.hooks) {
+                let _ = truncate_file(&wal_path, wal_len_before);
+                return Err(err);
+            }
         }
 
-        let mut state = self.state.write();
-        for (key, value) in &self.pending_records {
-            match value {
-                Some(val) => {
-                    state.records.insert(key.clone(), val.clone());
-                }
-                None => {
-                    state.records.remove(key);
-                }
-            }
-        }
-        for (key, exists) in &self.pending_index_entries {
-            if *exists {
-                state.index_entries.insert(key.clone(), ());
-            } else {
-                state.index_entries.remove(key);
-            }
-        }
-        for (store, value) in &self.pending_key_generators {
-            state.key_generators.insert(*store, *value);
-        }
-        state.meta = Some(meta);
+        self.apply_pending_to_state(meta, txn_seq, !empty);
         Ok(())
     }
 

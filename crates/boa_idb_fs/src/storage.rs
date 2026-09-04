@@ -1,14 +1,15 @@
 //! Storage root listing databases under a storage-key directory.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use boa_idb_core::backend::error::BackendError;
 use boa_idb_core::backend::traits::{Database, Storage};
 
 use crate::database::FsDatabase;
-use crate::meta::read_meta_file;
+use crate::lock::DbLock;
+use crate::meta::load_meta_with_wal;
 use crate::naming::database_dir_name;
 use crate::sync_hooks::{SyncHooks, io_to_backend};
 
@@ -55,7 +56,7 @@ impl Storage for FsStorage {
             if !path.is_dir() {
                 continue;
             }
-            if let Some(meta) = read_meta_file(&path)? {
+            if let Some(meta) = load_meta_with_wal(&path)? {
                 out.push((meta.name.to_string(), meta.version));
             }
         }
@@ -75,17 +76,14 @@ impl Storage for FsStorage {
     fn delete_database(&self, name: &str) -> Result<(), BackendError> {
         let dir = self.db_dir(name);
         if dir.exists() {
-            // Require lock so we do not delete under another open handle.
-            let lock = crate::lock::DbLock::try_acquire(&dir.join("LOCK"))?;
-            drop(lock);
-            fs::remove_dir_all(&dir).map_err(|e| io_to_backend(e, "delete_database"))?;
+            delete_database_dir(&dir)?;
         }
         let _ = self.storage_key;
         Ok(())
     }
 
     fn usage_bytes(&self) -> Result<u64, BackendError> {
-        fn walk(path: &std::path::Path) -> u64 {
+        fn walk(path: &Path) -> u64 {
             let mut total = 0u64;
             let Ok(entries) = fs::read_dir(path) else {
                 return 0;
@@ -101,5 +99,37 @@ impl Storage for FsStorage {
             total
         }
         Ok(walk(&self.root))
+    }
+}
+
+/// Deletes a database directory while holding `LOCK` across content removal.
+///
+/// On Windows an open `LOCK` handle prevents removing the directory itself, so
+/// contents (except `LOCK`) are removed under the lock, then the lock is
+/// dropped and the remaining files/dir are removed.
+fn delete_database_dir(dir: &Path) -> Result<(), BackendError> {
+    let lock = DbLock::try_acquire(&dir.join("LOCK"))?;
+    let entries = fs::read_dir(dir).map_err(|e| io_to_backend(e, "delete read_dir"))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| io_to_backend(e, "delete entry"))?;
+        if entry.file_name() == *"LOCK" {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            fs::remove_dir_all(&path).map_err(|e| io_to_backend(e, "delete nested dir"))?;
+        } else {
+            fs::remove_file(&path).map_err(|e| io_to_backend(e, "delete file"))?;
+        }
+    }
+    drop(lock);
+    let lock_path = dir.join("LOCK");
+    if lock_path.exists() {
+        fs::remove_file(&lock_path).map_err(|e| io_to_backend(e, "delete LOCK"))?;
+    }
+    match fs::remove_dir_all(dir) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(io_to_backend(err, "delete_database")),
     }
 }

@@ -793,6 +793,7 @@ impl BackendTxn for MemoryTxn {
     }
 
     fn key_gen_set(&mut self, store: StoreId, value: f64) -> Result<(), BackendError> {
+        self.check_readwrite()?;
         let old_val = self.key_gen_current(store)?;
 
         if let Some(ops) = self.undo_stack.last_mut() {
@@ -810,6 +811,7 @@ impl BackendTxn for MemoryTxn {
         primary_key: &[u8],
         unique: bool,
     ) -> Result<(), BackendError> {
+        self.check_readwrite()?;
         let map_key = (index, idx_key.to_vec(), primary_key.to_vec());
         let existed = self.index_entry_exists(&map_key);
 
@@ -842,6 +844,7 @@ impl BackendTxn for MemoryTxn {
         idx_key: &[u8],
         primary_key: &[u8],
     ) -> Result<(), BackendError> {
+        self.check_readwrite()?;
         let map_key = (index, idx_key.to_vec(), primary_key.to_vec());
         let old = self.pending_index_entries.get(&map_key).copied();
 
@@ -861,6 +864,7 @@ impl BackendTxn for MemoryTxn {
         index: IndexId,
         primary_key: &[u8],
     ) -> Result<(), BackendError> {
+        self.check_readwrite()?;
         // Find all index entries for this primary key in this specific index
         let idx_keys = self.find_index_entries_by_primary(index, primary_key);
 

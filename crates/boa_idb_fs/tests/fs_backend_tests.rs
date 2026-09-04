@@ -10,11 +10,14 @@ use boa_idb_core::key::range::EncodedRange;
 use boa_idb_core::key::utf16::Utf16String;
 use boa_idb_core::proto::{Direction, Durability, SourceRef, StorageKey, TxnMode};
 use boa_idb_fs::{
-    CountingSyncHooks, FLAG_COMMIT, FsBackendFactory, WalFrame, WalOp, decode_frame, encode_frame,
-    recover_committed_frames,
+    CountingSyncHooks, FLAG_COMMIT, FsBackendFactory, OsSyncHooks, SyncHooks, WalFrame, WalOp,
+    decode_frame, encode_frame, recover_committed_frames,
 };
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write};
+use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tempfile::tempdir;
 
 fn factory(root: &std::path::Path) -> FsBackendFactory {
@@ -424,4 +427,239 @@ fn find_wal(root: &std::path::Path) -> std::path::PathBuf {
         }
     }
     panic!("wal not found under {}", root.display());
+}
+
+fn find_db_dir(root: &std::path::Path) -> std::path::PathBuf {
+    for sk in fs::read_dir(root).unwrap().flatten() {
+        for db in fs::read_dir(sk.path()).unwrap().flatten() {
+            if db.path().join("CURRENT").exists() || db.path().join("meta.scf").exists() {
+                return db.path();
+            }
+        }
+    }
+    panic!("db dir not found under {}", root.display());
+}
+
+/// Fails the next `sync_file` once when armed.
+struct FailNextFileSync {
+    armed: AtomicBool,
+    inner: OsSyncHooks,
+}
+
+impl FailNextFileSync {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            armed: AtomicBool::new(false),
+            inner: OsSyncHooks,
+        })
+    }
+
+    fn arm(&self) {
+        self.armed.store(true, Ordering::SeqCst);
+    }
+}
+
+impl SyncHooks for FailNextFileSync {
+    fn sync_file(&self, file: &File) -> io::Result<()> {
+        if self.armed.swap(false, Ordering::SeqCst) {
+            return Err(io::Error::other("injected sync failure"));
+        }
+        self.inner.sync_file(file)
+    }
+
+    fn sync_dir(&self, dir: &Path) -> io::Result<()> {
+        self.inner.sync_dir(dir)
+    }
+}
+
+#[test]
+fn failed_strict_commit_does_not_persist_wal_frame() {
+    let dir = tempdir().unwrap();
+    let hooks = FailNextFileSync::new();
+    let factory = FsBackendFactory::new(dir.path()).with_sync_hooks(hooks.clone());
+    let key = StorageKey::new("rollback");
+    let storage = factory.open_storage(&key).unwrap();
+    let store = {
+        let mut db = storage.open_database("db").unwrap();
+        let mut txn = db
+            .begin(TxnMode::VersionChange, &[], Durability::Strict)
+            .unwrap();
+        let store = txn
+            .create_store(&StoreSpec {
+                name: Utf16String::from_str("s"),
+                key_path: KeyPath::Empty,
+                auto_increment: false,
+            })
+            .unwrap();
+        txn.commit().unwrap();
+        store
+    };
+
+    {
+        let mut db = storage.open_database("db").unwrap();
+        hooks.arm();
+        let mut txn = db
+            .begin(TxnMode::ReadWrite, &[store], Durability::Strict)
+            .unwrap();
+        txn.begin_request().unwrap();
+        txn.put(store, b"ghost", b"no", false).unwrap();
+        txn.commit_request().unwrap();
+        assert!(txn.commit().is_err());
+    }
+
+    let storage = factory.open_storage(&key).unwrap();
+    let mut db = storage.open_database("db").unwrap();
+    let mut txn = db
+        .begin(TxnMode::ReadOnly, &[store], Durability::Relaxed)
+        .unwrap();
+    assert_eq!(txn.get(store, b"ghost").unwrap(), None);
+}
+
+#[test]
+fn relaxed_schema_commit_syncs_wal_before_meta() {
+    let dir = tempdir().unwrap();
+    let hooks = CountingSyncHooks::new();
+    let factory = FsBackendFactory::new(dir.path()).with_sync_hooks(hooks.clone());
+    let key = StorageKey::new("schema-sync");
+    let storage = factory.open_storage(&key).unwrap();
+    // Initial open already synced; measure create_store commit under Relaxed.
+    let before = hooks.file_sync_count();
+    {
+        let mut db = storage.open_database("db").unwrap();
+        let mut txn = db
+            .begin(TxnMode::VersionChange, &[], Durability::Relaxed)
+            .unwrap();
+        txn.create_store(&StoreSpec {
+            name: Utf16String::from_str("s"),
+            key_path: KeyPath::Empty,
+            auto_increment: false,
+        })
+        .unwrap();
+        txn.commit().unwrap();
+    }
+    assert!(
+        hooks.file_sync_count() > before,
+        "schema commit must sync WAL even under Relaxed"
+    );
+}
+
+#[test]
+fn list_databases_reads_meta_from_wal_when_meta_file_missing() {
+    let dir = tempdir().unwrap();
+    let key = StorageKey::new("list-wal");
+    let storage = factory(dir.path()).open_storage(&key).unwrap();
+    {
+        let mut db = storage.open_database("listed").unwrap();
+        let mut txn = db
+            .begin(TxnMode::VersionChange, &[], Durability::Strict)
+            .unwrap();
+        txn.set_version(7).unwrap();
+        txn.create_store(&StoreSpec {
+            name: Utf16String::from_str("s"),
+            key_path: KeyPath::Empty,
+            auto_increment: false,
+        })
+        .unwrap();
+        txn.commit().unwrap();
+    }
+    let db_dir = find_db_dir(dir.path());
+    fs::remove_file(db_dir.join("meta.scf")).unwrap();
+
+    let listed = factory(dir.path())
+        .open_storage(&key)
+        .unwrap()
+        .list_databases()
+        .unwrap();
+    assert!(
+        listed.iter().any(|(n, v)| n == "listed" && *v == 7),
+        "expected listed@7 from WAL, got {listed:?}"
+    );
+}
+
+#[test]
+fn half_init_without_meta_is_healed_on_open() {
+    let dir = tempdir().unwrap();
+    let key = StorageKey::new("half");
+    let storage = factory(dir.path()).open_storage(&key).unwrap();
+    {
+        let _db = storage.open_database("healme").unwrap();
+    }
+    let db_dir = find_db_dir(dir.path());
+    fs::remove_file(db_dir.join("meta.scf")).unwrap();
+    assert!(!db_dir.join("meta.scf").exists());
+
+    let storage = factory(dir.path()).open_storage(&key).unwrap();
+    let db = storage.open_database("healme").unwrap();
+    assert_eq!(db.metadata().name.to_string(), "healme");
+    drop(db);
+    assert!(db_dir.join("meta.scf").exists());
+}
+
+#[test]
+fn delete_database_fails_while_open_and_removes_after_close() {
+    let dir = tempdir().unwrap();
+    let key = StorageKey::new("del");
+    let storage = factory(dir.path()).open_storage(&key).unwrap();
+    let db = storage.open_database("db").unwrap();
+    let err = factory(dir.path())
+        .open_storage(&key)
+        .unwrap()
+        .delete_database("db")
+        .unwrap_err();
+    assert!(matches!(err, BackendError::Locked));
+    drop(db);
+    factory(dir.path())
+        .open_storage(&key)
+        .unwrap()
+        .delete_database("db")
+        .unwrap();
+    assert!(
+        factory(dir.path())
+            .open_storage(&key)
+            .unwrap()
+            .list_databases()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn readonly_rejects_key_gen_and_index_writes() {
+    let dir = tempdir().unwrap();
+    let key = StorageKey::new("ro");
+    let storage = factory(dir.path()).open_storage(&key).unwrap();
+    let (store, index) = {
+        let mut db = storage.open_database("db").unwrap();
+        let mut txn = db
+            .begin(TxnMode::VersionChange, &[], Durability::Strict)
+            .unwrap();
+        let store = txn
+            .create_store(&StoreSpec {
+                name: Utf16String::from_str("s"),
+                key_path: KeyPath::Empty,
+                auto_increment: false,
+            })
+            .unwrap();
+        let index = txn
+            .create_index(
+                store,
+                &IndexSpec {
+                    name: Utf16String::from_str("i"),
+                    key_path: KeyPath::Empty,
+                    unique: false,
+                    multi_entry: false,
+                },
+            )
+            .unwrap();
+        txn.commit().unwrap();
+        (store, index)
+    };
+    let mut db = storage.open_database("db").unwrap();
+    let mut txn = db
+        .begin(TxnMode::ReadOnly, &[store], Durability::Relaxed)
+        .unwrap();
+    assert!(txn.key_gen_set(store, 9.0).is_err());
+    assert!(txn.index_put(index, b"a", b"pk", false).is_err());
+    assert!(txn.index_delete(index, b"a", b"pk").is_err());
+    assert!(txn.index_delete_by_primary(index, b"pk").is_err());
 }

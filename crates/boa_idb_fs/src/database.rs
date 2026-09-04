@@ -43,11 +43,13 @@ impl FsDatabase {
         let lock = DbLock::try_acquire(&db_dir.join("LOCK"))?;
 
         let current = db_dir.join("CURRENT");
+        let wal_path = db_dir.join("wal").join("000001.log");
         if !current.exists() {
-            write_manifest(&db_dir, 1, b"boa_idb_fs m6a\n", true, &hooks)?;
+            // CURRENT is published last so a crash cannot leave CURRENT without meta.
             let meta = empty_meta(name);
+            ensure_file(&wal_path)?;
             write_meta_file(&db_dir, &meta, true, &hooks)?;
-            ensure_file(&db_dir.join("wal").join("000001.log"))?;
+            write_manifest(&db_dir, 1, b"boa_idb_fs m6a\n", true, &hooks)?;
         }
 
         let mut state = DbState {
@@ -56,6 +58,7 @@ impl FsDatabase {
             next_txn_seq: 1,
             ..DbState::default()
         };
+        // Half-init heal: CURRENT/WAL without meta.scf (legacy crash window).
         if state.meta.is_none() {
             state.meta = Some(empty_meta(name));
         }
@@ -65,7 +68,6 @@ impl FsDatabase {
             }
         }
 
-        let wal_path = db_dir.join("wal").join("000001.log");
         ensure_file(&wal_path)?;
         let wal_bytes = fs::read(&wal_path).map_err(|e| io_to_backend(e, "read wal"))?;
         let recovered = recover_committed_frames(&wal_bytes);
@@ -78,6 +80,12 @@ impl FsDatabase {
             .meta
             .clone()
             .ok_or_else(|| BackendError::Internal("database metadata missing after open".into()))?;
+
+        // Keep meta.scf aligned with recovered state so list_databases matches open.
+        let disk_meta = read_meta_file(&db_dir)?;
+        if disk_meta.as_ref() != Some(&meta) {
+            write_meta_file(&db_dir, &meta, true, &hooks)?;
+        }
 
         Ok(Self {
             meta,

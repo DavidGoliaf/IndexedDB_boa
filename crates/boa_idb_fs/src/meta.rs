@@ -118,6 +118,30 @@ pub fn read_meta_file(db_dir: &Path) -> Result<Option<DatabaseMeta>, BackendErro
     Ok(Some(decode_meta(&bytes)?))
 }
 
+/// Resolves database metadata from `meta.scf` plus any committed WAL frames.
+///
+/// Used by `list_databases` so a crash window where WAL advanced ahead of
+/// `meta.scf` still reports the recovered name/version.
+pub fn load_meta_with_wal(db_dir: &Path) -> Result<Option<DatabaseMeta>, BackendError> {
+    let has_current = db_dir.join("CURRENT").exists();
+    let has_meta = db_dir.join("meta.scf").exists();
+    if !has_current && !has_meta {
+        return Ok(None);
+    }
+
+    let mut state = crate::state::DbState {
+        meta: read_meta_file(db_dir)?,
+        ..crate::state::DbState::default()
+    };
+    let wal_path = db_dir.join("wal").join("000001.log");
+    if wal_path.exists() {
+        let bytes = fs::read(&wal_path).map_err(|e| io_to_backend(e, "read wal for list"))?;
+        let recovered = crate::wal::recover_committed_frames(&bytes);
+        crate::apply::apply_frames(&mut state, &recovered.frames)?;
+    }
+    Ok(state.meta)
+}
+
 fn encode_store(out: &mut Vec<u8>, store: &StoreMeta) {
     out.extend_from_slice(&store.id.to_le_bytes());
     write_utf16(out, &store.name);
