@@ -8,20 +8,20 @@
 | Требования | Реализация | Проверка | Статус |
 |---|---|---|---|
 | R2.1–R2.4 | Workspace, safe Rust, toolchain | `cargo check --workspace`, `cargo clippy --workspace --all-targets --all-features -- -D warnings` | PASS |
-| R5.0.1–R5.0.5, R5.11.1 | `boa_idb::convert`, DOM shim | `crates/boa_idb/tests/integration_tests.rs`, `basic_idb_flow_tests.rs` | PASS |
+| R5.0.1–R5.0.5, R5.11.1 | `boa_idb::convert`, DOM shim; Rust-side platform-clone identity registry | `integration_tests.rs`, `basic_idb_flow_tests.rs`, `platform_clone_hardening_tests.rs`, `structured-clone.any.js` | PASS |
 | R6.1.1–R6.6.3 | `boa_idb_core::key`, `clone` | `crates/boa_idb_core/tests/key_tests.rs`, `key_proptests.rs`, `keypath_tests.rs`, `scf_tests.rs`, `scf_proptests.rs` | PASS |
 | R7.1.1–R7.4.4 | Registry, open queue, scheduler, cursor engine | `open_queue_tests.rs`, `scheduler_tests.rs`, `engine_ops_tests.rs` | PASS |
 | R8.1.1–R8.5.3 | Memory and SQLite backends, including strict durability and open-time blob orphan recovery | `crates/boa_idb_memory/tests/*.rs`, `crates/boa_idb_sqlite/tests/*.rs`, `sqlite_blob_gc_tests.rs`, `txn::tests::strict_commit_uses_full_sync_and_restores_pool_connection` | PASS |
 | R9.1.1–R9.4.2 | Runtime pump, transaction lifecycle, request dispatch | `crates/boa_idb/tests/basic_idb_flow_tests.rs`, `appendix_d_acceptance_tests.rs`, `transaction-lifetime-empty.any.js` | PASS |
 | R10.2.1–R10.2.3 | Error mapping and DOMException | `integration_tests.rs`, `key-conversion-exceptions.any.js` | PASS |
-| R11.1–R11.7 | Security, privacy, quota and resource limits | `limits.rs` tests, backend integration tests | PASS |
+| R11.1–R11.7 | Security, privacy, quota and resource limits; sealed platform-clone brand | `limits.rs` tests, backend integration tests, `platform_clone_hardening_tests.rs` | PASS |
 | R13.3.1 | Autonomous WPT runner and Boa environment | `cargo run -p boa_idb_wpt --bin boa-idb-wpt -- --backend memory --summary` | PASS |
 | R13.3.2 | WPT conformance threshold | Full memory and SQLite runs: 482/482 PASS (100.0%), 0 FAIL, 0 TIMEOUT, 0 NOTRUN | PASS |
 | R13.3.3 | Priority WPT subset and deterministic expectations | Full memory and SQLite runs pass; strict snapshot checks report 482 matched and 0 unexpected | PASS |
 | R13.4.1–R13.4.2 | Backend differential behavior | `differential_model_tests.rs`, backend test suites | PASS |
 | R13.5.1–R13.5.2 | Ordering and concurrency | `scheduler_tests.rs`, `sqlite_concurrency_tests.rs` | PASS |
 | R13.6.1–R13.6.2 | GC/resource lifecycle | WPT isolated-context runner and backend cleanup tests | PASS |
-| R14.1–R14.6 | Documentation, build and delivery | `cargo fmt`, `cargo doc`, this matrix, crate READMEs | PASS |
+| R14.1–R14.6 | Documentation, build and delivery; license allowlist hygiene | `cargo fmt`, `cargo doc`, `cargo deny check`, this matrix, crate READMEs, `M6-handoff.md` | PASS |
 
 ## Requirement ID coverage
 
