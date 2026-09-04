@@ -247,19 +247,21 @@ fn install_js_polyfills(context: &mut Context) -> JsResult<()> {
         // plain-data behavior is implemented. Exotic clone semantics (real
         // Blob bytes, geometry methods) are out of scope and covered by
         // expectations, not by these stubs.
+        //
+        // Identity for structured clone is recorded in the Rust-side registry
+        // via __boa_register_platform_clone (sealed after bootstrap). No
+        // forgeable JS brand property is installed on instances.
         (function() {
-            var __boaPlatformBrand = globalThis.__boa_platform_clone_brand;
-            function __boaBrand(target) {
-                if (__boaPlatformBrand) {
-                    Object.defineProperty(target, __boaPlatformBrand, {
-                        value: true, enumerable: false, configurable: false, writable: false
-                    });
+            var __boaRegister = globalThis.__boa_register_platform_clone;
+            function __boaBrand(target, kind) {
+                if (typeof __boaRegister === 'function') {
+                    __boaRegister(target, kind);
                 }
             }
             if (typeof globalThis.DOMPointReadOnly === 'undefined') {
                 globalThis.DOMPointReadOnly = class DOMPointReadOnly {
                     constructor(x = 0, y = 0, z = 0, w = 1) {
-                        __boaBrand(this);
+                        __boaBrand(this, 'DOMPointReadOnly');
                         this.x = +x; this.y = +y; this.z = +z; this.w = +w;
                     }
                     static fromPoint(p) {
@@ -270,13 +272,13 @@ fn install_js_polyfills(context: &mut Context) -> JsResult<()> {
             }
             if (typeof globalThis.DOMPoint === 'undefined') {
                 globalThis.DOMPoint = class DOMPoint extends globalThis.DOMPointReadOnly {
-                    constructor(...args) { super(...args); __boaBrand(this); }
+                    constructor(...args) { super(...args); __boaBrand(this, 'DOMPoint'); }
                 };
             }
             if (typeof globalThis.DOMRectReadOnly === 'undefined') {
                 globalThis.DOMRectReadOnly = class DOMRectReadOnly {
                     constructor(x = 0, y = 0, width = 0, height = 0) {
-                        __boaBrand(this);
+                        __boaBrand(this, 'DOMRectReadOnly');
                         this.x = +x; this.y = +y;
                         this.width = +width; this.height = +height;
                     }
@@ -294,13 +296,13 @@ fn install_js_polyfills(context: &mut Context) -> JsResult<()> {
             }
             if (typeof globalThis.DOMRect === 'undefined') {
                 globalThis.DOMRect = class DOMRect extends globalThis.DOMRectReadOnly {
-                    constructor(...args) { super(...args); __boaBrand(this); }
+                    constructor(...args) { super(...args); __boaBrand(this, 'DOMRect'); }
                 };
             }
             if (typeof globalThis.DOMMatrixReadOnly === 'undefined') {
                 globalThis.DOMMatrixReadOnly = class DOMMatrixReadOnly {
                     constructor(init) {
-                        __boaBrand(this);
+                        __boaBrand(this, 'DOMMatrixReadOnly');
                         this.m11 = 1; this.m12 = 0; this.m13 = 0; this.m14 = 0;
                         this.m21 = 0; this.m22 = 1; this.m23 = 0; this.m24 = 0;
                         this.m31 = 0; this.m32 = 0; this.m33 = 1; this.m34 = 0;
@@ -332,13 +334,13 @@ fn install_js_polyfills(context: &mut Context) -> JsResult<()> {
             }
             if (typeof globalThis.DOMMatrix === 'undefined') {
                 globalThis.DOMMatrix = class DOMMatrix extends globalThis.DOMMatrixReadOnly {
-                    constructor(...args) { super(...args); __boaBrand(this); }
+                    constructor(...args) { super(...args); __boaBrand(this, 'DOMMatrix'); }
                 };
             }
             if (typeof globalThis.ImageData === 'undefined') {
                 globalThis.ImageData = class ImageData {
                     constructor(width, height) {
-                        __boaBrand(this);
+                        __boaBrand(this, 'ImageData');
                         this.width = width | 0; this.height = height | 0;
                         this.data = new Uint8ClampedArray(this.width * this.height * 4);
                     }
@@ -354,7 +356,7 @@ fn install_js_polyfills(context: &mut Context) -> JsResult<()> {
             if (typeof globalThis.Blob === 'undefined') {
                 globalThis.Blob = class Blob {
                     constructor(parts = [], options = {}) {
-                        __boaBrand(this);
+                        __boaBrand(this, 'Blob');
                         this.__parts = Array.isArray(parts) ? parts.slice() : [parts];
                         this.type = String((options && options.type) || '').toLowerCase();
                     }
@@ -373,7 +375,7 @@ fn install_js_polyfills(context: &mut Context) -> JsResult<()> {
                 globalThis.File = class File extends globalThis.Blob {
                     constructor(parts = [], name = '', options = {}) {
                         super(parts, options);
-                        __boaBrand(this);
+                        __boaBrand(this, 'File');
                         this.name = String(name);
                         this.lastModified = options && options.lastModified !== undefined
                             ? +options.lastModified : Date.now();
@@ -425,12 +427,10 @@ fn install_message_channel(context: &mut Context) -> JsResult<()> {
     )?;
     context.eval(boa_engine::Source::from_bytes(
         r"
-        var __boaPlatformBrand = globalThis.__boa_platform_clone_brand;
+        var __boaRegister = globalThis.__boa_register_platform_clone;
         globalThis.MessageChannel = function() {
-                if (__boaPlatformBrand) {
-                    Object.defineProperty(this, __boaPlatformBrand, {
-                        value: true, enumerable: false, configurable: false, writable: false
-                    });
+                if (typeof __boaRegister === 'function') {
+                    __boaRegister(this, 'MessageChannel');
                 }
                 function makePort() {
                     var port = {
@@ -442,19 +442,17 @@ fn install_message_channel(context: &mut Context) -> JsResult<()> {
                         removeEventListener: function() {},
                         dispatchEvent: function() { return true; }
                     };
-                    if (__boaPlatformBrand) {
-                        Object.defineProperty(port, __boaPlatformBrand, {
-                            value: true, enumerable: false, configurable: false, writable: false
-                        });
+                    if (typeof __boaRegister === 'function') {
+                        __boaRegister(port, 'MessagePort');
                     }
                     return port;
                 }
                 this.port1 = makePort();
                 this.port2 = makePort();
         };
-        delete globalThis.__boa_platform_clone_brand;
         ",
     ))?;
+    boa_idb::convert::value::seal_platform_clone_registry(context)?;
     Ok(())
 }
 
@@ -571,7 +569,7 @@ pub fn prepare(backend: Backend, storage_dir: &Path) -> JsResult<PreparedTest> {
 
     install_timers(&mut context)?;
 
-    boa_idb::convert::value::install_platform_clone_brand(&mut context)?;
+    boa_idb::convert::value::install_platform_clone_registry(&mut context)?;
 
     let state = Arc::new(Mutex::new(HarnessState::default()));
     install_js_polyfills(&mut context)?;

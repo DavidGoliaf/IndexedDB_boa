@@ -4,9 +4,9 @@
 //! support for Map, Set, Error, TypedArray, DataView, and boxed primitives.
 //! See BOA_022_INCOMPATIBILITIES.md §1, §2, §7, §8, §9, §14.
 
+use boa_engine::native_function::NativeFunction;
 use boa_engine::object::builtins::{JsArray, JsArrayBuffer, JsDate, JsTypedArray};
-use boa_engine::property::PropertyKey;
-use boa_engine::{Context, JsNativeError, JsObject, JsResult, JsSymbol, JsValue, js_string};
+use boa_engine::{Context, JsNativeError, JsObject, JsResult, JsValue, js_string};
 use boa_idb_core::clone::scvalue::{ScErrorKind, ScErrorObject, ScTypedArrayKind, ScValue};
 use boa_idb_core::key::utf16::Utf16String;
 use indexmap::IndexMap;
@@ -21,27 +21,158 @@ const MAX_CLONE_DEPTH: usize = 512;
 /// It is removed again during deserialization and is never exposed to JS.
 const PLATFORM_CLONE_MARKER: &str = "\u{0}boa-platform-clone-type";
 
-/// Realm-local, non-forgeable brand used by the WPT platform-object shims.
+/// Temporary global name for the platform-clone registrar. Deleted after the
+/// WPT shim constructors capture it in their closures.
+pub const PLATFORM_CLONE_REGISTER_GLOBAL: &str = "__boa_register_platform_clone";
+
+/// Cloneable WPT platform shim type names preserved across SCF round-trips.
+const CLONEABLE_PLATFORM_TYPES: &[&str] = &[
+    "DOMMatrix",
+    "DOMMatrixReadOnly",
+    "DOMPoint",
+    "DOMPointReadOnly",
+    "DOMRect",
+    "DOMRectReadOnly",
+    "ImageData",
+    "Blob",
+    "File",
+];
+
+/// Non-serializable WPT platform shim type names.
+const REJECTED_PLATFORM_TYPES: &[&str] = &["MessageChannel", "MessagePort"];
+
+/// Realm-local identity registry for authentic WPT platform-object shims.
+///
+/// Membership is granted only through [`install_platform_clone_registry`]'s
+/// native registrar (sealed after bootstrap). Checks use method callables
+/// captured at install time so later prototype poisoning cannot forge brands.
 #[derive(Clone)]
-pub struct PlatformCloneBrand {
-    /// Private symbol installed on shim instances.
-    pub symbol: JsSymbol,
+pub struct PlatformCloneRegistry {
+    /// `WeakMap` from authentic cloneable shim instance → type name.
+    cloneable_map: JsObject,
+    /// `WeakSet` of authentic non-serializable shim instances.
+    rejected_set: JsObject,
+    /// Original `WeakMap.prototype.get`.
+    map_get: JsObject,
+    /// Original `WeakMap.prototype.set`.
+    map_set: JsObject,
+    /// Original `WeakSet.prototype.add`.
+    set_add: JsObject,
+    /// Original `WeakSet.prototype.has`.
+    set_has: JsObject,
 }
 
-/// Installs the private structured-clone brand for the WPT realm.
-pub fn install_platform_clone_brand(context: &mut Context) -> JsResult<()> {
-    let symbol = JsSymbol::new(Some(js_string!("boa platform clone brand")))
-        .ok_or_else(|| JsNativeError::range().with_message("unable to allocate platform brand"))?;
-    context.insert_data(PlatformCloneBrand {
-        symbol: symbol.clone(),
+/// Installs the Rust-side platform-clone identity registry and a temporary
+/// native registrar on `globalThis`.
+///
+/// Call [`seal_platform_clone_registry`] after shim constructors have captured
+/// the registrar so user script cannot brand forged objects.
+pub fn install_platform_clone_registry(context: &mut Context) -> JsResult<()> {
+    let weak_map_ctor = context.intrinsics().constructors().weak_map().constructor();
+    let weak_set_ctor = context.intrinsics().constructors().weak_set().constructor();
+    let weak_map_proto = context.intrinsics().constructors().weak_map().prototype();
+    let weak_set_proto = context.intrinsics().constructors().weak_set().prototype();
+
+    let cloneable_map = weak_map_ctor.construct(&[], None, context)?;
+    let rejected_set = weak_set_ctor.construct(&[], None, context)?;
+
+    let map_get = weak_map_proto
+        .get(js_string!("get"), context)?
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("WeakMap.prototype.get missing"))?
+        .clone();
+    let map_set = weak_map_proto
+        .get(js_string!("set"), context)?
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("WeakMap.prototype.set missing"))?
+        .clone();
+    let set_add = weak_set_proto
+        .get(js_string!("add"), context)?
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("WeakSet.prototype.add missing"))?
+        .clone();
+    let set_has = weak_set_proto
+        .get(js_string!("has"), context)?
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("WeakSet.prototype.has missing"))?
+        .clone();
+
+    context.insert_data(PlatformCloneRegistry {
+        cloneable_map,
+        rejected_set,
+        map_get,
+        map_set,
+        set_add,
+        set_has,
     });
+
+    let register = NativeFunction::from_fn_ptr(|_this, args, ctx| {
+        let obj = args.first().and_then(JsValue::as_object).ok_or_else(|| {
+            JsNativeError::typ().with_message("platform clone registrar expects an object")
+        })?;
+        let kind = args
+            .get(1)
+            .and_then(JsValue::as_string)
+            .ok_or_else(|| {
+                JsNativeError::typ().with_message("platform clone registrar expects a type name")
+            })?
+            .to_std_string_escaped();
+        register_platform_clone_object(&obj, &kind, ctx)?;
+        Ok(JsValue::undefined())
+    });
+    let realm = context.realm().clone();
     context.global_object().set(
-        js_string!("__boa_platform_clone_brand"),
-        JsValue::from(symbol),
+        js_string!(PLATFORM_CLONE_REGISTER_GLOBAL),
+        JsValue::from(register.to_js_function(&realm)),
         false,
         context,
     )?;
     Ok(())
+}
+
+/// Removes the temporary platform-clone registrar from `globalThis`.
+pub fn seal_platform_clone_registry(context: &mut Context) -> JsResult<()> {
+    let _ = context
+        .global_object()
+        .delete_property_or_throw(js_string!(PLATFORM_CLONE_REGISTER_GLOBAL), context)?;
+    Ok(())
+}
+
+fn register_platform_clone_object(
+    obj: &JsObject,
+    kind: &str,
+    context: &mut Context,
+) -> JsResult<()> {
+    let Some(registry) = context.get_data::<PlatformCloneRegistry>().cloned() else {
+        return Err(JsNativeError::typ()
+            .with_message("platform clone registry is not installed")
+            .into());
+    };
+    if CLONEABLE_PLATFORM_TYPES.contains(&kind) {
+        let set = JsValue::from(registry.map_set.clone())
+            .as_callable()
+            .ok_or_else(|| JsNativeError::typ().with_message("WeakMap.set is not callable"))?;
+        set.call(
+            &JsValue::from(registry.cloneable_map.clone()),
+            &[JsValue::from(obj.clone()), JsValue::from(js_string!(kind))],
+            context,
+        )?;
+        return Ok(());
+    }
+    if REJECTED_PLATFORM_TYPES.contains(&kind) {
+        let add = JsValue::from(registry.set_add.clone())
+            .as_callable()
+            .ok_or_else(|| JsNativeError::typ().with_message("WeakSet.add is not callable"))?;
+        add.call(
+            &JsValue::from(registry.rejected_set.clone()),
+            &[JsValue::from(obj.clone())],
+            context,
+        )?;
+        return Ok(());
+    }
+    Err(JsNativeError::typ()
+        .with_message(format!("unknown platform clone type: {kind}"))
+        .into())
 }
 
 /// Constructs `new Global[name](...args)` via `Reflect.construct`.
@@ -251,57 +382,51 @@ fn serialize_object(
 
 /// Identifies platform objects that structured clone explicitly rejects.
 fn non_serializable_platform_object(obj: &JsObject, context: &mut Context) -> bool {
-    ["Event", "MessageChannel"]
-        .iter()
-        .any(|name| is_instance_of_global(obj, name, context))
-        || (has_platform_brand(obj, context)
-            && obj
-                .get(js_string!("postMessage"), context)
-                .ok()
-                .is_some_and(|value| value.as_callable().is_some()))
+    // Native DOM `Event` carries unforgeable JsData; WPT MessageChannel /
+    // MessagePort shims are tracked in the sealed Rust identity registry.
+    // Prototype or constructor-name forgery alone must not reject clones.
+    obj.downcast_ref::<crate::dom::event::EventDataHelper>()
+        .is_some()
+        || is_rejected_platform_object(obj, context)
 }
 
 /// Returns the constructor name for the platform shims supported by the WPT
 /// environment. Native ECMAScript objects deliberately remain plain values.
 fn platform_clone_name(obj: &JsObject, context: &mut Context) -> Option<&'static str> {
-    if !has_platform_brand(obj, context) {
-        return None;
-    }
-    [
-        "DOMMatrix",
-        "DOMMatrixReadOnly",
-        "DOMPoint",
-        "DOMPointReadOnly",
-        "DOMRect",
-        "DOMRectReadOnly",
-        "ImageData",
-        "Blob",
-        "File",
-    ]
-    .iter()
-    .find_map(|name| is_instance_of_global(obj, name, context).then_some(*name))
+    let name = cloneable_platform_type_name(obj, context)?;
+    CLONEABLE_PLATFORM_TYPES
+        .iter()
+        .copied()
+        .find(|candidate| *candidate == name.as_str())
 }
 
-fn has_platform_brand(obj: &JsObject, context: &mut Context) -> bool {
-    let Some(symbol) = context
-        .get_data::<PlatformCloneBrand>()
-        .map(|brand| brand.symbol.clone())
-    else {
-        return false;
-    };
-    obj.get(PropertyKey::from(symbol), context)
-        .ok()
-        .and_then(|value| value.as_boolean())
-        == Some(true)
+fn cloneable_platform_type_name(obj: &JsObject, context: &mut Context) -> Option<String> {
+    let registry = context.get_data::<PlatformCloneRegistry>().cloned()?;
+    let get = JsValue::from(registry.map_get.clone()).as_callable()?;
+    let value = get
+        .call(
+            &JsValue::from(registry.cloneable_map.clone()),
+            &[JsValue::from(obj.clone())],
+            context,
+        )
+        .ok()?;
+    value.as_string().map(|s| s.to_std_string_escaped())
 }
 
-fn is_instance_of_global(obj: &JsObject, name: &str, context: &mut Context) -> bool {
-    let Ok(constructor) = context.global_object().get(js_string!(name), context) else {
+fn is_rejected_platform_object(obj: &JsObject, context: &mut Context) -> bool {
+    let Some(registry) = context.get_data::<PlatformCloneRegistry>().cloned() else {
         return false;
     };
-    JsValue::from(obj.clone())
-        .instance_of(&constructor, context)
-        .unwrap_or(false)
+    let Some(has) = JsValue::from(registry.set_has.clone()).as_callable() else {
+        return false;
+    };
+    has.call(
+        &JsValue::from(registry.rejected_set.clone()),
+        &[JsValue::from(obj.clone())],
+        context,
+    )
+    .ok()
+    .is_some_and(|value| value.to_boolean())
 }
 
 /// Serializes an Array with hole support.
