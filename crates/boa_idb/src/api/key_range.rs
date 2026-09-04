@@ -37,8 +37,32 @@ impl IdBKeyRange {
 
 fn create_key_range(data: IdBKeyRange, context: &mut Context) -> JsResult<boa_engine::JsObject> {
     let obj = IdBKeyRange::from_data(data, context)?;
-    if let Some(runtime) = context.get_data::<crate::runtime::IdbRuntime>() {
-        runtime.key_range_objects.borrow_mut().push(obj.clone());
+    if context.get_data::<crate::runtime::IdbRuntime>().is_some() {
+        if let Some(runtime) = context.get_data::<crate::runtime::IdbRuntime>() {
+            runtime.key_range_objects.borrow_mut().push(obj.clone());
+        }
+        let existing = context
+            .get_data::<crate::runtime::IdbRuntime>()
+            .and_then(|runtime| runtime.key_range_set.borrow().clone());
+        let set = if let Some(set) = existing {
+            set
+        } else {
+            let constructor = context
+                .global_object()
+                .get(js_string!("WeakSet"), context)?
+                .as_object()
+                .ok_or_else(|| JsNativeError::typ().with_message("WeakSet is not an object"))?;
+            let set = constructor.construct(&[], None, context)?;
+            if let Some(runtime) = context.get_data::<crate::runtime::IdbRuntime>() {
+                runtime.key_range_set.borrow_mut().replace(set.clone());
+            }
+            set
+        };
+        let add = set
+            .get(js_string!("add"), context)?
+            .as_callable()
+            .ok_or_else(|| JsNativeError::typ().with_message("WeakSet.add is not callable"))?;
+        add.call(&JsValue::from(set), &[JsValue::from(obj.clone())], context)?;
     }
     Ok(obj)
 }

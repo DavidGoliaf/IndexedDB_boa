@@ -9,7 +9,7 @@ use boa_engine::class::{Class, ClassBuilder};
 use boa_engine::native_function::NativeFunction;
 use boa_engine::property::Attribute;
 use boa_engine::{Context, JsNativeError, JsObject, JsResult, JsValue, js_string};
-use boa_gc::{Finalize, Trace};
+use boa_gc::{Finalize, GcRefCell, Trace};
 use boa_idb_core::key::value::Key;
 use boa_idb_core::proto::Direction;
 use std::cmp::Ordering;
@@ -48,7 +48,7 @@ impl IdBCursorData {
 
 /// `IDBCursorWithValue` native data: shares the cursor data.
 #[derive(Debug, Trace, Finalize, boa_engine::JsData)]
-pub struct IdBCursorWithValueData(pub IdBCursorData);
+pub struct IdBCursorWithValueData(pub IdBCursorData, pub GcRefCell<Option<JsValue>>);
 
 /// Extracts `(cursor_id, direction, request)` from either cursor flavor.
 fn cursor_identity(obj: &JsObject) -> Option<(u64, Direction, Option<JsObject>)> {
@@ -120,7 +120,21 @@ fn require_readwrite(context: &mut Context, txn_id: u64) -> JsResult<()> {
 }
 
 /// Reuses the opening request for one iteration step.
-fn reuse_request(context: &mut Context, view: &CursorView, action: CursorAction) -> JsResult<()> {
+fn reuse_request(
+    context: &mut Context,
+    view: &CursorView,
+    action: CursorAction,
+) -> JsResult<JsObject> {
+    if matches!(
+        action,
+        CursorAction::Advance(_)
+            | CursorAction::Continue(_)
+            | CursorAction::ContinuePrimaryKey { .. }
+    ) && let Some(cursor) = crate::runtime::cursor_object(context, view.cursor_id)
+        && let Some(data) = cursor.downcast_ref::<IdBCursorWithValueData>()
+    {
+        *data.1.borrow_mut() = None;
+    }
     let request = crate::runtime::request_object(context, view.request_id)
         .ok_or_else(|| JsNativeError::error().with_message("Cursor request is gone"))?;
     crate::api::request::with_request_mut(&request, |req| {
@@ -139,7 +153,7 @@ fn reuse_request(context: &mut Context, view: &CursorView, action: CursorAction)
         },
     );
     crate::runtime::schedule_pump(context);
-    Ok(())
+    Ok(request)
 }
 
 /// Shared getters installed on both cursor classes.
@@ -405,8 +419,8 @@ fn install_cursor_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
                     context,
                 ));
             }
-            reuse_request(context, &view, CursorAction::Update(sc_value))?;
-            Ok(JsValue::undefined())
+            let request = reuse_request(context, &view, CursorAction::Update(sc_value))?;
+            Ok(JsValue::from(request))
         }),
     );
 
@@ -559,7 +573,18 @@ impl Class for IdBCursorWithValueData {
                 && let Some(row) = view.current
                 && let Some(value) = row.value
             {
-                return crate::convert::value::deserialize_from_storage(&value, ctx);
+                if let Some(data) = obj.downcast_ref::<IdBCursorWithValueData>()
+                    && let Some(cached) = data.1.borrow().clone()
+                {
+                    return Ok(cached);
+                }
+                let result = crate::convert::value::deserialize_from_storage(&value, ctx);
+                if let Ok(value) = &result
+                    && let Some(data) = obj.downcast_ref::<IdBCursorWithValueData>()
+                {
+                    *data.1.borrow_mut() = Some(value.clone());
+                }
+                return result;
             }
             Ok(JsValue::undefined())
         })

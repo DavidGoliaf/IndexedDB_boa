@@ -2,6 +2,7 @@
 
 use boa_engine::class::{Class, ClassBuilder};
 use boa_engine::native_function::NativeFunction;
+use boa_engine::object::builtins::JsFunction;
 use boa_engine::property::Attribute;
 use boa_engine::{Context, JsNativeError, JsResult, JsValue, js_string};
 use boa_gc::{Finalize, Trace};
@@ -515,6 +516,77 @@ impl Class for IdBDatabase {
             Attribute::all(),
         );
 
+        class.accessor(
+            js_string!("onabort"),
+            Some(database_abort_getter(&realm)),
+            Some(database_abort_setter(&realm)),
+            Attribute::all(),
+        );
+        class.accessor(
+            js_string!("onerror"),
+            Some(database_error_getter(&realm)),
+            Some(database_error_setter(&realm)),
+            Attribute::all(),
+        );
+
         Ok(())
     }
+}
+
+fn database_abort_getter(realm: &boa_engine::realm::Realm) -> JsFunction {
+    NativeFunction::from_fn_ptr(|this, _args, _ctx| {
+        if let Some(obj) = this.as_object()
+            && let Some(data) = obj.downcast_ref::<IdBDatabase>()
+        {
+            return Ok(data
+                .attr_handlers
+                .borrow()
+                .get("abort")
+                .cloned()
+                .unwrap_or(JsValue::null()));
+        }
+        Ok(JsValue::null())
+    })
+    .to_js_function(realm)
+}
+
+fn database_abort_setter(realm: &boa_engine::realm::Realm) -> JsFunction {
+    NativeFunction::from_fn_ptr(|this, args, _ctx| {
+        if let Some(obj) = this.as_object()
+            && let Some(data) = obj.downcast_ref::<IdBDatabase>()
+        {
+            data.set_handler("abort", args.first().cloned().unwrap_or(JsValue::null()));
+        }
+        Ok(JsValue::undefined())
+    })
+    .to_js_function(realm)
+}
+
+fn database_error_getter(realm: &boa_engine::realm::Realm) -> JsFunction {
+    NativeFunction::from_fn_ptr(|this, _args, _ctx| {
+        if let Some(obj) = this.as_object()
+            && let Some(data) = obj.downcast_ref::<IdBDatabase>()
+        {
+            return Ok(data
+                .attr_handlers
+                .borrow()
+                .get("error")
+                .cloned()
+                .unwrap_or(JsValue::null()));
+        }
+        Ok(JsValue::null())
+    })
+    .to_js_function(realm)
+}
+
+fn database_error_setter(realm: &boa_engine::realm::Realm) -> JsFunction {
+    NativeFunction::from_fn_ptr(|this, args, _ctx| {
+        if let Some(obj) = this.as_object()
+            && let Some(data) = obj.downcast_ref::<IdBDatabase>()
+        {
+            data.set_handler("error", args.first().cloned().unwrap_or(JsValue::null()));
+        }
+        Ok(JsValue::undefined())
+    })
+    .to_js_function(realm)
 }

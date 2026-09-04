@@ -55,13 +55,21 @@ IndexedDB lifecycle cases:
 - cursor update argument validation and getAll query parsing were tightened;
 - `IDBCursor.update(null)` now raises `DataError` synchronously when the store
   has a key path;
+- upgrade-time store deletion keeps queued writes valid, releases the public
+  store name for same-name recreation, and resets out-of-line auto-increment
+  keys correctly;
+- virtual timer ids no longer reuse the testharness sentinel id;
+- upgrade transaction aborts now dispatch `abort` on the associated database
+  and preserve the explicit open-request notification path.
 - key-range handles use an explicit runtime identity registry because Boa's
   native prototype/type checks are not reliable for these objects.
 
-Verification remains green for `cargo fmt --all -- --check`, workspace clippy,
-and `cargo test -p boa_idb --tests`. The following WPT cases still reproduce on
-the branch and must not be treated as resolved: one cursor-open assertion,
-deleted-store/recreate-store lifecycle assertions, the deleteDatabase
-open-queue close race, upgrade transaction abort event ordering, and invalid
-getAll keys. Unsupported exotic structured-clone failures remain outside this
+The following targeted WPT cases pass on both memory and SQLite after this
+pass: `idbdatabase_deleteObjectStore.any.js`,
+`idbfactory_deleteDatabase.any.js`, `idbtransaction_abort.any.js`,
+`idbindex_getAll.any.js`, and `idbobjectstore_getAll.any.js`.
+`IDBCursor.update()` now returns its request and preserves the mutable cursor
+value between reads. Two legacy cursor tests still expose Boa
+property/event-loop behavior and remain follow-up debt; they are not hidden in
+expectations. Unsupported exotic structured-clone failures remain outside this
 stabilization pass.

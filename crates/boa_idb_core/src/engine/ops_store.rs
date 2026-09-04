@@ -207,14 +207,14 @@ fn determine_key(
         (_, Some(k)) => Ok(k.clone()),
         // Empty key path without explicit key -> the value itself is the key.
         (crate::key::path::KeyPath::Empty, None) => {
+            // `StoreMeta` uses `KeyPath::Empty` for an omitted keyPath. An
+            // auto-increment store with no keyPath always generates a key;
+            // the value is not itself an out-of-line key in this case.
+            if store_meta.auto_increment {
+                return Ok(Key::Number(keygen.generate()?));
+            }
             match value.to_key() {
                 Ok(Some(k)) => Ok(k),
-                // With autoIncrement an unusable value falls back to
-                // generation instead of failing.
-                _ if store_meta.auto_increment => {
-                    let generated = keygen.generate()?;
-                    Ok(Key::Number(generated))
-                }
                 Ok(None) => Err(IdbError::Data("Value cannot be used as a key".into())),
                 Err(e) => Err(IdbError::Data(format!("Invalid key: {e}"))),
             }

@@ -7,6 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use boa_engine::native_function::NativeFunction;
+use boa_engine::object::builtins::JsArrayBuffer;
 use boa_engine::{Context, JsNativeError, JsObject, JsResult, JsValue, js_string};
 use boa_idb::extension::IndexedDbExtension;
 use boa_idb_core::proto::StorageKey;
@@ -68,7 +69,9 @@ pub struct Timers {
 impl Default for Timers {
     fn default() -> Self {
         Self {
-            next_id: Cell::new(0),
+            // Start above the sentinel id used by testharness cleanup. A
+            // stale clearTimeout(0) must not cancel the first real timer.
+            next_id: Cell::new(1),
             now: Cell::new(0.0),
             pending: RefCell::new(Vec::new()),
         }
@@ -377,14 +380,10 @@ fn install_message_channel(context: &mut Context) -> JsResult<()> {
                 if item.is_undefined() {
                     break;
                 }
-                if let Some(buf_obj) = item.as_object() {
-                    // Detach through the public `transfer()` method: the
-                    // source buffer is neutered as a side effect.
-                    if let Ok(transfer) = buf_obj.get(js_string!("transfer"), ctx)
-                        && let Some(callable) = transfer.as_callable()
-                    {
-                        let _ = callable.call(&JsValue::from(buf_obj.clone()), &[], ctx);
-                    }
+                if let Some(buf_obj) = item.as_object()
+                    && let Ok(buffer) = JsArrayBuffer::from_object(buf_obj)
+                {
+                    buffer.detach(&JsValue::undefined())?;
                 }
                 index += 1;
                 if index > 1024 {
@@ -403,8 +402,7 @@ fn install_message_channel(context: &mut Context) -> JsResult<()> {
     )?;
     context.eval(boa_engine::Source::from_bytes(
         r"
-        if (typeof globalThis.MessageChannel === 'undefined') {
-            globalThis.MessageChannel = function() {
+        globalThis.MessageChannel = function() {
                 function makePort() {
                     return {
                         postMessage: globalThis.__wpt_port_postMessage,
@@ -418,8 +416,7 @@ fn install_message_channel(context: &mut Context) -> JsResult<()> {
                 }
                 this.port1 = makePort();
                 this.port2 = makePort();
-            };
-        }
+        };
         ",
     ))?;
     Ok(())

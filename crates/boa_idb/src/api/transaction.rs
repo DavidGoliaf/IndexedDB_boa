@@ -337,7 +337,7 @@ impl Class for IdBTransaction {
                     .get_data::<IdbRuntime>()
                     .map(|runtime| runtime.driver.clone());
                 if let Some(driver_handle) = driver_handle {
-                    crate::driver::abort_transaction(&driver_handle, txn_id, context);
+                    crate::driver::abort_transaction(&driver_handle, txn_id, context, true);
                 }
                 Ok(JsValue::undefined())
             }),

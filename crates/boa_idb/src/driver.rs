@@ -1573,7 +1573,7 @@ fn process_txn_requests(
                     Err(e) => {
                         // A `preventDefault()`d request error does not abort (§2.8).
                         if !fail_op(driver_handle, context, txn_id, request_id, e) {
-                            abort_transaction(driver_handle, txn_id, context);
+                            abort_transaction(driver_handle, txn_id, context, false);
                         }
                     }
                 }
@@ -1798,6 +1798,7 @@ pub(crate) fn abort_transaction(
     driver_handle: &Arc<std::sync::Mutex<DriverState>>,
     txn_id: u64,
     context: &mut Context,
+    notify_upgrade_open: bool,
 ) {
     // Take the handle out (locks held, pure).
     let taken: Option<TxnHandle> = {
@@ -1832,7 +1833,7 @@ pub(crate) fn abort_transaction(
     if is_upgrade {
         // Aborting the upgrade fails the open with `AbortError` (§2.9):
         // without this the drained open would commit and succeed.
-        abort_upgrade_open(driver_handle, context, txn_id);
+        abort_upgrade_open(driver_handle, context, txn_id, notify_upgrade_open);
     }
 }
 
@@ -1845,6 +1846,7 @@ fn abort_upgrade_open(
     driver_handle: &Arc<std::sync::Mutex<DriverState>>,
     context: &mut Context,
     txn_id: u64,
+    notify_request: bool,
 ) {
     let open = {
         let mut d = crate::runtime::lock_mutex(driver_handle);
@@ -1863,9 +1865,25 @@ fn abort_upgrade_open(
         }
         open
     };
+    let db_obj = crate::runtime::request_object(context, open.request_id)
+        .and_then(|request| {
+            crate::api::request::with_request_ref(&request, |req| req.result.clone()).flatten()
+        })
+        .and_then(|value| value.as_object());
     clear_upgrade_txn(context, &open);
     reset_aborted_upgrade_request(context, &open);
-    let _ = fail_open(context, &open, &IdbError::Abort);
+    if let Some(db_obj) = db_obj {
+        let event = make_event(context, "abort", Some(db_obj.clone()));
+        let _ = dispatch_target(context, &db_obj, &event);
+    }
+    if notify_request {
+        let _ = fail_open(context, &open, &IdbError::Abort);
+    } else if let Some(request) = crate::runtime::request_object(context, open.request_id) {
+        crate::api::request::with_request_mut(&request, |req| {
+            req.ready_state = ReadyState::Done;
+            req.error = None;
+        });
+    }
 }
 
 /// Restores the database object and request state after an aborted upgrade.
@@ -1986,7 +2004,7 @@ fn complete_request(
         });
         let event = make_event(context, "success", Some(request.clone()));
         if dispatch_request(context, &request, &event).is_err() {
-            abort_transaction(driver_handle, txn_id, context);
+            abort_transaction(driver_handle, txn_id, context, true);
         }
     }
 }
@@ -2030,7 +2048,7 @@ fn complete_cursor_open(
         crate::api::cursor::IdBCursorData::from_data(data, context)
     } else {
         crate::api::cursor::IdBCursorWithValueData::from_data(
-            crate::api::cursor::IdBCursorWithValueData(data),
+            crate::api::cursor::IdBCursorWithValueData(data, boa_gc::GcRefCell::default()),
             context,
         )
     };
@@ -2058,7 +2076,7 @@ fn complete_cursor_open(
     });
     let event = make_event(context, "success", Some(request.clone()));
     if dispatch_request(context, &request, &event).is_err() {
-        abort_transaction(driver_handle, txn_id, context);
+        abort_transaction(driver_handle, txn_id, context, true);
     }
 }
 
@@ -2086,7 +2104,7 @@ fn complete_cursor_continue(
         });
         let event = make_event(context, "success", Some(request.clone()));
         if dispatch_request(context, &request, &event).is_err() {
-            abort_transaction(driver_handle, txn_id, context);
+            abort_transaction(driver_handle, txn_id, context, true);
         }
     }
 }
@@ -2458,6 +2476,22 @@ pub fn schema_delete_store(d: &mut DriverState, txn_id: TxnId, name: &str) -> Re
             .map(|s| s.id)
             .ok_or_else(|| IdbError::NotFound(format!("Object store '{name}' not found")))?
     };
+    // Keep the old backend store alive for requests that were queued before
+    // deleteObjectStore(), but release its public name immediately so the
+    // upgrade may recreate a store with the same name. The old store is
+    // physically removed at upgrade commit.
+    {
+        let handle = upgrade_handle_mut(d, txn_id)?;
+        let backend = handle
+            .backend
+            .as_mut()
+            .map(|b| b.as_mut())
+            .ok_or(IdbError::TransactionInactive)?;
+        let tombstone = format!("\u{0}boa-deleted-{txn_id}-{store_id}");
+        backend
+            .rename_store(store_id, &tombstone)
+            .map_err(backend_err)?;
+    }
     let handle = upgrade_handle_mut(d, txn_id)?;
     if let Some(s) = handle.meta.stores.iter_mut().find(|s| s.id == store_id) {
         s.deleted = true;
@@ -2993,7 +3027,11 @@ fn execute_op_inner(
             let store_meta = meta
                 .stores
                 .iter()
-                .find(|s| s.id == *store_id && !s.deleted)
+                // Requests already queued before deleteObjectStore() retain
+                // the store snapshot they were created against. The JS
+                // handle itself is invalidated synchronously, but execution
+                // of that queued request is still part of the upgrade.
+                .find(|s| s.id == *store_id)
                 .cloned()
                 .ok_or_else(|| IdbError::NotFound("Object store not found".into()))?;
             let handle = d

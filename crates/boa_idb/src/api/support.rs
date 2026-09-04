@@ -363,16 +363,22 @@ pub fn parse_get_all_args(args: &[JsValue], context: &mut Context) -> JsResult<G
     })
 }
 
-fn is_key_range_object(context: &Context, object: &JsObject) -> bool {
-    context
+fn is_key_range_object(context: &mut Context, object: &JsObject) -> bool {
+    let set = context
         .get_data::<crate::runtime::IdbRuntime>()
-        .is_some_and(|runtime| {
-            runtime
-                .key_range_objects
-                .borrow()
-                .iter()
-                .any(|candidate| JsObject::equals(candidate, object))
-        })
+        .and_then(|runtime| runtime.key_range_set.borrow().clone());
+    if let Some(set) = set
+        && let Ok(has) = set.get(js_string!("has"), context)
+        && let Some(has) = has.as_callable()
+        && let Ok(result) = has.call(
+            &JsValue::from(set),
+            &[JsValue::from(object.clone())],
+            context,
+        )
+    {
+        return result.to_boolean();
+    }
+    false
 }
 
 /// Converts a driver key to a JS value, mapping failures to `DataError`.
