@@ -378,6 +378,14 @@ fn install_cursor_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
                     .with_message("update() requires a value argument")
                     .into());
             };
+            if (value_js.is_null() || value_js.is_undefined())
+                && !matches!(view.key_path, boa_idb_core::key::path::KeyPath::Empty)
+            {
+                return crate::dom::exception::throw_data_error(
+                    "The updated value must contain the object store key path.",
+                    context,
+                );
+            }
             require_readwrite(context, view.txn_id)?;
             let sc_value = serialize_for_storage(value_js, context).map_err(|e| {
                 if e.as_opaque().is_some() {

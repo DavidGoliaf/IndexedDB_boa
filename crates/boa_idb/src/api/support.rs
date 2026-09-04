@@ -371,7 +371,7 @@ fn is_key_range_object(context: &Context, object: &JsObject) -> bool {
                 .key_range_objects
                 .borrow()
                 .iter()
-                .any(|candidate| candidate == object)
+                .any(|candidate| JsObject::equals(candidate, object))
         })
 }
 

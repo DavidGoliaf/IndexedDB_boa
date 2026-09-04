@@ -9,36 +9,33 @@ Branch: `task/m5-wpt-runner`
   timer/event-loop driving, native completion bridge, CLI, report model and
   expectations support.
 - Added the checked-in IndexedDB WPT subset and runner unit tests.
-- Added deterministic `crates/boa_idb_wpt/expectations.json`; known failures
-  are recorded with their observed status and reason, with no TIMEOUT/CRASH
-  status.
+- Added deterministic `crates/boa_idb_wpt/expectations.json`; the runner now
+  reports TIMEOUT separately from FAIL and treats timeout/not-run as CLI
+  failures.
 - Added `docs/traceability.md` and the `boa_idb_wpt` crate README.
 - Fixed empty-key-path key determination and ignored invalid optional index
   keys during index synchronization.
 - Made the CLI default to one worker for reproducible expectation checks;
   explicit parallelism remains available with `--threads N`.
+- Made expectation checking strict about file/subtest shape and exact status,
+  and added regression tests for status and shape changes.
+- Added role READMEs for `boa_idb`, `boa_idb_core`, `boa_idb_fs`,
+  `boa_idb_memory`, and `boa_idb_sqlite`.
 
 ## Verification
 
-All commands below passed locally:
+The following local checks passed:
 
 ```powershell
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
-cargo doc --workspace --no-deps
-cargo run -p boa_idb_wpt --bin boa-idb-wpt -- --backend memory --quiet --check-expectations
-cargo run -p boa_idb_wpt --bin boa-idb-wpt -- --backend sqlite --quiet --check-expectations
+cargo test -p boa_idb --tests
+cargo test -p boa_idb_wpt --tests
 ```
 
-WPT summary after key-conversion, multiEntry, reverse-cursor, and upgrade connection lifecycle stabilization: Memory 449/482 PASS
-(93.2%); SQLite 450/482 PASS (93.4%). The shared key conversion suite now
-passes 27/27 on both backends.
-Both exceed the required 80% threshold. The remaining 35 failures are
-deterministically captured in `expectations.json` and are concentrated in
-upgrade rollback/close behavior, deleted object-store/index state, getAll
-invalid-query handling, and unsupported exotic structured-clone platform
-objects.
+Final WPT totals for both backends are intentionally pending remediation. The
+historical totals previously recorded in this file are not acceptance evidence
+and must be replaced only by a fresh full run.
 
 ## Decisions and deviations
 
@@ -56,6 +53,8 @@ IndexedDB lifecycle cases:
 - deleted object-store handles are rejected immediately, while queued writes
   are allowed to complete before physical deletion at upgrade commit;
 - cursor update argument validation and getAll query parsing were tightened;
+- `IDBCursor.update(null)` now raises `DataError` synchronously when the store
+  has a key path;
 - key-range handles use an explicit runtime identity registry because Boa's
   native prototype/type checks are not reliable for these objects.
 

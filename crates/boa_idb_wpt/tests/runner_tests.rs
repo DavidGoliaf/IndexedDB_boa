@@ -43,3 +43,52 @@ fn expectations_round_trip_and_detect_pass_regressions() {
     let expectations = build_expectations(std::slice::from_ref(&report));
     assert_eq!(check(&[report], &expectations).unexpected.len(), 0);
 }
+
+#[test]
+fn expectations_are_strict_about_status_and_shape() {
+    let report = FileReport {
+        file: "alpha.any.js".into(),
+        result: Some(WptRunResult {
+            status: 0,
+            message: None,
+            subtests: vec![SubtestResult {
+                name: "works".into(),
+                status: SubtestStatus::Pass,
+                message: None,
+            }],
+        }),
+        completed: true,
+        forced_reason: None,
+    };
+    let mut expectations = build_expectations(std::slice::from_ref(&report));
+    expectations
+        .files
+        .get_mut("alpha.any.js")
+        .expect("file")
+        .subtests
+        .insert("extra".into(), SubtestStatus::Pass);
+    expectations
+        .files
+        .get_mut("alpha.any.js")
+        .expect("file")
+        .subtests
+        .insert("works".into(), SubtestStatus::Fail);
+    let outcome = check(&[report], &expectations);
+    assert_eq!(outcome.unexpected.len(), 2);
+}
+
+#[test]
+fn forced_timeout_keeps_timeout_status() {
+    let mut report = FileReport {
+        file: "slow.any.js".into(),
+        result: None,
+        completed: false,
+        forced_reason: Some("file budget exhausted".into()),
+    };
+    report.push_forced_subtest_with_status(
+        "slow.any.js (harness)".into(),
+        SubtestStatus::Timeout,
+        "file budget exhausted".into(),
+    );
+    assert_eq!(report.subtests()[0].status, SubtestStatus::Timeout);
+}

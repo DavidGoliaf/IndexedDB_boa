@@ -1,8 +1,7 @@
 //! Loading, building, checking and updating `expectations.json`.
 //!
-//! Every non-passing subtest (FAIL/SKIP) must be deterministically recorded
-//! here together with a justification; no CRASH or TIMEOUT is allowed at the
-//! file level.
+//! Every non-passing subtest is deterministically recorded here together with
+//! a justification. Timeout and not-run states remain distinct from failures.
 
 use std::fs;
 use std::path::Path;
@@ -145,9 +144,13 @@ impl CheckOutcome {
 /// a regression. Failures with a matching `Fail` expectation are expected.
 pub fn check(reports: &[FileReport], expectations: &Expectations) -> CheckOutcome {
     let mut outcome = CheckOutcome::default();
+    let mut seen = std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();
     for report in reports {
         for sub in report.subtests() {
             outcome.total += 1;
+            seen.entry(sub.file.clone())
+                .or_default()
+                .insert(sub.name.clone());
             let expected = expectations
                 .files
                 .get(&sub.file)
@@ -156,29 +159,41 @@ pub fn check(reports: &[FileReport], expectations: &Expectations) -> CheckOutcom
                 Some(expected_status) => {
                     if sub.status == *expected_status {
                         outcome.matched += 1;
-                    } else if *expected_status == SubtestStatus::Pass
-                        && sub.status != SubtestStatus::Pass
-                    {
+                    } else {
                         outcome.unexpected.push(format!(
-                            "{} :: {} expected PASS, got {} (message: {})",
+                            "{} :: {} expected {}, got {} (message: {})",
                             sub.file,
                             sub.name,
+                            expected_status.as_str(),
                             sub.status.as_str(),
                             sub.message.clone().unwrap_or_default()
                         ));
                     }
                 }
                 None => {
-                    if sub.status != SubtestStatus::Pass {
-                        outcome.unexpected.push(format!(
-                            "{} :: {} has no expectation, got {} (message: {})",
-                            sub.file,
-                            sub.name,
-                            sub.status.as_str(),
-                            sub.message.clone().unwrap_or_default()
-                        ));
-                    }
+                    outcome.unexpected.push(format!(
+                        "{} :: {} has no expectation, got {} (message: {})",
+                        sub.file,
+                        sub.name,
+                        sub.status.as_str(),
+                        sub.message.clone().unwrap_or_default()
+                    ));
                 }
+            }
+        }
+    }
+    for (file, expectation) in &expectations.files {
+        let Some(actual) = seen.get(file) else {
+            outcome
+                .unexpected
+                .push(format!("{file} was expected but did not run"));
+            continue;
+        };
+        for name in expectation.subtests.keys() {
+            if !actual.contains(name) {
+                outcome
+                    .unexpected
+                    .push(format!("{file} :: {name} was expected but did not run"));
             }
         }
     }

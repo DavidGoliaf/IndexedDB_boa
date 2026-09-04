@@ -16,8 +16,8 @@
 | R10.2.1–R10.2.3 | Error mapping and DOMException | `integration_tests.rs`, `key-conversion-exceptions.any.js` | PASS |
 | R11.1–R11.7 | Security, privacy, quota and resource limits | `limits.rs` tests, backend integration tests | PASS |
 | R13.3.1 | Autonomous WPT runner and Boa environment | `cargo run -p boa_idb_wpt --bin boa-idb-wpt -- --backend memory --summary` | PASS |
-| R13.3.2 | WPT conformance threshold | Memory: 93.2% (449/482); SQLite: 93.4% (450/482) | PASS |
-| R13.3.3 | Priority WPT subset and deterministic expectations | `crates/boa_idb_wpt/wpt/IndexedDB/*.any.js`, `expectations.json` | PASS |
+| R13.3.2 | WPT conformance threshold | Final remediation run pending; current priority WPT failures are tracked in `docs/reviews/M5-remediation-and-debt-plan.md` | OPEN |
+| R13.3.3 | Priority WPT subset and deterministic expectations | Priority files still contain functional failures; strict snapshot verification is implemented but acceptance is pending | OPEN |
 | R13.4.1–R13.4.2 | Backend differential behavior | `differential_model_tests.rs`, backend test suites | PASS |
 | R13.5.1–R13.5.2 | Ordering and concurrency | `scheduler_tests.rs`, `sqlite_concurrency_tests.rs` | PASS |
 | R13.6.1–R13.6.2 | GC/resource lifecycle | WPT isolated-context runner and backend cleanup tests | PASS |

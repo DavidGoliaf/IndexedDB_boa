@@ -111,7 +111,7 @@ fn main() {
     };
 
     // `--check-expectations`: compare with the committed snapshot.
-    let mut had_regressions = false;
+    let mut had_regressions = report.summary.timed_out > 0 || report.summary.not_run > 0;
     if cli.check_expectations {
         match expectations::load(&expectations_path) {
             Ok(snapshot) => {
@@ -208,7 +208,7 @@ fn print_results(report: &runner::RunReport) {
     );
 }
 
-/// First line of a message (TEMP-DEBUG: full length).
+/// First line of a message for compact CLI output.
 fn first_line(message: &str) -> String {
     message.lines().next().unwrap_or(message).to_string()
 }

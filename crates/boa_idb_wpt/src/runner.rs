@@ -342,7 +342,14 @@ fn finalize_report(
     let subtests: Vec<SubtestResult> = if registered.is_empty() {
         vec![SubtestResult {
             name: format!("{key} (harness)"),
-            status: SubtestStatus::Fail,
+            status: if forced_reason
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with("file budget exhausted"))
+            {
+                SubtestStatus::Timeout
+            } else {
+                SubtestStatus::Fail
+            },
             message: Some(if messages.is_empty() {
                 fallback_message.clone()
             } else {
@@ -355,7 +362,14 @@ fn finalize_report(
             .map(|name| {
                 results.get(name).cloned().unwrap_or(SubtestResult {
                     name: name.clone(),
-                    status: SubtestStatus::Fail,
+                    status: if forced_reason
+                        .as_deref()
+                        .is_some_and(|reason| reason.starts_with("file budget exhausted"))
+                    {
+                        SubtestStatus::Timeout
+                    } else {
+                        SubtestStatus::Fail
+                    },
                     message: Some(if messages.is_empty() {
                         fallback_message.clone()
                     } else {

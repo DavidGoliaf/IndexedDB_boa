@@ -129,18 +129,28 @@ impl FileReport {
         out
     }
 
-    /// Adds a deterministic subtest entry (used for stalled files).
+    /// Adds a deterministic failed subtest entry (used for setup failures).
     pub fn push_forced_subtest(&mut self, name: String, message: String) {
+        self.push_forced_subtest_with_status(name, SubtestStatus::Fail, message);
+    }
+
+    /// Adds a deterministic terminal subtest entry.
+    pub fn push_forced_subtest_with_status(
+        &mut self,
+        name: String,
+        status: SubtestStatus,
+        message: String,
+    ) {
         let entry = SubtestResult {
             name,
-            status: SubtestStatus::Fail,
+            status,
             message: Some(message),
         };
         match self.result.as_mut() {
             Some(r) => r.subtests.push(entry),
             None => {
                 self.result = Some(WptRunResult {
-                    status: 0,
+                    status: status.code(),
                     message: self.forced_reason.clone(),
                     subtests: vec![entry],
                 });
@@ -158,7 +168,7 @@ pub struct RunSummary {
     pub passed: u64,
     /// Subtests that failed.
     pub failed: u64,
-    /// Subtests that timed out (always zero at the file level by policy).
+    /// Subtests that timed out before file completion.
     pub timed_out: u64,
     /// Subtests that were not run.
     pub not_run: u64,
