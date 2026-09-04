@@ -279,8 +279,7 @@ fn max_keys_in_memory_boundary() {
 
 #[test]
 fn subprocess_crash_recovers_committed_prefix() {
-    // Windows-stable seam: committed WAL + torn append, then reopen.
-    // Dedicated kill-worker for full R8.5.1 matrix is deferred to M6-B.
+    // In-process torn-WAL seam. Forced kill-worker matrix: m6b3_crash_tests.
     let dir = tempdir().unwrap();
     let key = StorageKey::new("crash");
     let storage = factory(dir.path()).open_storage(&key).unwrap();

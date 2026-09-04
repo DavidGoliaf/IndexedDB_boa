@@ -59,12 +59,17 @@ Tests inject `FaultInjectingFs` via `FsBackendFactory::with_filesystem`:
 `ENOSPC` → `BackendError::QuotaExceeded`. After any fault + reopen, only a
 committed prefix is readable; torn/corrupt WAL/segment/manifest never panic.
 
-## Known gaps (later sub-orders)
+## Known platform notes
 
-- M6-B3: kill-worker crash suite + WPT `--backend fs`
+- Crash kill uses `std::process::Child::kill` (Unix SIGKILL / Windows
+  `TerminateProcess`). Advisory `LOCK` is released by the OS on process death;
+  reopen retries briefly on `Locked` for slow unlock.
+- Nightly: `BOA_IDB_FS_CRASH_ITERS=200 cargo test -p boa_idb_fs --test m6b3_crash_tests`
+  (workflow `.github/workflows/nightly-fs-crash.yml`).
 
 ## Tests
 
 ```powershell
 cargo test -p boa_idb_fs
+cargo run -p boa_idb_wpt --bin boa-idb-wpt -- --backend fs --summary
 ```

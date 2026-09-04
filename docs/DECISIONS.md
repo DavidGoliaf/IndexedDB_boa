@@ -217,5 +217,27 @@ commit/recovery control flow. Legacy `SyncHooks` only covered sync.
 **Consequences.** Table-driven `m6b2_tests` prove committed-prefix survival
 after each publication-stage fault and safe handling of corrupt WAL /
 segment / manifest tails. R8.5.2 / R8.5.3 → PASS for in-process injection;
-R8.5.1 / R8.3.6 process-kill remain PARTIAL until B3.
+R8.5.1 / R8.3.6 process-kill closed in M6-B3.
+
+## ADR-012: M6-B3 — crash worker and WPT `--backend fs`
+
+**Context.** TASK-08 / M6-B3 must close R8.3.6 / R8.5.1 with a real
+inter-process kill (not only torn-WAL simulation) and expose the FS backend
+to the WPT / differential runners at ≥92 % PASS.
+
+**Decision.**
+1. Ship `boa-idb-fs-crash-worker`: deterministic commits + index/keygen,
+   marker file `READY <kind> <durable>`, then park. Parent waits for the
+   marker and calls `Child::kill` (SIGKILL / TerminateProcess).
+2. CI runs 8 seeded iterations by default; nightly sets
+   `BOA_IDB_FS_CRASH_ITERS=200` (workflow + README). Failures print seed and
+   replay command.
+3. WPT gains `--backend fs` via `FsBackendFactory` on the existing per-file
+   temp root (same isolation model as SQLite).
+4. Differential FS scenarios live in `differential_fs_tests.rs` (memory↔FS
+   parity for CRUD/schema/index/cursors/abort/savepoint; FS reopen for
+   Strict durability).
+
+**Consequences.** R8.3.6 / R8.5.1 and FS WPT can be marked PASS with measured
+commands; no mass expectation updates were required (FS 482/482).
 

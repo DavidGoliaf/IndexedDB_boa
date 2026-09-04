@@ -11,6 +11,7 @@ use boa_engine::object::builtins::JsArrayBuffer;
 use boa_engine::{Context, JsNativeError, JsObject, JsResult, JsValue, js_string};
 use boa_idb::extension::IndexedDbExtension;
 use boa_idb_core::proto::StorageKey;
+use boa_idb_fs::FsBackendFactory;
 use boa_idb_memory::MemoryBackendFactory;
 use boa_idb_sqlite::SqliteBackendFactory;
 use parking_lot::Mutex;
@@ -24,6 +25,8 @@ pub enum Backend {
     Memory,
     /// `SQLite` backend under an isolated temporary directory.
     Sqlite,
+    /// Filesystem WAL backend under an isolated temporary directory.
+    Fs,
 }
 
 impl Backend {
@@ -32,6 +35,7 @@ impl Backend {
         match s {
             "memory" => Some(Self::Memory),
             "sqlite" => Some(Self::Sqlite),
+            "fs" => Some(Self::Fs),
             _ => None,
         }
     }
@@ -42,6 +46,7 @@ impl Backend {
         match self {
             Self::Memory => "memory",
             Self::Sqlite => "sqlite",
+            Self::Fs => "fs",
         }
     }
 }
@@ -563,6 +568,10 @@ pub fn prepare(backend: Backend, storage_dir: &Path) -> JsResult<PreparedTest> {
         Backend::Sqlite => IndexedDbExtension::builder()
             .storage_key(StorageKey::new("http://localhost"))
             .backend_factory(Arc::new(SqliteBackendFactory::new(storage_dir)))
+            .build()?,
+        Backend::Fs => IndexedDbExtension::builder()
+            .storage_key(StorageKey::new("http://localhost"))
+            .backend_factory(Arc::new(FsBackendFactory::new(storage_dir)))
             .build()?,
     };
     extension.register(&mut context)?;

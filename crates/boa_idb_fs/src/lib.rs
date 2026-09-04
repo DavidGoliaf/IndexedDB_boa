@@ -1,9 +1,8 @@
-//! Filesystem backend for `IndexedDB` (M6-A/B1/B2).
+//! Filesystem backend for `IndexedDB` (M6-A/B1/B2/B3).
 //!
 //! Provides WAL-backed durability, advisory `LOCK`, immutable segments,
-//! structural-share MVCC snapshots, and a `FileSystem` seam with fault
-//! injection for recovery tests. Process-kill crash suite and WPT `--backend
-//! fs` remain M6-B3.
+//! structural-share MVCC snapshots, a `FileSystem` fault-injection seam, and a
+//! dedicated crash-worker binary for forced-kill recovery tests.
 
 #![deny(unsafe_code)]
 #![allow(

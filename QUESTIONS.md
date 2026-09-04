@@ -26,10 +26,10 @@
 
 ### Статус
 
-- **2026-09-04:** заказчик принял разрез B1→B2→B3; M6-B1 сдан на
+- **2026-09-04:** заказчик принял разрез B1→B2→B3; M6-B1 и M6-B2 сданы на
   `task/m6-fs-completion`.
-- **2026-09-04:** **M6-B2** (`FileSystem` + fault matrix) выполнен; далее
-  M6-B3 (crash worker + WPT `--backend fs`).
+- **2026-09-04:** **M6-B3** (crash worker + WPT `--backend fs` + differential)
+  выполнен; сводный handoff `docs/reviews/M6B-handoff.md`.
 
 ### Предлагаемые поднаряды
 
