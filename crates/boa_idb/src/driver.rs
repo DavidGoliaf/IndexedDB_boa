@@ -1457,7 +1457,7 @@ fn process_txn_requests(
 
 /// Creates a normal (non-upgrade) transaction handle and registers it.
 ///
-/// The backend transaction is started lazily by [`start_ready_txns`] once the
+/// The backend transaction is started lazily by the driver once the
 /// scheduler allows it. Pure state operation: the caller wires the JS object.
 pub fn create_txn(
     engine: &mut IdbEngine,
