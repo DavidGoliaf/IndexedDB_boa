@@ -7,10 +7,12 @@ use std::sync::Arc;
 use boa_idb_core::backend::error::BackendError;
 use boa_idb_core::backend::traits::{Database, Storage};
 
+use crate::compact::CompactConfig;
 use crate::database::FsDatabase;
 use crate::lock::DbLock;
 use crate::meta::load_meta_with_wal;
 use crate::naming::database_dir_name;
+use crate::state::SnapshotMeter;
 use crate::sync_hooks::{SyncHooks, io_to_backend};
 
 /// Filesystem storage for one storage key (origin).
@@ -20,6 +22,8 @@ pub struct FsStorage {
     hooks: Arc<dyn SyncHooks>,
     max_keys_in_memory: u64,
     max_frame_payload: u32,
+    compact: CompactConfig,
+    meter: Arc<SnapshotMeter>,
 }
 
 impl FsStorage {
@@ -29,6 +33,8 @@ impl FsStorage {
         hooks: Arc<dyn SyncHooks>,
         max_keys_in_memory: u64,
         max_frame_payload: u32,
+        compact: CompactConfig,
+        meter: Arc<SnapshotMeter>,
     ) -> Result<Self, BackendError> {
         fs::create_dir_all(&root).map_err(|e| io_to_backend(e, "create storage root"))?;
         Ok(Self {
@@ -37,6 +43,8 @@ impl FsStorage {
             hooks,
             max_keys_in_memory,
             max_frame_payload,
+            compact,
+            meter,
         })
     }
 
@@ -73,6 +81,8 @@ impl Storage for FsStorage {
             self.hooks.clone(),
             self.max_keys_in_memory,
             self.max_frame_payload,
+            self.compact,
+            self.meter.clone(),
         )?;
         Ok(Box::new(db))
     }

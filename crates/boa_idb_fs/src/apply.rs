@@ -19,13 +19,22 @@ pub fn apply_frames(state: &mut DbState, frames: &[WalFrame]) -> Result<(), Back
 fn apply_op(state: &mut DbState, op: &WalOp) -> Result<(), BackendError> {
     match op {
         WalOp::Put { store, key, value } => {
-            state.records.insert((*store, key.clone()), value.clone());
+            state
+                .records
+                .insert_mut((*store, key.clone()), value.clone());
         }
         WalOp::Delete { store, key } => {
-            state.records.remove(&(*store, key.clone()));
+            state.records.remove_mut(&(*store, key.clone()));
         }
         WalOp::Clear { store } => {
-            state.records.retain(|(sid, _), _| sid != store);
+            let keys: Vec<_> = state
+                .records
+                .iter()
+                .filter_map(|(k, _)| if k.0 == *store { Some(k.clone()) } else { None })
+                .collect();
+            for key in keys {
+                state.records.remove_mut(&key);
+            }
         }
         WalOp::IndexPut {
             index,
@@ -34,7 +43,7 @@ fn apply_op(state: &mut DbState, op: &WalOp) -> Result<(), BackendError> {
         } => {
             state
                 .index_entries
-                .insert((*index, idx_key.clone(), primary_key.clone()), ());
+                .insert_mut((*index, idx_key.clone(), primary_key.clone()), ());
         }
         WalOp::IndexDelete {
             index,
@@ -43,7 +52,7 @@ fn apply_op(state: &mut DbState, op: &WalOp) -> Result<(), BackendError> {
         } => {
             state
                 .index_entries
-                .remove(&(*index, idx_key.clone(), primary_key.clone()));
+                .remove_mut(&(*index, idx_key.clone(), primary_key.clone()));
         }
         WalOp::KeyGenSet { store, value_bits } => {
             let value = f64::from_bits(*value_bits);

@@ -1,4 +1,4 @@
-//! Open filesystem database with LOCK + WAL recovery.
+//! Open filesystem database with LOCK + WAL recovery + segments.
 
 use std::fs;
 use std::path::PathBuf;
@@ -14,9 +14,11 @@ use parking_lot::RwLock;
 
 use crate::apply::apply_frames;
 use crate::atomic::{ensure_file, truncate_file};
+use crate::compact::{CompactConfig, wal_path};
 use crate::lock::DbLock;
-use crate::meta::{read_meta_file, write_manifest, write_meta_file};
-use crate::state::DbState;
+use crate::meta::{ManifestData, load_manifest, read_meta_file, write_manifest, write_meta_file};
+use crate::segment::load_segment_file;
+use crate::state::{DbState, SnapshotMeter};
 use crate::sync_hooks::{SyncHooks, io_to_backend};
 use crate::txn::FsTxn;
 use crate::wal::recover_committed_frames;
@@ -29,6 +31,8 @@ pub struct FsDatabase {
     hooks: Arc<dyn SyncHooks>,
     max_keys_in_memory: u64,
     max_frame_payload: u32,
+    compact: CompactConfig,
+    meter: Arc<SnapshotMeter>,
     _lock: DbLock,
 }
 
@@ -40,42 +44,75 @@ impl FsDatabase {
         hooks: Arc<dyn SyncHooks>,
         max_keys_in_memory: u64,
         max_frame_payload: u32,
+        compact: CompactConfig,
+        meter: Arc<SnapshotMeter>,
     ) -> Result<Self, BackendError> {
         fs::create_dir_all(db_dir.join("wal")).map_err(|e| io_to_backend(e, "create wal dir"))?;
+        fs::create_dir_all(db_dir.join("seg")).map_err(|e| io_to_backend(e, "create seg dir"))?;
         let lock = DbLock::try_acquire(&db_dir.join("LOCK"))?;
 
         let current = db_dir.join("CURRENT");
-        let wal_path = db_dir.join("wal").join("000001.log");
         if !current.exists() {
-            // CURRENT is published last so a crash cannot leave CURRENT without meta.
             let meta = empty_meta(name);
-            ensure_file(&wal_path)?;
+            let wal = wal_path(&db_dir, 1);
+            ensure_file(&wal)?;
             write_meta_file(&db_dir, &meta, true, &hooks)?;
-            write_manifest(&db_dir, 1, b"boa_idb_fs m6a\n", true, &hooks)?;
+            write_manifest(
+                &db_dir,
+                &ManifestData {
+                    manifest_seq: 1,
+                    wal_seq: 1,
+                    segments: Vec::new(),
+                },
+                true,
+                &hooks,
+            )?;
         }
 
-        let mut state = DbState {
-            meta: read_meta_file(&db_dir)?,
-            manifest_seq: 1,
-            next_txn_seq: 1,
-            ..DbState::default()
+        let mut state = DbState::default();
+        let manifest = match load_manifest(&db_dir) {
+            Ok(m) => m,
+            Err(_) => {
+                // Pre-B1 CURRENT bodies are not IMAN; treat as empty segment set.
+                ManifestData {
+                    manifest_seq: 1,
+                    wal_seq: 1,
+                    segments: Vec::new(),
+                }
+            }
         };
-        // Half-init heal: CURRENT/WAL without meta.scf (legacy crash window).
+        state.manifest_seq = manifest.manifest_seq;
+        state.wal_seq = manifest.wal_seq;
+
+        for seq in &manifest.segments {
+            let guard = load_segment_file(&db_dir, *seq, &mut state)?;
+            state.segments.push(guard);
+        }
+
+        if state.meta.is_none() {
+            state.meta = read_meta_file(&db_dir)?;
+        }
         if state.meta.is_none() {
             state.meta = Some(empty_meta(name));
         }
         if let Some(meta) = &state.meta {
             for store in &meta.stores {
-                state.key_generators.insert(store.id, store.key_gen);
+                state
+                    .key_generators
+                    .entry(store.id)
+                    .or_insert(store.key_gen);
             }
         }
 
-        ensure_file(&wal_path)?;
-        let wal_bytes = fs::read(&wal_path).map_err(|e| io_to_backend(e, "read wal"))?;
+        let wal = wal_path(&db_dir, state.wal_seq);
+        ensure_file(&wal)?;
+        let wal_bytes = fs::read(&wal).map_err(|e| io_to_backend(e, "read wal"))?;
         let recovered = recover_committed_frames(&wal_bytes);
         apply_frames(&mut state, &recovered.frames)?;
+        state.wal_bytes_since_compact = recovered.valid_prefix_len as u64;
+        state.wal_frames_since_compact = recovered.frames.len() as u64;
         if recovered.valid_prefix_len < wal_bytes.len() {
-            truncate_file(&wal_path, recovered.valid_prefix_len as u64)?;
+            truncate_file(&wal, recovered.valid_prefix_len as u64)?;
         }
 
         let meta = state
@@ -83,7 +120,6 @@ impl FsDatabase {
             .clone()
             .ok_or_else(|| BackendError::Internal("database metadata missing after open".into()))?;
 
-        // Keep meta.scf aligned with recovered state so list_databases matches open.
         let disk_meta = read_meta_file(&db_dir)?;
         if disk_meta.as_ref() != Some(&meta) {
             write_meta_file(&db_dir, &meta, true, &hooks)?;
@@ -96,6 +132,8 @@ impl FsDatabase {
             hooks,
             max_keys_in_memory,
             max_frame_payload,
+            compact,
+            meter,
             _lock: lock,
         })
     }
@@ -136,7 +174,7 @@ impl Database for FsDatabase {
             self.meta = meta;
         }
         let state = if mode == TxnMode::ReadOnly {
-            let snap = self.state.read().clone();
+            let snap = self.state.read().snapshot_clone(&self.meter);
             Arc::new(RwLock::new(snap))
         } else {
             self.state.clone()
@@ -151,11 +189,13 @@ impl Database for FsDatabase {
             self.hooks.clone(),
             self.max_keys_in_memory,
             self.max_frame_payload,
+            self.compact,
+            self.meter.clone(),
         )))
     }
 
     fn flush(&mut self) -> Result<(), BackendError> {
-        let wal = self.db_dir.join("wal").join("000001.log");
+        let wal = wal_path(&self.db_dir, self.state.read().wal_seq);
         let file = fs::OpenOptions::new()
             .read(true)
             .write(true)

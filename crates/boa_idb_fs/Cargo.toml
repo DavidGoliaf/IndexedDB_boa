@@ -11,6 +11,8 @@ description = "Filesystem backend for IndexedDB (WAL, recovery, advisory lock)"
 [dependencies]
 boa_idb_core = { path = "../boa_idb_core" }
 data-encoding = "2.6"
+rpds = "1.2"
+archery = "1.2"
 parking_lot = "0.12"
 sha2 = "0.10"
 thiserror = { workspace = true }

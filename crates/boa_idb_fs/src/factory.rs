@@ -7,7 +7,9 @@ use boa_idb_core::backend::error::BackendError;
 use boa_idb_core::backend::traits::{BackendFactory, Storage};
 use boa_idb_core::proto::StorageKey;
 
+use crate::compact::CompactConfig;
 use crate::naming::storage_root;
+use crate::state::{DEFAULT_WAL_COMPACT_BYTES, DEFAULT_WAL_COMPACT_FRAMES, SnapshotMeter};
 use crate::storage::FsStorage;
 use crate::sync_hooks::{OsSyncHooks, SyncHooks};
 use crate::wal::MAX_FRAME_PAYLOAD;
@@ -21,6 +23,8 @@ pub struct FsBackendFactory {
     hooks: Arc<dyn SyncHooks>,
     max_keys_in_memory: u64,
     max_frame_payload: u32,
+    compact: CompactConfig,
+    meter: Arc<SnapshotMeter>,
 }
 
 impl FsBackendFactory {
@@ -31,6 +35,11 @@ impl FsBackendFactory {
             hooks: Arc::new(OsSyncHooks),
             max_keys_in_memory: DEFAULT_MAX_KEYS_IN_MEMORY,
             max_frame_payload: MAX_FRAME_PAYLOAD,
+            compact: CompactConfig {
+                wal_bytes: DEFAULT_WAL_COMPACT_BYTES,
+                wal_frames: DEFAULT_WAL_COMPACT_FRAMES,
+            },
+            meter: SnapshotMeter::new(),
         }
     }
 
@@ -51,6 +60,23 @@ impl FsBackendFactory {
         self.max_frame_payload = max;
         self
     }
+
+    /// Overrides compaction thresholds (tests use small values).
+    pub fn with_compact_config(mut self, compact: CompactConfig) -> Self {
+        self.compact = compact;
+        self
+    }
+
+    /// Injects a shared snapshot meter for O(1) readonly proofs.
+    pub fn with_snapshot_meter(mut self, meter: Arc<SnapshotMeter>) -> Self {
+        self.meter = meter;
+        self
+    }
+
+    /// Returns the factory snapshot meter.
+    pub fn snapshot_meter(&self) -> Arc<SnapshotMeter> {
+        self.meter.clone()
+    }
 }
 
 impl BackendFactory for FsBackendFactory {
@@ -62,6 +88,8 @@ impl BackendFactory for FsBackendFactory {
             self.hooks.clone(),
             self.max_keys_in_memory,
             self.max_frame_payload,
+            self.compact,
+            self.meter.clone(),
         )?))
     }
 }

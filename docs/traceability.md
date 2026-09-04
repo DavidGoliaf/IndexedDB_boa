@@ -13,9 +13,9 @@
 | R7.1.1–R7.4.4 | Registry, open queue, scheduler, cursor engine | `open_queue_tests.rs`, `scheduler_tests.rs`, `engine_ops_tests.rs` | PASS |
 | R8.1.1–R8.2.3 | Memory and SQLite backends | `crates/boa_idb_memory/tests/*.rs`, `crates/boa_idb_sqlite/tests/*.rs` | PASS |
 | R8.3.1, R8.3.2, R8.3.5 | FS WAL codec/recovery (txn_seq isolation + CONTINUES/COMMIT chains), strict/relaxed sync, `max_keys_in_memory` | `boa_idb_fs` `wal` unit/proptests (incl. sequence mismatch / multi-frame encode), `fs_backend_tests.rs` multi-frame + reopen cases | PASS |
+| R8.3.3, R8.3.4 | Immutable `seg/*.seg` + manifest compaction; `rpds` persistent maps + segment refcount | `segment`/`compact` unit tests, `m6b1_tests.rs` (threshold compact, retain-until-drop, SnapshotMeter) | PASS |
 | R8.3.6 (partial) | Exclusive `LOCK` on open; post-close reopen; torn-WAL reopen seam | `second_open_fails_while_lock_held`, `subprocess_crash_recovers_committed_prefix` | PARTIAL |
-| R8.3.3, R8.3.4 | Segments/compaction; O(1)/O(log n) MVCC snapshots | Deferred to M6-B; M6-A uses in-memory maps + readonly clone | PARTIAL |
-| R8.5.1–R8.5.3 | Crash/fault matrix and `FileSystem` injection | SyncHooks seam + torn-WAL tests in M6-A; full 200-iter matrix in M6-B | PARTIAL |
+| R8.5.1–R8.5.3 | Crash/fault matrix and `FileSystem` injection | SyncHooks seam + torn-WAL tests (M6-A); full matrix deferred to M6-B2/B3 | PARTIAL |
 | R9.1.1–R9.4.2 | Runtime pump, transaction lifecycle, request dispatch | `crates/boa_idb/tests/basic_idb_flow_tests.rs`, `appendix_d_acceptance_tests.rs`, `transaction-lifetime-empty.any.js` | PASS |
 | R10.2.1–R10.2.3 | Error mapping and DOMException | `integration_tests.rs`, `key-conversion-exceptions.any.js` | PASS |
 | R11.1–R11.7 | Security, privacy, quota and resource limits; sealed platform-clone brand | `limits.rs` tests, backend integration tests, `platform_clone_hardening_tests.rs` | PASS |

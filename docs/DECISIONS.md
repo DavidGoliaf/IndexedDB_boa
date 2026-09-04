@@ -154,3 +154,38 @@ M6-B. TZ suggests `fs4`/`fd-lock` for locks.
 safety without claiming compaction or O(1)/O(log n) snapshots. New crates
 are permissive-licensed and covered by `cargo deny`.
 
+## ADR-010: M6-B1 — `im` OrdMap snapshots and immutable segments
+
+**Context.** TASK-08 / M6-B1 must close R8.3.3 (immutable `seg/*.seg` +
+manifest compaction) and R8.3.4 (readonly snapshot start in O(1)/O(log n)
+by record count). M6-A used `BTreeMap` with a full clone on readonly begin.
+
+**Decision.**
+1. **Persistent maps:** depend on crates.io `rpds` 1.x
+   (`RedBlackTreeMap`) under MIT. Structural `clone` is O(1); updates are
+   path-copying. Chosen over `im`/`imbl` because those pull unmaintained
+   `bitmaps`/`sized-chunks` crates rejected by `cargo deny`
+   (`RUSTSEC-2026-0247` / `RUSTSEC-2026-0251`). TZ names `im`/`rpds`-like
+   trees; `rpds` matches the requirement with a clean dependency graph.
+2. **Readonly begin:** `DbState::clone` copies `im::OrdMap` structurally (no
+   per-record walk). An injectable `SnapshotMeter` counts structural clones
+   vs forbidden deep record walks so tests prove the complexity class without
+   timing flakes.
+3. **Segments:** versioned `seg/<seq>.seg` files encode a full durable
+   snapshot (meta, records, indexes, key generators, `next_txn_seq`) with
+   magic `ISEG`, version, and CRC32C. Manifest (`IMAN`) lists live segment
+   sequence(s) and the active WAL file id. `CURRENT` is published only after
+   the manifest file is fully synced (temp → sync → rename → dir sync).
+4. **Compaction:** when WAL bytes ≥ 64 MiB or committed frame groups ≥
+   10_000 (both configurable downward for tests), between write transactions
+   write a new segment, publish a new manifest/`CURRENT`, then rotate to an
+   empty WAL. Failure mid-publish leaves either the old or the new consistent
+   generation — never a hybrid. Live state holds `Arc<SegmentGuard>`; old
+   segment files are deleted only when the last `Arc` drops (readonly
+   snapshots keep them alive).
+5. **Out of scope for B1:** `FileSystem` fault injection (B2), kill-worker /
+   WPT FS (B3).
+
+**Consequences.** R8.3.3/R8.3.4 can be marked PASS for B1 once tests cover
+thresholds, publication order, snapshot retention, and the meter proof.
+

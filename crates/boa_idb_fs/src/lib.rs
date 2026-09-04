@@ -24,25 +24,30 @@
     clippy::type_complexity,
     clippy::unnecessary_wraps,
     clippy::used_underscore_binding,
+    clippy::explicit_iter_loop,
     dead_code
 )]
 
 mod apply;
 mod atomic;
+mod compact;
 mod cursor;
 mod database;
 mod factory;
 mod lock;
 mod meta;
 mod naming;
+mod segment;
 mod state;
 mod storage;
 mod sync_hooks;
 mod txn;
 mod wal;
 
+pub use compact::CompactConfig;
 pub use factory::{DEFAULT_MAX_KEYS_IN_MEMORY, FsBackendFactory};
 pub use naming::{database_dir_name, database_root, storage_dir_name, storage_root};
+pub use state::{DEFAULT_WAL_COMPACT_BYTES, DEFAULT_WAL_COMPACT_FRAMES, SnapshotMeter};
 pub use sync_hooks::{CountingSyncHooks, OsSyncHooks, SyncHooks};
 pub use wal::{
     CodecError, FLAG_COMMIT, FLAG_CONTINUES, MAX_FRAME_PAYLOAD, RecoveredWal, WAL_MAGIC, WalFrame,

@@ -12,6 +12,19 @@ use std::sync::Arc;
 
 const META_MAGIC: u32 = u32::from_le_bytes(*b"IMET");
 const META_VERSION: u32 = 1;
+const MANIFEST_MAGIC: u32 = u32::from_le_bytes(*b"IMAN");
+const MANIFEST_VERSION: u32 = 1;
+
+/// Durable manifest pointing at live segments and the active WAL generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestData {
+    /// Monotonic manifest sequence (also used in `MANIFEST-<seq>` filename).
+    pub manifest_seq: u64,
+    /// Active WAL file id (`wal/<wal_seq>.log`).
+    pub wal_seq: u64,
+    /// Live immutable segment sequences (usually 0 or 1 after compaction).
+    pub segments: Vec<u64>,
+}
 
 /// Reads `CURRENT` and returns the absolute manifest path.
 pub fn read_current_manifest(db_dir: &Path) -> Result<PathBuf, BackendError> {
@@ -26,17 +39,93 @@ pub fn read_current_manifest(db_dir: &Path) -> Result<PathBuf, BackendError> {
     Ok(db_dir.join(name))
 }
 
+/// Encodes manifest bytes with CRC32C trailer.
+pub fn encode_manifest(data: &ManifestData) -> Vec<u8> {
+    use boa_idb_core::clone::crc32c::crc32c;
+    let mut body = Vec::new();
+    body.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
+    body.extend_from_slice(&MANIFEST_VERSION.to_le_bytes());
+    body.extend_from_slice(&data.manifest_seq.to_le_bytes());
+    body.extend_from_slice(&data.wal_seq.to_le_bytes());
+    body.extend_from_slice(&(data.segments.len() as u32).to_le_bytes());
+    for seq in &data.segments {
+        body.extend_from_slice(&seq.to_le_bytes());
+    }
+    let crc = crc32c(&body);
+    body.extend_from_slice(&crc.to_le_bytes());
+    body
+}
+
+/// Decodes a manifest body; corrupt input returns `Corrupted` (no panic).
+pub fn decode_manifest(bytes: &[u8]) -> Result<ManifestData, BackendError> {
+    use boa_idb_core::clone::crc32c::crc32c;
+    if bytes.len() < 4 + 4 + 8 + 8 + 4 + 4 {
+        return Err(BackendError::Corrupted("manifest too short".into()));
+    }
+    let body = &bytes[..bytes.len() - 4];
+    let expected = u32::from_le_bytes(bytes[bytes.len() - 4..].try_into().unwrap());
+    let actual = crc32c(body);
+    if expected != actual {
+        return Err(BackendError::Corrupted(format!(
+            "manifest crc mismatch expected={expected:#x} actual={actual:#x}"
+        )));
+    }
+    let magic = u32::from_le_bytes(body[0..4].try_into().unwrap());
+    if magic != MANIFEST_MAGIC {
+        return Err(BackendError::Corrupted(format!(
+            "bad manifest magic {magic:#x}"
+        )));
+    }
+    let ver = u32::from_le_bytes(body[4..8].try_into().unwrap());
+    if ver != MANIFEST_VERSION {
+        return Err(BackendError::Corrupted(format!(
+            "unsupported manifest version {ver}"
+        )));
+    }
+    let manifest_seq = u64::from_le_bytes(body[8..16].try_into().unwrap());
+    let wal_seq = u64::from_le_bytes(body[16..24].try_into().unwrap());
+    let n = u32::from_le_bytes(body[24..28].try_into().unwrap()) as usize;
+    let mut pos = 28;
+    let mut segments = Vec::with_capacity(n);
+    for _ in 0..n {
+        if pos + 8 > body.len() {
+            return Err(BackendError::Corrupted(
+                "truncated manifest segments".into(),
+            ));
+        }
+        segments.push(u64::from_le_bytes(body[pos..pos + 8].try_into().unwrap()));
+        pos += 8;
+    }
+    if pos != body.len() {
+        return Err(BackendError::Corrupted("trailing manifest bytes".into()));
+    }
+    Ok(ManifestData {
+        manifest_seq,
+        wal_seq,
+        segments,
+    })
+}
+
+/// Reads and decodes the manifest referenced by `CURRENT`.
+pub fn load_manifest(db_dir: &Path) -> Result<ManifestData, BackendError> {
+    let path = read_current_manifest(db_dir)?;
+    let bytes = fs::read(&path).map_err(|e| io_to_backend(e, "read MANIFEST"))?;
+    decode_manifest(&bytes)
+}
+
 /// Writes a new `MANIFEST-<seq>` and updates `CURRENT` atomically.
+///
+/// Publication order: manifest file fully synced, then `CURRENT` rename.
 pub fn write_manifest(
     db_dir: &Path,
-    seq: u64,
-    body: &[u8],
+    data: &ManifestData,
     sync: bool,
     hooks: &Arc<dyn SyncHooks>,
 ) -> Result<(), BackendError> {
-    let name = format!("MANIFEST-{seq:06}");
+    let name = format!("MANIFEST-{:06}", data.manifest_seq);
     let path = db_dir.join(&name);
-    atomic_write(&path, body, sync, hooks)?;
+    let body = encode_manifest(data);
+    atomic_write(&path, &body, sync, hooks)?;
     atomic_write(
         &db_dir.join("CURRENT"),
         format!("{name}\n").as_bytes(),

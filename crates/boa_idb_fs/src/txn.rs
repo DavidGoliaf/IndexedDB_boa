@@ -13,9 +13,10 @@ use boa_idb_core::proto::{Direction, Durability, IndexId, SourceRef, StoreId, Tx
 use parking_lot::RwLock;
 
 use crate::atomic::{append_and_maybe_sync, truncate_file};
+use crate::compact::{CompactConfig, maybe_compact, wal_path};
 use crate::cursor::FsCursor;
 use crate::meta::{encode_meta, write_meta_file};
-use crate::state::{DbState, IndexKey, RecordKey};
+use crate::state::{DbState, IndexKey, RecordKey, SnapshotMeter};
 use crate::sync_hooks::SyncHooks;
 use crate::wal::{CodecError, WalOp, encode_txn_frames_limited};
 
@@ -63,6 +64,9 @@ pub struct FsTxn {
     hooks: Arc<dyn SyncHooks>,
     max_keys_in_memory: u64,
     max_frame_payload: u32,
+    compact: CompactConfig,
+    #[allow(dead_code)]
+    meter: Arc<SnapshotMeter>,
     schema_dirty: bool,
 
     // Transaction-local data (pending changes)
@@ -87,6 +91,8 @@ impl FsTxn {
         hooks: Arc<dyn SyncHooks>,
         max_keys_in_memory: u64,
         max_frame_payload: u32,
+        compact: CompactConfig,
+        meter: Arc<SnapshotMeter>,
     ) -> Self {
         Self {
             mode,
@@ -98,6 +104,8 @@ impl FsTxn {
             hooks,
             max_keys_in_memory,
             max_frame_payload,
+            compact,
+            meter,
             schema_dirty: false,
             pending_records: BTreeMap::new(),
             pending_index_entries: BTreeMap::new(),
@@ -197,7 +205,8 @@ impl FsTxn {
         let mut results = Vec::new();
 
         // Check committed entries
-        for ((iid, ik, pk), _) in &state.index_entries {
+        for (ikey, _) in state.index_entries.iter() {
+            let (iid, ik, pk) = ikey;
             if *iid == index_id && ik == idx_key {
                 let pending_key = (index_id, ik.clone(), pk.clone());
                 // Check if overridden by pending
@@ -230,7 +239,8 @@ impl FsTxn {
         let mut results = Vec::new();
 
         // Check committed entries
-        for ((iid, ik, pk), _) in &state.index_entries {
+        for (ikey, _) in state.index_entries.iter() {
+            let (iid, ik, pk) = ikey;
             if *iid == index_id && pk == primary_key {
                 let pending_key = (index_id, ik.clone(), pk.clone());
                 if let Some(existed) = self.pending_index_entries.get(&pending_key) {
@@ -273,7 +283,8 @@ impl FsTxn {
         // pending deletions, plus pending-only inserts.
         let state = self.state.read();
         let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-        for ((iid, idx_key, pk), _) in &state.index_entries {
+        for (ikey, _) in state.index_entries.iter() {
+            let (iid, idx_key, pk) = ikey;
             if *iid != index || !range.contains(idx_key) {
                 continue;
             }
@@ -399,18 +410,18 @@ impl FsTxn {
         for (key, value) in &self.pending_records {
             match value {
                 Some(val) => {
-                    state.records.insert(key.clone(), val.clone());
+                    state.records.insert_mut(key.clone(), val.clone());
                 }
                 None => {
-                    state.records.remove(key);
+                    state.records.remove_mut(key);
                 }
             }
         }
         for (key, exists) in &self.pending_index_entries {
             if *exists {
-                state.index_entries.insert(key.clone(), ());
+                state.index_entries.insert_mut(key.clone(), ());
             } else {
-                state.index_entries.remove(key);
+                state.index_entries.remove_mut(key);
             }
         }
         for (store, value) in &self.pending_key_generators {
@@ -772,7 +783,8 @@ impl BackendTxn for FsTxn {
 
                 // Count committed records in range
                 let state = self.state.read();
-                for (sid, key) in state.records.keys() {
+                for (rkey, _) in state.records.iter() {
+                    let (sid, key) = rkey;
                     if *sid == store && range.contains(key) {
                         // Check if not deleted in pending
                         let pending_key = (store, key.clone());
@@ -810,7 +822,8 @@ impl BackendTxn for FsTxn {
                 // Merged view: committed entries, minus those deleted in
                 // pending, plus pending-only inserts.
                 let state = self.state.read();
-                for ((iid, idx_key, pk), _) in &state.index_entries {
+                for (ikey, _) in state.index_entries.iter() {
+                    let (iid, idx_key, pk) = ikey;
                     if *iid != index || !range.contains(idx_key) {
                         continue;
                     }
@@ -856,7 +869,8 @@ impl BackendTxn for FsTxn {
 
                 // Add committed records
                 let state = self.state.read();
-                for ((sid, key), value) in &state.records {
+                for (rkey, value) in state.records.iter() {
+                    let (sid, key) = rkey;
                     if *sid == store && range.contains(key) {
                         // Check if overridden by pending
                         let pending_key = (store, key.clone());
@@ -1039,10 +1053,13 @@ impl BackendTxn for FsTxn {
         let sync = self.wants_sync();
         let (ops, meta, schema_dirty) = self.build_commit_payload();
         let empty = ops.is_empty();
-        let wal_path = self.db_dir.join("wal").join("000001.log");
-        let wal_len_before = fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
+        let wal_seq = self.state.read().wal_seq;
+        let wal_file = wal_path(&self.db_dir, wal_seq);
+        let wal_len_before = fs::metadata(&wal_file).map(|m| m.len()).unwrap_or(0);
         let txn_seq = self.state.read().next_txn_seq;
 
+        let mut appended = 0u64;
+        let mut frame_groups = 0u64;
         if !empty {
             let frames = match encode_txn_frames_limited(txn_seq, &ops, self.max_frame_payload) {
                 Ok(frames) => frames,
@@ -1056,28 +1073,35 @@ impl BackendTxn for FsTxn {
                     return Err(BackendError::Internal(format!("encode WAL frames: {err}")));
                 }
             };
-            // Schema commits always sync the WAL (final COMMIT included) before
-            // advancing meta.scf so a crash cannot leave newer meta with an
-            // older durable journal.
+            frame_groups = 1;
             let wal_sync = sync || schema_dirty;
             for (i, bytes) in frames.iter().enumerate() {
                 let is_last = i + 1 == frames.len();
                 let do_sync = wal_sync && is_last;
-                if let Err(err) = append_and_maybe_sync(&wal_path, bytes, do_sync, &self.hooks) {
-                    let _ = truncate_file(&wal_path, wal_len_before);
+                if let Err(err) = append_and_maybe_sync(&wal_file, bytes, do_sync, &self.hooks) {
+                    let _ = truncate_file(&wal_file, wal_len_before);
                     return Err(err);
                 }
+                appended += bytes.len() as u64;
             }
         }
 
         if schema_dirty {
             if let Err(err) = write_meta_file(&self.db_dir, &meta, sync, &self.hooks) {
-                let _ = truncate_file(&wal_path, wal_len_before);
+                let _ = truncate_file(&wal_file, wal_len_before);
                 return Err(err);
             }
         }
 
         self.apply_pending_to_state(meta, txn_seq, !empty);
+        if !empty {
+            let mut state = self.state.write();
+            state.wal_bytes_since_compact = state.wal_bytes_since_compact.saturating_add(appended);
+            state.wal_frames_since_compact =
+                state.wal_frames_since_compact.saturating_add(frame_groups);
+            // Compaction errors must not undo a durable commit; retry next write.
+            let _ = maybe_compact(&self.db_dir, &mut state, self.compact, &self.hooks);
+        }
         Ok(())
     }
 
