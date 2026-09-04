@@ -267,6 +267,63 @@ fn inactive_transaction_rejects_new_requests() {
 }
 
 #[test]
+fn store_ops_reject_after_timer_task_boundary() {
+    // Sticky JS `active` stays true until deactivate, but §2.7 requires
+    // store/index requests to fail once `note_timer_task` advances the epoch.
+    let mut context = create_context();
+    context
+        .eval(Source::from_bytes(
+            r#"
+            globalThis.__out = {};
+            let openReq = indexedDB.open("epoch-store", 1);
+            openReq.onupgradeneeded = () => {
+                openReq.result.createObjectStore("s", { keyPath: "id" });
+            };
+            openReq.onsuccess = () => { globalThis.__db = openReq.result; };
+            "#,
+        ))
+        .expect("open eval");
+    context.run_jobs().expect("open jobs");
+    context.run_jobs().expect("open jobs");
+
+    context
+        .eval(Source::from_bytes(
+            r#"
+            const tx = globalThis.__db.transaction("s", "readwrite");
+            globalThis.__store = tx.objectStore("s");
+            globalThis.__store.put({ id: 1 });
+            "#,
+        ))
+        .expect("start txn");
+
+    boa_idb::driver::note_timer_task(&mut context);
+
+    context
+        .eval(Source::from_bytes(
+            r"
+            try {
+                globalThis.__store.put({ id: 2 });
+                globalThis.__out.threw = false;
+            } catch (e) {
+                globalThis.__out.threw = (e && e.name) || String(e);
+            }
+            ",
+        ))
+        .expect("post-epoch put");
+
+    let out = context
+        .eval(Source::from_bytes("JSON.stringify(globalThis.__out)"))
+        .expect("readback")
+        .to_string(&mut context)
+        .expect("to_string")
+        .to_std_string_escaped();
+    assert!(
+        out.contains("TransactionInactiveError"),
+        "expected TransactionInactiveError after timer boundary, out={out}"
+    );
+}
+
+#[test]
 fn delete_and_clear_flow() {
     let mut context = create_context();
     let out = run_scenario(

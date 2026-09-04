@@ -64,8 +64,21 @@ impl SqliteTxn {
                         BackendError::Internal(format!("setting strict durability failed: {e}"))
                     })?;
             }
-            conn.execute_batch("BEGIN IMMEDIATE")
-                .map_err(|e| BackendError::Internal(format!("BEGIN IMMEDIATE failed: {e}")))?;
+            conn.execute_batch("BEGIN IMMEDIATE").map_err(|e| {
+                // Another connection may still hold the write lock (cross-pool
+                // or multi-process). Surface as Locked so the L1 driver can
+                // requeue instead of aborting the transaction.
+                if matches!(
+                    &e,
+                    rusqlite::Error::SqliteFailure(err, _)
+                        if err.code == rusqlite::ErrorCode::DatabaseBusy
+                            || err.code == rusqlite::ErrorCode::DatabaseLocked
+                ) {
+                    BackendError::Locked
+                } else {
+                    BackendError::Internal(format!("BEGIN IMMEDIATE failed: {e}"))
+                }
+            })?;
         }
 
         Ok(Self {

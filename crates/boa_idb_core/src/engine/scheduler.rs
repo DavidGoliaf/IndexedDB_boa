@@ -119,6 +119,19 @@ impl TransactionScheduler {
         self.running_txns.retain(|t| t.id != id);
     }
 
+    /// Moves a running transaction that never obtained a backend (e.g. transient
+    /// [`BackendError::Locked`]) back to the front of the pending queue.
+    ///
+    /// `poll_ready` places candidates into `running_txns` before the backend
+    /// `begin` call. If begin fails with `Locked`, leaving the id in `running`
+    /// would strand it forever (`poll_ready` will not return it again).
+    pub fn requeue_unstarted(&mut self, id: TxnId) {
+        if let Some(pos) = self.running_txns.iter().position(|t| t.id == id) {
+            let item = self.running_txns.remove(pos);
+            self.pending_queue.push_front(item);
+        }
+    }
+
     /// Forgets a transaction entirely (pending and running).
     ///
     /// Needed for transactions that never went through `poll_ready` (e.g.
@@ -263,6 +276,34 @@ mod tests {
         sched.on_txn_finished(1);
         let ready = sched.poll_ready();
         assert_eq!(ready.len(), 10);
+    }
+
+    #[test]
+    fn test_requeue_unstarted_returns_to_pending_front() {
+        let mut sched = TransactionScheduler::new();
+        sched.enqueue(TxnQueueItem {
+            id: 1,
+            mode: TxnMode::ReadWrite,
+            scope: vec![1],
+        });
+        sched.enqueue(TxnQueueItem {
+            id: 2,
+            mode: TxnMode::ReadWrite,
+            scope: vec![2],
+        });
+        let ready = sched.poll_ready();
+        assert_eq!(ready.len(), 2);
+        assert_eq!(sched.running_count(), 2);
+        assert_eq!(sched.pending_count(), 0);
+
+        sched.requeue_unstarted(2);
+        assert_eq!(sched.running_count(), 1);
+        assert_eq!(sched.pending_count(), 1);
+
+        // Finishing 1 must allow 2 to start again.
+        sched.on_txn_finished(1);
+        let ready = sched.poll_ready();
+        assert_eq!(ready, vec![2]);
     }
 
     #[test]

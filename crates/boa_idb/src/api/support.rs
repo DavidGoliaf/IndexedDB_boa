@@ -11,6 +11,7 @@ use crate::api::request::IdBRequest;
 use crate::api::transaction::IdBTransaction;
 use crate::convert::key::value_to_key;
 use crate::driver::{PendingOp, RangeData};
+use crate::runtime::IdbRuntime;
 
 /// Issues a request: allocates an id, creates the shell, enqueues the op,
 /// and schedules the pump. Execution happens asynchronously in the pump job.
@@ -35,9 +36,28 @@ fn txn_flags(obj: &JsObject) -> Option<(u64, bool, bool, bool)> {
 }
 
 /// Requires the transaction of a store/index/cursor handle to accept new requests.
+///
+/// Mirrors `IDBTransaction.commit`: the sticky JS `active` flag alone is not
+/// enough after a macro-task boundary (`note_timer_task`); the driver
+/// `active_epoch` must still match `task_epoch` (§2.7).
 pub fn active_txn_id(context: &mut Context, txn_obj: &JsObject) -> JsResult<u64> {
     match txn_flags(txn_obj) {
-        Some((id, true, false, false)) => Ok(id),
+        Some((id, true, false, false)) => {
+            let epoch_stale = context.get_data::<IdbRuntime>().is_some_and(|runtime| {
+                let d = crate::runtime::lock_mutex(&runtime.driver);
+                d.txns
+                    .get(&id)
+                    .is_some_and(|h| h.active_epoch != d.task_epoch)
+            });
+            if epoch_stale {
+                return crate::dom::exception::throw_transaction_inactive_error(
+                    "The transaction is inactive or finished.",
+                    context,
+                )
+                .map(|_| 0);
+            }
+            Ok(id)
+        }
         Some(_) => crate::dom::exception::throw_transaction_inactive_error(
             "The transaction is inactive or finished.",
             context,
