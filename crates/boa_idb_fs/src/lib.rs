@@ -46,5 +46,6 @@ pub use naming::{database_dir_name, database_root, storage_dir_name, storage_roo
 pub use sync_hooks::{CountingSyncHooks, OsSyncHooks, SyncHooks};
 pub use wal::{
     CodecError, FLAG_COMMIT, FLAG_CONTINUES, MAX_FRAME_PAYLOAD, RecoveredWal, WAL_MAGIC, WalFrame,
-    WalOp, decode_frame, encode_frame, recover_committed_frames,
+    WalOp, decode_frame, encode_frame, encode_txn_frames, encode_txn_frames_limited,
+    recover_committed_frames,
 };

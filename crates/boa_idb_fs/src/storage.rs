@@ -19,6 +19,7 @@ pub struct FsStorage {
     storage_key: String,
     hooks: Arc<dyn SyncHooks>,
     max_keys_in_memory: u64,
+    max_frame_payload: u32,
 }
 
 impl FsStorage {
@@ -27,6 +28,7 @@ impl FsStorage {
         storage_key: String,
         hooks: Arc<dyn SyncHooks>,
         max_keys_in_memory: u64,
+        max_frame_payload: u32,
     ) -> Result<Self, BackendError> {
         fs::create_dir_all(&root).map_err(|e| io_to_backend(e, "create storage root"))?;
         Ok(Self {
@@ -34,6 +36,7 @@ impl FsStorage {
             storage_key,
             hooks,
             max_keys_in_memory,
+            max_frame_payload,
         })
     }
 
@@ -69,6 +72,7 @@ impl Storage for FsStorage {
             name,
             self.hooks.clone(),
             self.max_keys_in_memory,
+            self.max_frame_payload,
         )?;
         Ok(Box::new(db))
     }

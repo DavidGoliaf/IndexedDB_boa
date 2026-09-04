@@ -17,7 +17,7 @@ use crate::cursor::FsCursor;
 use crate::meta::{encode_meta, write_meta_file};
 use crate::state::{DbState, IndexKey, RecordKey};
 use crate::sync_hooks::SyncHooks;
-use crate::wal::{FLAG_COMMIT, WalFrame, WalOp, encode_frame};
+use crate::wal::{CodecError, WalOp, encode_txn_frames_limited};
 
 /// Undo operation for savepoint rollback.
 ///
@@ -62,6 +62,7 @@ pub struct FsTxn {
     db_dir: PathBuf,
     hooks: Arc<dyn SyncHooks>,
     max_keys_in_memory: u64,
+    max_frame_payload: u32,
     schema_dirty: bool,
 
     // Transaction-local data (pending changes)
@@ -85,6 +86,7 @@ impl FsTxn {
         db_dir: PathBuf,
         hooks: Arc<dyn SyncHooks>,
         max_keys_in_memory: u64,
+        max_frame_payload: u32,
     ) -> Self {
         Self {
             mode,
@@ -95,6 +97,7 @@ impl FsTxn {
             db_dir,
             hooks,
             max_keys_in_memory,
+            max_frame_payload,
             schema_dirty: false,
             pending_records: BTreeMap::new(),
             pending_index_entries: BTreeMap::new(),
@@ -1041,19 +1044,29 @@ impl BackendTxn for FsTxn {
         let txn_seq = self.state.read().next_txn_seq;
 
         if !empty {
-            let frame = WalFrame {
-                txn_seq,
-                flags: FLAG_COMMIT,
-                ops,
+            let frames = match encode_txn_frames_limited(txn_seq, &ops, self.max_frame_payload) {
+                Ok(frames) => frames,
+                Err(CodecError::PayloadTooLarge(needed)) => {
+                    return Err(BackendError::QuotaExceeded {
+                        needed: needed as u64,
+                        available: u64::from(self.max_frame_payload),
+                    });
+                }
+                Err(err) => {
+                    return Err(BackendError::Internal(format!("encode WAL frames: {err}")));
+                }
             };
-            let bytes = encode_frame(&frame)
-                .map_err(|e| BackendError::Internal(format!("encode WAL frame: {e}")))?;
-            // Schema commits always sync the WAL before advancing meta.scf so a
-            // crash cannot leave newer meta with an older durable journal.
+            // Schema commits always sync the WAL (final COMMIT included) before
+            // advancing meta.scf so a crash cannot leave newer meta with an
+            // older durable journal.
             let wal_sync = sync || schema_dirty;
-            if let Err(err) = append_and_maybe_sync(&wal_path, &bytes, wal_sync, &self.hooks) {
-                let _ = truncate_file(&wal_path, wal_len_before);
-                return Err(err);
+            for (i, bytes) in frames.iter().enumerate() {
+                let is_last = i + 1 == frames.len();
+                let do_sync = wal_sync && is_last;
+                if let Err(err) = append_and_maybe_sync(&wal_path, bytes, do_sync, &self.hooks) {
+                    let _ = truncate_file(&wal_path, wal_len_before);
+                    return Err(err);
+                }
             }
         }
 

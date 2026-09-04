@@ -10,8 +10,8 @@ use boa_idb_core::key::range::EncodedRange;
 use boa_idb_core::key::utf16::Utf16String;
 use boa_idb_core::proto::{Direction, Durability, SourceRef, StorageKey, TxnMode};
 use boa_idb_fs::{
-    CountingSyncHooks, FLAG_COMMIT, FsBackendFactory, OsSyncHooks, SyncHooks, WalFrame, WalOp,
-    decode_frame, encode_frame, recover_committed_frames,
+    CountingSyncHooks, FLAG_COMMIT, FLAG_CONTINUES, FsBackendFactory, OsSyncHooks, SyncHooks,
+    WalFrame, WalOp, decode_frame, encode_frame, recover_committed_frames,
 };
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -662,4 +662,274 @@ fn readonly_rejects_key_gen_and_index_writes() {
     assert!(txn.index_put(index, b"a", b"pk", false).is_err());
     assert!(txn.index_delete(index, b"a", b"pk").is_err());
     assert!(txn.index_delete_by_primary(index, b"pk").is_err());
+}
+
+#[test]
+fn sequence_mismatch_wal_does_not_apply_on_reopen() {
+    let dir = tempdir().unwrap();
+    let key = StorageKey::new("seq-mismatch");
+    let storage = factory(dir.path()).open_storage(&key).unwrap();
+    let store = {
+        let mut db = storage.open_database("db").unwrap();
+        let mut txn = db
+            .begin(TxnMode::VersionChange, &[], Durability::Strict)
+            .unwrap();
+        let store = txn
+            .create_store(&StoreSpec {
+                name: Utf16String::from_str("s"),
+                key_path: KeyPath::Empty,
+                auto_increment: false,
+            })
+            .unwrap();
+        txn.commit().unwrap();
+        store
+    };
+    drop(storage);
+
+    let wal = find_wal(dir.path());
+    let cont = encode_frame(&WalFrame {
+        txn_seq: 41,
+        flags: FLAG_CONTINUES,
+        ops: vec![WalOp::Put {
+            store,
+            key: b"a".to_vec(),
+            value: b"1".to_vec(),
+        }],
+    })
+    .unwrap();
+    let commit = encode_frame(&WalFrame {
+        txn_seq: 42,
+        flags: FLAG_COMMIT,
+        ops: vec![WalOp::Put {
+            store,
+            key: b"b".to_vec(),
+            value: b"2".to_vec(),
+        }],
+    })
+    .unwrap();
+    let mut f = OpenOptions::new().append(true).open(&wal).unwrap();
+    f.write_all(&cont).unwrap();
+    f.write_all(&commit).unwrap();
+    drop(f);
+
+    let storage = factory(dir.path()).open_storage(&key).unwrap();
+    let mut db = storage.open_database("db").unwrap();
+    let mut txn = db
+        .begin(TxnMode::ReadOnly, &[store], Durability::Relaxed)
+        .unwrap();
+    assert_eq!(txn.get(store, b"a").unwrap(), None);
+    assert_eq!(txn.get(store, b"b").unwrap(), None);
+}
+
+#[test]
+fn multi_frame_commit_recovers_and_torn_continues_is_dropped() {
+    use boa_idb_fs::encode_txn_frames_limited;
+
+    let dir = tempdir().unwrap();
+    let key = StorageKey::new("multi");
+    let storage = factory(dir.path()).open_storage(&key).unwrap();
+    let store = {
+        let mut db = storage.open_database("db").unwrap();
+        let mut txn = db
+            .begin(TxnMode::VersionChange, &[], Durability::Strict)
+            .unwrap();
+        let store = txn
+            .create_store(&StoreSpec {
+                name: Utf16String::from_str("s"),
+                key_path: KeyPath::Empty,
+                auto_increment: false,
+            })
+            .unwrap();
+        txn.commit().unwrap();
+        store
+    };
+    drop(storage);
+
+    let ops: Vec<WalOp> = (0..6)
+        .map(|i| WalOp::Put {
+            store,
+            key: vec![b'k', i],
+            value: vec![b'v', i],
+        })
+        .collect();
+    let frames = encode_txn_frames_limited(99, &ops, 48).unwrap();
+    assert!(frames.len() >= 2);
+
+    let wal = find_wal(dir.path());
+    {
+        let mut f = OpenOptions::new().append(true).open(&wal).unwrap();
+        for bytes in &frames {
+            f.write_all(bytes).unwrap();
+        }
+    }
+
+    let storage = factory(dir.path()).open_storage(&key).unwrap();
+    {
+        let mut db = storage.open_database("db").unwrap();
+        let mut txn = db
+            .begin(TxnMode::ReadOnly, &[store], Durability::Relaxed)
+            .unwrap();
+        for i in 0..6u8 {
+            assert_eq!(txn.get(store, &[b'k', i]).unwrap(), Some(vec![b'v', i]));
+        }
+    }
+    drop(storage);
+
+    // Truncate after first CONTINUES frame: incomplete txn must vanish.
+    let prefix_after_first = {
+        let before = fs::metadata(&wal).unwrap().len();
+        let chain: usize = frames.iter().map(std::vec::Vec::len).sum();
+        before - chain as u64 + frames[0].len() as u64
+    };
+    {
+        let f = OpenOptions::new().write(true).open(&wal).unwrap();
+        f.set_len(prefix_after_first).unwrap();
+    }
+
+    let storage = factory(dir.path()).open_storage(&key).unwrap();
+    let mut db = storage.open_database("db").unwrap();
+    let mut txn = db
+        .begin(TxnMode::ReadOnly, &[store], Durability::Relaxed)
+        .unwrap();
+    for i in 0..6u8 {
+        assert_eq!(txn.get(store, &[b'k', i]).unwrap(), None);
+    }
+}
+
+#[test]
+fn multi_frame_sync_failure_rolls_back_entire_chain() {
+    let dir = tempdir().unwrap();
+    let key = StorageKey::new("multi-fail");
+    let store = {
+        let storage = factory(dir.path()).open_storage(&key).unwrap();
+        let mut db = storage.open_database("db").unwrap();
+        let mut txn = db
+            .begin(TxnMode::VersionChange, &[], Durability::Strict)
+            .unwrap();
+        let store = txn
+            .create_store(&StoreSpec {
+                name: Utf16String::from_str("s"),
+                key_path: KeyPath::Empty,
+                auto_increment: false,
+            })
+            .unwrap();
+        txn.commit().unwrap();
+        store
+    };
+
+    let hooks = FailNextFileSync::new();
+    let limited = FsBackendFactory::new(dir.path())
+        .with_sync_hooks(hooks.clone())
+        .with_max_frame_payload(64);
+    {
+        let storage = limited.open_storage(&key).unwrap();
+        let mut db = storage.open_database("db").unwrap();
+        let mut txn = db
+            .begin(TxnMode::ReadWrite, &[store], Durability::Strict)
+            .unwrap();
+        txn.begin_request().unwrap();
+        for i in 0..12u8 {
+            txn.put(store, &[b'k', i], &[b'v', i], false).unwrap();
+        }
+        txn.commit_request().unwrap();
+        hooks.arm();
+        assert!(txn.commit().is_err());
+    }
+
+    let storage = limited.open_storage(&key).unwrap();
+    let mut db = storage.open_database("db").unwrap();
+    let mut txn = db
+        .begin(TxnMode::ReadOnly, &[store], Durability::Relaxed)
+        .unwrap();
+    assert_eq!(txn.get(store, &[b'k', 0]).unwrap(), None);
+}
+
+#[test]
+fn oversized_single_op_does_not_touch_wal_or_state() {
+    let dir = tempdir().unwrap();
+    let key = StorageKey::new("too-big");
+    let store = {
+        let storage = factory(dir.path()).open_storage(&key).unwrap();
+        let mut db = storage.open_database("db").unwrap();
+        let mut txn = db
+            .begin(TxnMode::VersionChange, &[], Durability::Strict)
+            .unwrap();
+        let store = txn
+            .create_store(&StoreSpec {
+                name: Utf16String::from_str("s"),
+                key_path: KeyPath::Empty,
+                auto_increment: false,
+            })
+            .unwrap();
+        txn.commit().unwrap();
+        store
+    };
+    let wal = find_wal(dir.path());
+    let before = fs::metadata(&wal).unwrap().len();
+
+    let limited = FsBackendFactory::new(dir.path()).with_max_frame_payload(32);
+    {
+        let storage = limited.open_storage(&key).unwrap();
+        let mut db = storage.open_database("db").unwrap();
+        let mut txn = db
+            .begin(TxnMode::ReadWrite, &[store], Durability::Strict)
+            .unwrap();
+        txn.begin_request().unwrap();
+        txn.put(store, b"k", &[0u8; 64], false).unwrap();
+        txn.commit_request().unwrap();
+        let err = txn.commit().unwrap_err();
+        assert!(matches!(err, BackendError::QuotaExceeded { .. }));
+    }
+    assert_eq!(fs::metadata(&wal).unwrap().len(), before);
+
+    let storage = limited.open_storage(&key).unwrap();
+    let mut db = storage.open_database("db").unwrap();
+    let mut txn = db
+        .begin(TxnMode::ReadOnly, &[store], Durability::Relaxed)
+        .unwrap();
+    assert_eq!(txn.get(store, b"k").unwrap(), None);
+}
+
+#[test]
+fn multi_frame_commit_via_backend_persists() {
+    let dir = tempdir().unwrap();
+    let key = StorageKey::new("multi-backend");
+    let store = {
+        let storage = factory(dir.path()).open_storage(&key).unwrap();
+        let mut db = storage.open_database("db").unwrap();
+        let mut txn = db
+            .begin(TxnMode::VersionChange, &[], Durability::Strict)
+            .unwrap();
+        let store = txn
+            .create_store(&StoreSpec {
+                name: Utf16String::from_str("s"),
+                key_path: KeyPath::Empty,
+                auto_increment: false,
+            })
+            .unwrap();
+        txn.commit().unwrap();
+        store
+    };
+    let limited = FsBackendFactory::new(dir.path()).with_max_frame_payload(48);
+    {
+        let storage = limited.open_storage(&key).unwrap();
+        let mut db = storage.open_database("db").unwrap();
+        let mut txn = db
+            .begin(TxnMode::ReadWrite, &[store], Durability::Strict)
+            .unwrap();
+        txn.begin_request().unwrap();
+        for i in 0..8u8 {
+            txn.put(store, &[b'k', i], &[b'v', i], false).unwrap();
+        }
+        txn.commit_request().unwrap();
+        txn.commit().unwrap();
+    }
+    let storage = limited.open_storage(&key).unwrap();
+    let mut db = storage.open_database("db").unwrap();
+    let mut txn = db
+        .begin(TxnMode::ReadOnly, &[store], Durability::Relaxed)
+        .unwrap();
+    for i in 0..8u8 {
+        assert_eq!(txn.get(store, &[b'k', i]).unwrap(), Some(vec![b'v', i]));
+    }
 }

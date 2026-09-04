@@ -28,6 +28,7 @@ pub struct FsDatabase {
     db_dir: PathBuf,
     hooks: Arc<dyn SyncHooks>,
     max_keys_in_memory: u64,
+    max_frame_payload: u32,
     _lock: DbLock,
 }
 
@@ -38,6 +39,7 @@ impl FsDatabase {
         name: &str,
         hooks: Arc<dyn SyncHooks>,
         max_keys_in_memory: u64,
+        max_frame_payload: u32,
     ) -> Result<Self, BackendError> {
         fs::create_dir_all(db_dir.join("wal")).map_err(|e| io_to_backend(e, "create wal dir"))?;
         let lock = DbLock::try_acquire(&db_dir.join("LOCK"))?;
@@ -93,6 +95,7 @@ impl FsDatabase {
             db_dir,
             hooks,
             max_keys_in_memory,
+            max_frame_payload,
             _lock: lock,
         })
     }
@@ -147,6 +150,7 @@ impl Database for FsDatabase {
             self.db_dir.clone(),
             self.hooks.clone(),
             self.max_keys_in_memory,
+            self.max_frame_payload,
         )))
     }
 

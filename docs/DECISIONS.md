@@ -141,6 +141,14 @@ M6-B. TZ suggests `fs4`/`fd-lock` for locks.
    by default; counting observer in tests). Never overwrite `MANIFEST` or
    `meta.scf` in place.
 5. **Dev/test:** `tempfile` and `proptest` as already used by sibling crates.
+6. **WAL flags / multi-frame protocol:** a committed transaction is either a
+   single frame with flags exactly `FLAG_COMMIT` (`0x02`), or a chain of one or
+   more frames with flags exactly `FLAG_CONTINUES` (`0x01`) followed by a final
+   frame with flags exactly `FLAG_COMMIT`, all sharing the same `txn_seq`.
+   `CONTINUES|COMMIT`, zero flags, and other bits are illegal and stop recovery
+   at the prior committed prefix. Ops that do not fit in one payload are split
+   across CONTINUES/COMMIT frames without splitting a single op; an op larger
+   than the payload limit fails with `QuotaExceeded` before any WAL write.
 
 **Consequences.** M6-A delivers durable single-writer recovery and lock
 safety without claiming compaction or O(1)/O(log n) snapshots. New crates

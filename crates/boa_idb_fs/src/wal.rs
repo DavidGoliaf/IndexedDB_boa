@@ -6,9 +6,10 @@ use boa_idb_core::proto::{IndexId, StoreId};
 /// Magic bytes `IWAL` as little-endian u32.
 pub const WAL_MAGIC: u32 = u32::from_le_bytes(*b"IWAL");
 
-/// Frame continues a multi-frame transaction.
+/// Frame continues a multi-frame transaction (must not combine with [`FLAG_COMMIT`]).
 pub const FLAG_CONTINUES: u8 = 0x01;
-/// Frame commits a transaction (alone or as the final CONTINUES segment).
+/// Frame commits a transaction — either alone or as the final frame of a chain
+/// (must not combine with [`FLAG_CONTINUES`]).
 pub const FLAG_COMMIT: u8 = 0x02;
 
 /// Maximum accepted frame payload length (64 MiB) to reject length overflow.
@@ -103,24 +104,7 @@ impl WalFrame {
 
 /// Encodes a frame to bytes (magic..crc32c).
 pub fn encode_frame(frame: &WalFrame) -> Result<Vec<u8>, CodecError> {
-    let mut payload = Vec::new();
-    write_varint(&mut payload, frame.ops.len() as u64);
-    for op in &frame.ops {
-        encode_op(&mut payload, op)?;
-    }
-    if payload.len() > MAX_FRAME_PAYLOAD as usize {
-        return Err(CodecError::PayloadTooLarge(payload.len()));
-    }
-
-    let mut out = Vec::with_capacity(4 + 4 + 8 + 1 + payload.len() + 4);
-    out.extend_from_slice(&WAL_MAGIC.to_le_bytes());
-    out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    out.extend_from_slice(&frame.txn_seq.to_le_bytes());
-    out.push(frame.flags);
-    out.extend_from_slice(&payload);
-    let crc = crc32c(&out);
-    out.extend_from_slice(&crc.to_le_bytes());
-    Ok(out)
+    encode_frame_limited(frame, MAX_FRAME_PAYLOAD)
 }
 
 /// Decodes the next frame from `input`, returning `(frame, bytes_consumed)`.
@@ -169,29 +153,61 @@ pub fn decode_frame(input: &[u8]) -> Result<Option<(WalFrame, usize)>, CodecErro
 
 /// Scans a WAL buffer and returns only complete committed transactions.
 ///
-/// Stops at the first torn/corrupt frame. Incomplete CONTINUES prefixes that
-/// never see COMMIT are discarded.
+/// A transaction is either a single `COMMIT` frame or a chain
+/// `CONTINUES*(same seq) → COMMIT(same seq)`. Sequence mismatches, illegal
+/// flag combinations, torn/corrupt frames, and incomplete chains stop recovery
+/// at the end of the last fully committed transaction. Defective bytes are
+/// never skipped in search of a later `COMMIT`.
 pub fn recover_committed_frames(buf: &[u8]) -> RecoveredWal {
     let mut offset = 0usize;
     let mut committed = Vec::new();
     let mut pending: Vec<WalFrame> = Vec::new();
+    let mut pending_seq: Option<u64> = None;
     let mut valid_prefix = 0usize;
 
     while offset < buf.len() {
         match decode_frame(&buf[offset..]) {
             Ok(Some((frame, consumed))) => {
-                offset += consumed;
-                let is_commit = frame.is_commit();
-                let continues = frame.continues();
-                pending.push(frame);
-                if is_commit {
-                    committed.append(&mut pending);
-                    valid_prefix = offset;
-                    pending.clear();
-                } else if !continues {
-                    // Lone non-commit frame is invalid; stop.
+                let next = offset + consumed;
+                let flags = frame.flags;
+                let is_commit = flags == FLAG_COMMIT;
+                let is_continues = flags == FLAG_CONTINUES;
+                if !is_commit && !is_continues {
+                    // Illegal flags (0, CONTINUES|COMMIT, unknown bits): stop.
                     pending.clear();
                     break;
+                }
+
+                match pending_seq {
+                    None => {
+                        if is_commit {
+                            offset = next;
+                            committed.push(frame);
+                            valid_prefix = offset;
+                        } else {
+                            // Start a multi-frame transaction.
+                            offset = next;
+                            pending_seq = Some(frame.txn_seq);
+                            pending.push(frame);
+                        }
+                    }
+                    Some(seq) => {
+                        if frame.txn_seq != seq {
+                            pending.clear();
+                            break;
+                        }
+                        if is_continues {
+                            offset = next;
+                            pending.push(frame);
+                        } else {
+                            // Matching COMMIT closes the chain.
+                            offset = next;
+                            pending.push(frame);
+                            committed.append(&mut pending);
+                            pending_seq = None;
+                            valid_prefix = offset;
+                        }
+                    }
                 }
             }
             Ok(None) => break,
@@ -206,6 +222,105 @@ pub fn recover_committed_frames(buf: &[u8]) -> RecoveredWal {
         frames: committed,
         valid_prefix_len: valid_prefix,
     }
+}
+
+/// Encodes one logical transaction as one or more WAL frames under
+/// [`MAX_FRAME_PAYLOAD`].
+///
+/// Intermediate frames use only [`FLAG_CONTINUES`]; the last uses only
+/// [`FLAG_COMMIT`]. A single operation that cannot fit returns
+/// [`CodecError::PayloadTooLarge`] without producing frames.
+pub fn encode_txn_frames(txn_seq: u64, ops: &[WalOp]) -> Result<Vec<Vec<u8>>, CodecError> {
+    encode_txn_frames_limited(txn_seq, ops, MAX_FRAME_PAYLOAD)
+}
+
+/// Like [`encode_txn_frames`] with an injectable payload limit (tests).
+pub fn encode_txn_frames_limited(
+    txn_seq: u64,
+    ops: &[WalOp],
+    max_payload: u32,
+) -> Result<Vec<Vec<u8>>, CodecError> {
+    if ops.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut groups: Vec<Vec<WalOp>> = Vec::new();
+    let mut current: Vec<WalOp> = Vec::new();
+    for op in ops {
+        let mut candidate = current.clone();
+        candidate.push(op.clone());
+        match payload_len(&candidate) {
+            Ok(len) if len <= max_payload as usize => {
+                current = candidate;
+            }
+            Ok(_) | Err(CodecError::PayloadTooLarge(_)) => {
+                if current.is_empty() {
+                    // Lone operation exceeds the limit.
+                    let alone = payload_len(std::slice::from_ref(op))?;
+                    return Err(CodecError::PayloadTooLarge(alone));
+                }
+                groups.push(std::mem::take(&mut current));
+                current.push(op.clone());
+                let alone = payload_len(&current)?;
+                if alone > max_payload as usize {
+                    return Err(CodecError::PayloadTooLarge(alone));
+                }
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    if !current.is_empty() {
+        groups.push(current);
+    }
+
+    let last = groups.len() - 1;
+    let mut out = Vec::with_capacity(groups.len());
+    for (i, group) in groups.into_iter().enumerate() {
+        let flags = if i == last {
+            FLAG_COMMIT
+        } else {
+            FLAG_CONTINUES
+        };
+        out.push(encode_frame_limited(
+            &WalFrame {
+                txn_seq,
+                flags,
+                ops: group,
+            },
+            max_payload,
+        )?);
+    }
+    Ok(out)
+}
+
+fn payload_len(ops: &[WalOp]) -> Result<usize, CodecError> {
+    let mut payload = Vec::new();
+    write_varint(&mut payload, ops.len() as u64);
+    for op in ops {
+        encode_op(&mut payload, op)?;
+    }
+    Ok(payload.len())
+}
+
+fn encode_frame_limited(frame: &WalFrame, max_payload: u32) -> Result<Vec<u8>, CodecError> {
+    let mut payload = Vec::new();
+    write_varint(&mut payload, frame.ops.len() as u64);
+    for op in &frame.ops {
+        encode_op(&mut payload, op)?;
+    }
+    if payload.len() > max_payload as usize {
+        return Err(CodecError::PayloadTooLarge(payload.len()));
+    }
+
+    let mut out = Vec::with_capacity(4 + 4 + 8 + 1 + payload.len() + 4);
+    out.extend_from_slice(&WAL_MAGIC.to_le_bytes());
+    out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    out.extend_from_slice(&frame.txn_seq.to_le_bytes());
+    out.push(frame.flags);
+    out.extend_from_slice(&payload);
+    let crc = crc32c(&out);
+    out.extend_from_slice(&crc.to_le_bytes());
+    Ok(out)
 }
 
 /// Result of WAL prefix recovery.
@@ -425,6 +540,7 @@ fn read_bytes(input: &[u8]) -> Result<(Vec<u8>, &[u8]), CodecError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use boa_idb_core::clone::crc32c::crc32c;
     use proptest::prelude::*;
 
     #[test]
@@ -475,6 +591,175 @@ mod tests {
         assert_eq!(recovered.valid_prefix_len, commit.len());
         assert_eq!(recovered.frames.len(), 1);
         assert_eq!(recovered.frames[0].txn_seq, 1);
+    }
+
+    #[test]
+    fn recovery_rejects_continues_then_commit_with_different_seq() {
+        let cont = encode_frame(&WalFrame {
+            txn_seq: 41,
+            flags: FLAG_CONTINUES,
+            ops: vec![WalOp::Put {
+                store: 1,
+                key: b"a".to_vec(),
+                value: b"1".to_vec(),
+            }],
+        })
+        .unwrap();
+        let commit = encode_frame(&WalFrame {
+            txn_seq: 42,
+            flags: FLAG_COMMIT,
+            ops: vec![WalOp::Put {
+                store: 1,
+                key: b"b".to_vec(),
+                value: b"2".to_vec(),
+            }],
+        })
+        .unwrap();
+        let mut buf = cont;
+        buf.extend_from_slice(&commit);
+        let recovered = recover_committed_frames(&buf);
+        assert_eq!(recovered.valid_prefix_len, 0);
+        assert!(recovered.frames.is_empty());
+    }
+
+    #[test]
+    fn recovery_keeps_prior_commit_when_later_chain_mismatches() {
+        let first = encode_frame(&WalFrame {
+            txn_seq: 41,
+            flags: FLAG_COMMIT,
+            ops: vec![WalOp::Put {
+                store: 1,
+                key: b"ok".to_vec(),
+                value: b"1".to_vec(),
+            }],
+        })
+        .unwrap();
+        let cont = encode_frame(&WalFrame {
+            txn_seq: 42,
+            flags: FLAG_CONTINUES,
+            ops: vec![WalOp::Put {
+                store: 1,
+                key: b"x".to_vec(),
+                value: b"2".to_vec(),
+            }],
+        })
+        .unwrap();
+        let bad = encode_frame(&WalFrame {
+            txn_seq: 43,
+            flags: FLAG_COMMIT,
+            ops: vec![WalOp::Put {
+                store: 1,
+                key: b"y".to_vec(),
+                value: b"3".to_vec(),
+            }],
+        })
+        .unwrap();
+        let mut buf = first.clone();
+        buf.extend_from_slice(&cont);
+        buf.extend_from_slice(&bad);
+        let recovered = recover_committed_frames(&buf);
+        assert_eq!(recovered.valid_prefix_len, first.len());
+        assert_eq!(recovered.frames.len(), 1);
+        assert_eq!(recovered.frames[0].txn_seq, 41);
+    }
+
+    #[test]
+    fn recovery_applies_matching_continues_commit_chain() {
+        let cont = encode_frame(&WalFrame {
+            txn_seq: 41,
+            flags: FLAG_CONTINUES,
+            ops: vec![WalOp::Put {
+                store: 1,
+                key: b"a".to_vec(),
+                value: b"1".to_vec(),
+            }],
+        })
+        .unwrap();
+        let commit = encode_frame(&WalFrame {
+            txn_seq: 41,
+            flags: FLAG_COMMIT,
+            ops: vec![WalOp::Put {
+                store: 1,
+                key: b"b".to_vec(),
+                value: b"2".to_vec(),
+            }],
+        })
+        .unwrap();
+        let mut buf = cont;
+        buf.extend_from_slice(&commit);
+        let recovered = recover_committed_frames(&buf);
+        assert_eq!(recovered.valid_prefix_len, buf.len());
+        assert_eq!(recovered.frames.len(), 2);
+        assert!(recovered.frames.iter().all(|f| f.txn_seq == 41));
+    }
+
+    #[test]
+    fn recovery_stops_on_illegal_flag_combinations() {
+        for flags in [0u8, FLAG_CONTINUES | FLAG_COMMIT, 0x04, 0xff] {
+            let good = encode_frame(&WalFrame {
+                txn_seq: 1,
+                flags: FLAG_COMMIT,
+                ops: vec![WalOp::Clear { store: 1 }],
+            })
+            .unwrap();
+            let mut bad = encode_frame(&WalFrame {
+                txn_seq: 2,
+                flags: FLAG_COMMIT,
+                ops: vec![WalOp::Clear { store: 2 }],
+            })
+            .unwrap();
+            // Patch flags byte (offset 16) and recompute CRC.
+            bad[16] = flags;
+            let body_len = bad.len() - 4;
+            let crc = crc32c(&bad[..body_len]);
+            bad[body_len..].copy_from_slice(&crc.to_le_bytes());
+
+            let mut buf = good.clone();
+            buf.extend_from_slice(&bad);
+            let recovered = recover_committed_frames(&buf);
+            assert_eq!(recovered.valid_prefix_len, good.len(), "flags={flags:#x}");
+            assert_eq!(recovered.frames.len(), 1);
+        }
+    }
+
+    #[test]
+    fn encode_txn_frames_splits_under_small_limit() {
+        let ops: Vec<WalOp> = (0..8)
+            .map(|i| WalOp::Put {
+                store: 1,
+                key: vec![i],
+                value: vec![i],
+            })
+            .collect();
+        // Tiny limit forces multiple frames without shrinking production constant.
+        let frames = encode_txn_frames_limited(9, &ops, 40).unwrap();
+        assert!(frames.len() >= 2);
+        let mut decoded = Vec::new();
+        for (i, bytes) in frames.iter().enumerate() {
+            let (frame, n) = decode_frame(bytes).unwrap().unwrap();
+            assert_eq!(n, bytes.len());
+            assert_eq!(frame.txn_seq, 9);
+            if i + 1 == frames.len() {
+                assert_eq!(frame.flags, FLAG_COMMIT);
+            } else {
+                assert_eq!(frame.flags, FLAG_CONTINUES);
+            }
+            decoded.extend(frame.ops);
+        }
+        assert_eq!(decoded, ops);
+        let recovered = recover_committed_frames(&frames.concat());
+        assert_eq!(recovered.frames.len(), frames.len());
+    }
+
+    #[test]
+    fn encode_txn_frames_rejects_single_oversized_op() {
+        let op = WalOp::Put {
+            store: 1,
+            key: vec![0; 64],
+            value: vec![0; 64],
+        };
+        let err = encode_txn_frames_limited(1, &[op], 8).unwrap_err();
+        assert!(matches!(err, CodecError::PayloadTooLarge(_)));
     }
 
     proptest! {

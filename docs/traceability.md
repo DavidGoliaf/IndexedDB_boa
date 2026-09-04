@@ -12,7 +12,7 @@
 | R6.1.1–R6.6.3 | `boa_idb_core::key`, `clone` | `crates/boa_idb_core/tests/key_tests.rs`, `key_proptests.rs`, `keypath_tests.rs`, `scf_tests.rs`, `scf_proptests.rs` | PASS |
 | R7.1.1–R7.4.4 | Registry, open queue, scheduler, cursor engine | `open_queue_tests.rs`, `scheduler_tests.rs`, `engine_ops_tests.rs` | PASS |
 | R8.1.1–R8.2.3 | Memory and SQLite backends | `crates/boa_idb_memory/tests/*.rs`, `crates/boa_idb_sqlite/tests/*.rs` | PASS |
-| R8.3.1, R8.3.2, R8.3.5 | FS WAL codec/recovery, strict/relaxed sync, `max_keys_in_memory` | `boa_idb_fs` `wal` unit/proptests, `fs_backend_tests.rs` | PASS |
+| R8.3.1, R8.3.2, R8.3.5 | FS WAL codec/recovery (txn_seq isolation + CONTINUES/COMMIT chains), strict/relaxed sync, `max_keys_in_memory` | `boa_idb_fs` `wal` unit/proptests (incl. sequence mismatch / multi-frame encode), `fs_backend_tests.rs` multi-frame + reopen cases | PASS |
 | R8.3.6 (partial) | Exclusive `LOCK` on open; post-close reopen; torn-WAL reopen seam | `second_open_fails_while_lock_held`, `subprocess_crash_recovers_committed_prefix` | PARTIAL |
 | R8.3.3, R8.3.4 | Segments/compaction; O(1)/O(log n) MVCC snapshots | Deferred to M6-B; M6-A uses in-memory maps + readonly clone | PARTIAL |
 | R8.5.1–R8.5.3 | Crash/fault matrix and `FileSystem` injection | SyncHooks seam + torn-WAL tests in M6-A; full 200-iter matrix in M6-B | PARTIAL |
