@@ -10,7 +10,7 @@ Remediation: `docs/reviews/M6A-remediation-plan.md`
 - `1c91a7a` — Implement `boa_idb_fs` WAL, lock, and backend traits
 - `34c2f19` / `6a5b18a` — Document M6-A in handoff and traceability
 - `d5cd06d` — Harden FS commit durability (review bugs 1–6)
-- (tip) — P1 WAL sequence isolation + multi-frame commits
+- `563065e` — P1 WAL sequence isolation + multi-frame commits
 
 ## Delivered
 
