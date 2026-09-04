@@ -2,6 +2,7 @@
 
 Work order: `tasks/08_TASK_M6B_FILESYSTEM_COMPLETION.md` (sub-order **B1**)  
 Branch: `task/m6-fs-completion` (from M6-A `94b4bff`)  
+Tip: `488c837`  
 Scope gate: `QUESTIONS.md` — full M6-B split into B1/B2/B3
 
 ## Design
