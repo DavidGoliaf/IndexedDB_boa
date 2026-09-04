@@ -5,7 +5,8 @@
 //! See BOA_022_INCOMPATIBILITIES.md §1, §2, §7, §8, §9, §14.
 
 use boa_engine::object::builtins::{JsArray, JsArrayBuffer, JsDate, JsTypedArray};
-use boa_engine::{Context, JsNativeError, JsObject, JsResult, JsValue, js_string};
+use boa_engine::property::PropertyKey;
+use boa_engine::{Context, JsNativeError, JsObject, JsResult, JsSymbol, JsValue, js_string};
 use boa_idb_core::clone::scvalue::{ScErrorKind, ScErrorObject, ScTypedArrayKind, ScValue};
 use boa_idb_core::key::utf16::Utf16String;
 use indexmap::IndexMap;
@@ -14,6 +15,34 @@ use super::boa_compat::{JsObjectExt, js_string_to_utf16, utf16_to_js_string};
 
 /// Maximum nesting depth for structured cloning.
 const MAX_CLONE_DEPTH: usize = 512;
+
+/// Internal property used to preserve the prototype of supported platform
+/// objects while they travel through the engine-independent `ScValue` form.
+/// It is removed again during deserialization and is never exposed to JS.
+const PLATFORM_CLONE_MARKER: &str = "\u{0}boa-platform-clone-type";
+
+/// Realm-local, non-forgeable brand used by the WPT platform-object shims.
+#[derive(Clone)]
+pub struct PlatformCloneBrand {
+    /// Private symbol installed on shim instances.
+    pub symbol: JsSymbol,
+}
+
+/// Installs the private structured-clone brand for the WPT realm.
+pub fn install_platform_clone_brand(context: &mut Context) -> JsResult<()> {
+    let symbol = JsSymbol::new(Some(js_string!("boa platform clone brand")))
+        .ok_or_else(|| JsNativeError::range().with_message("unable to allocate platform brand"))?;
+    context.insert_data(PlatformCloneBrand {
+        symbol: symbol.clone(),
+    });
+    context.global_object().set(
+        js_string!("__boa_platform_clone_brand"),
+        JsValue::from(symbol),
+        false,
+        context,
+    )?;
+    Ok(())
+}
 
 /// Constructs `new Global[name](...args)` via `Reflect.construct`.
 ///
@@ -106,6 +135,11 @@ fn serialize_depth(
             .with_message("DataCloneError: Symbol cannot be cloned")
             .into());
     }
+    if val.as_callable().is_some() {
+        return Err(JsNativeError::typ()
+            .with_message("DataCloneError: function cannot be cloned")
+            .into());
+    }
 
     // Объекты
     if let Some(obj) = val.as_object() {
@@ -123,6 +157,11 @@ fn serialize_object(
     depth: usize,
     memo: &mut MemoCounter,
 ) -> JsResult<ScValue> {
+    if non_serializable_platform_object(obj, context) {
+        return Err(JsNativeError::typ()
+            .with_message("DataCloneError: platform object cannot be cloned")
+            .into());
+    }
     // Date first: `Date.prototype.valueOf` returns a number, so the boxed-
     // number unbox below would hijack real Dates (storing time millis as a
     // boxed number instead of a Date).
@@ -193,8 +232,76 @@ fn serialize_object(
         return Ok(dv);
     }
 
-    // Default: plain Object — используем get_enumerable_keys (BOA_022 §14)
-    serialize_plain_object(obj, context, depth, memo)
+    // The WPT environment supplies JS platform-object shims (for example
+    // DOMPoint and Blob). They are serializable data objects, but a plain
+    // `ScValue::Object` would lose their prototype on the round trip.
+    // Preserve the internal shim brand in an internal marker so
+    // deserialization can recreate the same platform prototype.
+    let mut value = serialize_plain_object(obj, context, depth, memo)?;
+    if let Some(name) = platform_clone_name(obj, context) {
+        if let ScValue::Object(map) = &mut value {
+            map.insert(
+                Utf16String::from(PLATFORM_CLONE_MARKER),
+                ScValue::String(Utf16String::from(name)),
+            );
+        }
+    }
+    Ok(value)
+}
+
+/// Identifies platform objects that structured clone explicitly rejects.
+fn non_serializable_platform_object(obj: &JsObject, context: &mut Context) -> bool {
+    ["Event", "MessageChannel"]
+        .iter()
+        .any(|name| is_instance_of_global(obj, name, context))
+        || (has_platform_brand(obj, context)
+            && obj
+                .get(js_string!("postMessage"), context)
+                .ok()
+                .is_some_and(|value| value.as_callable().is_some()))
+}
+
+/// Returns the constructor name for the platform shims supported by the WPT
+/// environment. Native ECMAScript objects deliberately remain plain values.
+fn platform_clone_name(obj: &JsObject, context: &mut Context) -> Option<&'static str> {
+    if !has_platform_brand(obj, context) {
+        return None;
+    }
+    [
+        "DOMMatrix",
+        "DOMMatrixReadOnly",
+        "DOMPoint",
+        "DOMPointReadOnly",
+        "DOMRect",
+        "DOMRectReadOnly",
+        "ImageData",
+        "Blob",
+        "File",
+    ]
+    .iter()
+    .find_map(|name| is_instance_of_global(obj, name, context).then_some(*name))
+}
+
+fn has_platform_brand(obj: &JsObject, context: &mut Context) -> bool {
+    let Some(symbol) = context
+        .get_data::<PlatformCloneBrand>()
+        .map(|brand| brand.symbol.clone())
+    else {
+        return false;
+    };
+    obj.get(PropertyKey::from(symbol), context)
+        .ok()
+        .and_then(|value| value.as_boolean())
+        == Some(true)
+}
+
+fn is_instance_of_global(obj: &JsObject, name: &str, context: &mut Context) -> bool {
+    let Ok(constructor) = context.global_object().get(js_string!(name), context) else {
+        return false;
+    };
+    JsValue::from(obj.clone())
+        .instance_of(&constructor, context)
+        .unwrap_or(false)
 }
 
 /// Serializes an Array with hole support.
@@ -706,11 +813,34 @@ pub fn deserialize_from_storage(val: &ScValue, context: &mut Context) -> JsResul
             Ok(arr.into())
         }
         ScValue::Object(map) => {
-            // Plain objects get the standard prototype (structured-clone
-            // preserves `Object.getPrototypeOf`; a null prototype would fail
-            // prototype assertions).
-            let obj = JsObject::with_object_proto(context.intrinsics());
+            let platform_name =
+                map.get(&Utf16String::from(PLATFORM_CLONE_MARKER))
+                    .and_then(|value| match value {
+                        ScValue::String(name) => Some(name.to_string()),
+                        _ => None,
+                    });
+            let obj = if let Some(name) = platform_name {
+                construct_global(context, &name, &[])?
+                    .as_object()
+                    .ok_or_else(|| {
+                        JsNativeError::typ()
+                            .with_message("Platform clone constructor did not return an object")
+                    })?
+            } else {
+                // Plain objects get the standard prototype (structured-clone
+                // preserves `Object.getPrototypeOf`; a null prototype would fail
+                // prototype assertions).
+                JsObject::with_object_proto(context.intrinsics())
+            };
             for (key, value) in map {
+                if key.as_slice()
+                    == PLATFORM_CLONE_MARKER
+                        .encode_utf16()
+                        .collect::<Vec<_>>()
+                        .as_slice()
+                {
+                    continue;
+                }
                 let js_key = utf16_to_js_string(key);
                 let js_val = deserialize_from_storage(value, context)?;
                 obj.set(js_key, js_val, false, context)?;

@@ -8,6 +8,7 @@ use boa_idb_core::key::range::EncodedRange;
 use boa_idb_core::key::utf16::Utf16String;
 use boa_idb_core::proto::{Durability, SourceRef, TxnMode};
 use boa_idb_sqlite::SqliteBackendFactory;
+use boa_idb_sqlite::naming::{db_hash_from_filename, db_name_to_filename};
 use std::path::Path;
 
 fn open_items_db(factory: &SqliteBackendFactory, db_name: &str) -> Box<dyn Database> {
@@ -277,4 +278,25 @@ fn test_overwrite_collects_orphan_at_commit() {
         .unwrap();
     assert_eq!(txn.get(store_id, b"k").unwrap(), Some(b"small".to_vec()));
     txn.commit().unwrap();
+}
+
+#[test]
+fn test_open_sweeps_crash_orphan_blob() {
+    let tmp = tempfile::tempdir().unwrap();
+    let factory = SqliteBackendFactory::new(tmp.path());
+    let key = boa_idb_core::proto::StorageKey::new("test");
+    let storage_root = factory.storage_dir(&key);
+    let db_file = db_name_to_filename(&"orphan_db".encode_utf16().collect::<Vec<_>>());
+    let db_hash = db_hash_from_filename(&db_file).unwrap();
+    let orphan = storage_root
+        .join("blobs")
+        .join(db_hash)
+        .join("aa/orphan.bin");
+    std::fs::create_dir_all(orphan.parent().unwrap()).unwrap();
+    std::fs::write(&orphan, b"orphaned before sqlite commit").unwrap();
+
+    let storage = factory.open_storage(&key).unwrap();
+    let _db = storage.open_database("orphan_db").unwrap();
+
+    assert!(!orphan.exists(), "open must collect unreachable blob files");
 }

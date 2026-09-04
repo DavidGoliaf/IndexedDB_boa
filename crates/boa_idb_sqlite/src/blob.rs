@@ -4,6 +4,7 @@
 //! under `blobs/<db_hash>/<xx>/<sha256>.bin` with atomic rename semantics.
 
 use boa_idb_core::backend::error::BackendError;
+use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Write;
@@ -112,6 +113,60 @@ impl BlobManager {
         if full_path.exists() {
             fs::remove_file(&full_path)
                 .map_err(|e| BackendError::Io(format!("Failed to remove blob: {e}")))?;
+        }
+        Ok(())
+    }
+
+    /// Removes external blob files that are not referenced by any record.
+    ///
+    /// This is the crash-recovery pass for files renamed into place before a
+    /// transaction reached SQLite COMMIT. Only content-addressed `.bin`
+    /// files are considered; temporary files are left for a separate cleanup
+    /// policy and database references are never removed.
+    pub fn sweep_orphans(&self, conn: &Connection) -> Result<usize, BackendError> {
+        let mut stmt = conn
+            .prepare("SELECT ext FROM records WHERE ext IS NOT NULL")
+            .map_err(|e| BackendError::Internal(format!("blob reference query failed: {e}")))?;
+        let refs = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| BackendError::Internal(format!("blob reference scan failed: {e}")))?
+            .collect::<Result<std::collections::HashSet<_>, _>>()
+            .map_err(|e| BackendError::Internal(format!("blob reference row failed: {e}")))?;
+
+        let mut removed = 0;
+        self.sweep_dir(&self.blob_dir, &refs, &mut removed)?;
+        Ok(removed)
+    }
+
+    fn sweep_dir(
+        &self,
+        dir: &Path,
+        refs: &std::collections::HashSet<String>,
+        removed: &mut usize,
+    ) -> Result<(), BackendError> {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return Ok(());
+        };
+        for entry in entries {
+            let entry =
+                entry.map_err(|e| BackendError::Io(format!("Failed to read blob dir: {e}")))?;
+            let path = entry.path();
+            if path.is_dir() {
+                self.sweep_dir(&path, refs, removed)?;
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "bin") {
+                continue;
+            }
+            let Some(rel) = path.strip_prefix(&self.blob_dir).ok() else {
+                continue;
+            };
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            if !refs.contains(&rel) {
+                fs::remove_file(&path)
+                    .map_err(|e| BackendError::Io(format!("Failed to remove orphan blob: {e}")))?;
+                *removed += 1;
+            }
         }
         Ok(())
     }

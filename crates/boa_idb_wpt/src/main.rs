@@ -8,7 +8,7 @@ use colored::Colorize;
 
 use boa_idb_wpt::environment::Backend;
 use boa_idb_wpt::expectations;
-use boa_idb_wpt::report::SubtestStatus;
+use boa_idb_wpt::report::{RunSummary, SubtestStatus};
 use boa_idb_wpt::runner::{self, RunnerOptions};
 
 /// Command-line arguments.
@@ -111,7 +111,7 @@ fn main() {
     };
 
     // `--check-expectations`: compare with the committed snapshot.
-    let mut had_regressions = report.summary.timed_out > 0 || report.summary.not_run > 0;
+    let mut had_regressions = has_fatal_run_status(&report.summary);
     if cli.check_expectations {
         match expectations::load(&expectations_path) {
             Ok(snapshot) => {
@@ -125,7 +125,10 @@ fn main() {
                 for unexpected in &outcome.unexpected {
                     println!("  {unexpected}");
                 }
-                had_regressions = outcome.regression_count() > 0;
+                // A matching expectation does not make a timeout or NOTRUN
+                // successful. Those statuses are always fatal for the CLI;
+                // the snapshot result only contributes additional failures.
+                had_regressions |= outcome.regression_count() > 0;
             }
             Err(e) => {
                 eprintln!("{} cannot read expectations: {}", "error:".red().bold(), e);
@@ -151,6 +154,15 @@ fn main() {
     if had_regressions {
         std::process::exit(1);
     }
+}
+
+/// Returns whether the run contains a terminal status that must fail the CLI.
+///
+/// TIMEOUT and NOTRUN are infrastructure/protocol failures, not functional
+/// results. They remain fatal even when an expectations snapshot records the
+/// same status.
+fn has_fatal_run_status(summary: &RunSummary) -> bool {
+    summary.timed_out > 0 || summary.not_run > 0
 }
 
 /// Renders the per-file result lines and the aggregate summary.
@@ -220,5 +232,33 @@ fn subtest_status_color(status: SubtestStatus) -> String {
         SubtestStatus::Fail => "FAIL".red().to_string(),
         SubtestStatus::Timeout => "TIMEOUT".yellow().to_string(),
         SubtestStatus::NotRun => "NOTRUN".yellow().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_fatal_run_status;
+    use boa_idb_wpt::report::RunSummary;
+
+    #[test]
+    fn timeout_remains_fatal_when_snapshot_matches() {
+        let summary = RunSummary {
+            total: 1,
+            timed_out: 1,
+            ..RunSummary::default()
+        };
+
+        assert!(has_fatal_run_status(&summary));
+    }
+
+    #[test]
+    fn ordinary_failures_are_left_to_expectation_check() {
+        let summary = RunSummary {
+            total: 1,
+            failed: 1,
+            ..RunSummary::default()
+        };
+
+        assert!(!has_fatal_run_status(&summary));
     }
 }

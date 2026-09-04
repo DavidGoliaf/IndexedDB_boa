@@ -1,3 +1,7 @@
+[advisories]
+db-path = "$CARGO_DENY_DB_PATH"
+db-urls = ["https://github.com/RustSec/advisory-db"]
+
 [licenses]
 # Note: the `unlicensed = "reject"` key was removed upstream (cargo-deny #611);
 # unlicensed crates are rejected by default in current cargo-deny versions.
@@ -10,6 +14,8 @@ allow = [
     "Unlicense",
     "Zlib",
     "CC0-1.0",
+    "MPL-2.0",
+    "Unicode-3.0",
 ]
 confidence-threshold = 0.8
 

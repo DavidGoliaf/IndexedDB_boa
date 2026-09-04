@@ -21,6 +21,12 @@ Branch: `task/m5-wpt-runner`
   and added regression tests for status and shape changes.
 - Added role READMEs for `boa_idb`, `boa_idb_core`, `boa_idb_fs`,
   `boa_idb_memory`, and `boa_idb_sqlite`.
+- Fixed the CLI exit-status regression where `--check-expectations` could hide
+  a matching TIMEOUT/NOTRUN result; these statuses remain fatal.
+- Implemented SQLite `Durability::Strict` (`synchronous=FULL`, post-commit WAL
+  checkpoint, and pooled-connection restoration) with coverage.
+- Added SQLite open-time crash-orphan sweep for unreachable external blob files
+  with a regression test.
 
 ## Verification
 
@@ -31,11 +37,19 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test -p boa_idb --tests
 cargo test -p boa_idb_wpt --tests
+cargo test --workspace
+cargo run -p boa_idb_wpt --bin boa-idb-wpt -- --backend memory --timeout 30 --quiet --summary
+cargo run -p boa_idb_wpt --bin boa-idb-wpt -- --backend sqlite --timeout 30 --quiet --summary
+cargo run -p boa_idb_wpt --bin boa-idb-wpt -- --backend memory --timeout 30 --quiet --check-expectations
+cargo run -p boa_idb_wpt --bin boa-idb-wpt -- --backend sqlite --timeout 30 --quiet --check-expectations
+$env:CARGO_DENY_DB_PATH = Join-Path $PWD "target\cargo-deny-advisories"
+cargo deny fetch db
+cargo deny check
 ```
 
-Final WPT totals for both backends are intentionally pending remediation. The
-historical totals previously recorded in this file are not acceptance evidence
-and must be replaced only by a fresh full run.
+The fresh full WPT run passed on both backends: 482/482 PASS (100.0%), with
+0 FAIL, 0 TIMEOUT, and 0 NOTRUN. Both strict expectation checks reported
+482 matched and 0 unexpected.
 
 ## Decisions and deviations
 
@@ -68,8 +82,11 @@ The following targeted WPT cases pass on both memory and SQLite after this
 pass: `idbdatabase_deleteObjectStore.any.js`,
 `idbfactory_deleteDatabase.any.js`, `idbtransaction_abort.any.js`,
 `idbindex_getAll.any.js`, and `idbobjectstore_getAll.any.js`.
-`IDBCursor.update()` now returns its request and preserves the mutable cursor
-value between reads. Two legacy cursor tests still expose Boa
-property/event-loop behavior and remain follow-up debt; they are not hidden in
-expectations. Unsupported exotic structured-clone failures remain outside this
-stabilization pass.
+`IDBCursor.update()` and `delete()` now return independent requests and preserve
+cursor event ordering. Structured-clone platform objects and non-serializable
+object rejection are covered by the passing full run.
+
+SQLite durability and crash-orphan recovery are now implemented and tested.
+`cargo deny check` passes with `CARGO_DENY_DB_PATH=target/cargo-deny-advisories`.
+The explicit transitive `MPL-2.0`/`Unicode-3.0` policy is recorded in
+`docs/DECISIONS.md` (ADR-008).

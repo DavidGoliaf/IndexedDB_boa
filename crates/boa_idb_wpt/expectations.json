@@ -2,13 +2,13 @@
   "files": {
     "abort-in-initial-upgradeneeded.any.js": {
       "subtests": {
-        "An abort() in the initial onupgradeneeded sets version back to 0": "FAIL"
+        "An abort() in the initial onupgradeneeded sets version back to 0": "PASS"
       },
       "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
     },
     "close-in-upgradeneeded.any.js": {
       "subtests": {
-        "When db.close() is called in onupgradeneeded, the db is cleaned up on refresh": "FAIL"
+        "When db.close() is called in onupgradeneeded, the db is cleaned up on refresh": "PASS"
       },
       "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
     },
@@ -63,7 +63,7 @@
     "idbcursor-advance.any.js": {
       "subtests": {
         "IDBCursor.advance() - advances": "PASS",
-        "IDBCursor.advance() - advances backwards": "FAIL",
+        "IDBCursor.advance() - advances backwards": "PASS",
         "IDBCursor.advance() - skip far forward": "PASS",
         "IDBCursor.advance() - within range": "PASS",
         "IDBCursor.advance() - within single key range": "PASS",
@@ -74,10 +74,10 @@
     "idbcursor-continue.any.js": {
       "subtests": {
         "IDBCursor.continue() - continues": "PASS",
-        "IDBCursor.continue() - continues in prev direction": "FAIL",
+        "IDBCursor.continue() - continues in prev direction": "PASS",
         "IDBCursor.continue() - skip far forward": "PASS",
         "IDBCursor.continue() - with given key": "PASS",
-        "IDBCursor.continue() - with given key in prev direction": "FAIL",
+        "IDBCursor.continue() - with given key in prev direction": "PASS",
         "IDBCursor.continue() - within range": "PASS",
         "IDBCursor.continue() - within single key range": "PASS",
         "IDBCursor.continue() - within single key range, with several results": "PASS"
@@ -87,31 +87,31 @@
     "idbcursor-continuePrimaryKey.any.js": {
       "subtests": {
         "": "PASS",
-        "IDBCursor.continuePrimaryKey() with \"prev\" direction": "FAIL"
+        "IDBCursor.continuePrimaryKey() with \"prev\" direction": "PASS"
       },
       "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
     },
     "idbcursor_delete_objectstore.any.js": {
       "subtests": {
         "Attempt to remove a record in a read-only transaction": "PASS",
-        "If the cursor's source or effective object store has been deleted, the implementation MUST throw a DOMException of type InvalidStateError": "FAIL",
-        "Index - attempt to remove a record in an inactive transaction": "FAIL",
-        "Remove a record from the object store ": "FAIL",
-        "Throw InvalidStateError when the cursor is being iterated": "FAIL"
+        "If the cursor's source or effective object store has been deleted, the implementation MUST throw a DOMException of type InvalidStateError": "PASS",
+        "Index - attempt to remove a record in an inactive transaction": "PASS",
+        "Remove a record from the object store ": "PASS",
+        "Throw InvalidStateError when the cursor is being iterated": "PASS"
       },
       "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
     },
     "idbcursor_update_objectstore.any.js": {
       "subtests": {
-        "Attempt to modify a record after the cursor's source or effective object store has been deleted. The implementation MUST throw a DOMException of type InvalidStateError": "FAIL",
+        "Attempt to modify a record after the cursor's source or effective object store has been deleted. The implementation MUST throw a DOMException of type InvalidStateError": "PASS",
         "Attempt to modify a record in a read-only transaction": "PASS",
-        "Index - modify a record in the object store ": "FAIL",
-        "Modify a record in the object store ": "FAIL",
-        "No argument": "FAIL",
-        "Object store - attempt to modify a record in an inactive transaction": "FAIL",
-        "Throw DataCloneError": "FAIL",
-        "Throw DataError": "FAIL",
-        "Throw InvalidStateError when the cursor is being iterated": "FAIL"
+        "Index - modify a record in the object store ": "PASS",
+        "Modify a record in the object store ": "PASS",
+        "No argument": "PASS",
+        "Object store - attempt to modify a record in an inactive transaction": "PASS",
+        "Throw DataCloneError": "PASS",
+        "Throw DataError": "PASS",
+        "Throw InvalidStateError when the cursor is being iterated": "PASS"
       },
       "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
     },
@@ -149,9 +149,9 @@
     },
     "idbdatabase_deleteObjectStore.any.js": {
       "subtests": {
-        "Attempting to access an index that was deleted as part of object store deletion and then recreated using the same object store name should throw a NotFoundError": "FAIL",
+        "Attempting to access an index that was deleted as part of object store deletion and then recreated using the same object store name should throw a NotFoundError": "PASS",
         "Attempting to remove an object store that does not exist should throw a NotFoundError": "PASS",
-        "Deleted object store's name should be removed from database's list. Attempting to use a deleted IDBObjectStore should throw an InvalidStateError": "FAIL"
+        "Deleted object store's name should be removed from database's list. Attempting to use a deleted IDBObjectStore should throw an InvalidStateError": "PASS"
       },
       "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
     },
@@ -184,7 +184,7 @@
     },
     "idbfactory_deleteDatabase.any.js": {
       "subtests": {
-        "Delete an existing database - Test events opening a second database when one connection is open already": "FAIL",
+        "Delete an existing database - Test events opening a second database when one connection is open already": "PASS",
         "Result of the deleteDatabase() request is set to undefined.": "PASS",
         "The deleteDatabase() request's success event is an IDBVersionChangeEvent.": "PASS",
         "deleteDatabase() request should have no source, and deleting a non-existent database should succeed with oldVersion of 0.": "PASS"
@@ -212,7 +212,7 @@
         "Calling open() with version argument object should throw TypeError.": "PASS",
         "Calling open() with version argument undefined should not throw.": "PASS",
         "IDBFactory.open() - database 'name' and 'version' are correctly set": "PASS",
-        "IDBFactory.open() - error in upgradeneeded resets db": "FAIL",
+        "IDBFactory.open() - error in upgradeneeded resets db": "PASS",
         "IDBFactory.open() - error in version change transaction aborts open": "PASS",
         "IDBFactory.open() - new database has default version": "PASS",
         "IDBFactory.open() - new database is empty": "PASS",
@@ -228,7 +228,7 @@
     "idbindex-multientry.any.js": {
       "subtests": {
         "A 1000 entry multiEntry array": "PASS",
-        "Adding keys": "FAIL",
+        "Adding keys": "PASS",
         "Array keyPath with multiEntry": "PASS"
       },
       "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
@@ -247,9 +247,9 @@
         "get() attempts to retrieve a record that does not exist": "PASS",
         "get() returns the record": "PASS",
         "get() returns the record where the index contains duplicate values": "PASS",
-        "get() returns the record with the first key in the range": "FAIL",
+        "get() returns the record with the first key in the range": "PASS",
         "get() throws DataError when using invalid key": "PASS",
-        "get() throws InvalidStateError on index deleted by aborted upgrade": "FAIL",
+        "get() throws InvalidStateError on index deleted by aborted upgrade": "PASS",
         "get() throws InvalidStateError when the index is deleted": "PASS",
         "get() throws TransactionInactiveError on aborted transaction": "PASS"
       },
@@ -259,7 +259,7 @@
       "subtests": {
         "Empty object store": "PASS",
         "Get all": "PASS",
-        "Get all values with invalid query keys": "FAIL",
+        "Get all values with invalid query keys": "PASS",
         "Get all with generated keys": "PASS",
         "Get all with large values": "PASS",
         "Get bound range": "PASS",
@@ -281,7 +281,7 @@
     },
     "idbindex_openCursor.any.js": {
       "subtests": {
-        "If the index is deleted by an aborted upgrade, throw InvalidStateError": "FAIL",
+        "If the index is deleted by an aborted upgrade, throw InvalidStateError": "PASS",
         "If the index is deleted, throw InvalidStateError": "PASS",
         "If the transaction has been aborted, throw TransactionInactiveError": "PASS"
       },
@@ -396,7 +396,7 @@
     "idbobjectstore_getAll.any.js": {
       "subtests": {
         "Get all values": "PASS",
-        "Get all values with invalid query keys": "FAIL",
+        "Get all values with invalid query keys": "PASS",
         "Get all values with transaction.commit()": "PASS",
         "Get all with large values": "PASS",
         "Get bound range": "PASS",
@@ -440,7 +440,7 @@
     "idbtransaction_abort.any.js": {
       "subtests": {
         "Abort during auto-committing should throw InvalidStateError.": "PASS",
-        "Abort event should fire during transaction": "FAIL",
+        "Abort event should fire during transaction": "PASS",
         "Abort on completed transaction should throw InvalidStateError.": "PASS"
       },
       "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
@@ -543,15 +543,15 @@
         "BigInt: 0": "PASS",
         "BigInt: 1": "PASS",
         "BigInt: 12345678901234567890": "PASS",
-        "Blob: [object Object]": "FAIL",
+        "Blob: [object Object]": "PASS",
         "Boolean: false": "PASS",
         "Boolean: true": "PASS",
-        "DOMMatrix: [object Object]": "FAIL",
-        "DOMMatrixReadOnly: [object Object]": "FAIL",
-        "DOMPoint: [object Object]": "FAIL",
-        "DOMPointReadOnly: [object Object]": "FAIL",
-        "DOMRect: [object Object]": "FAIL",
-        "DOMRectReadOnly: [object Object]": "FAIL",
+        "DOMMatrix: [object Object]": "PASS",
+        "DOMMatrixReadOnly: [object Object]": "PASS",
+        "DOMPoint: [object Object]": "PASS",
+        "DOMPointReadOnly: [object Object]": "PASS",
+        "DOMRect: [object Object]": "PASS",
+        "DOMRectReadOnly: [object Object]": "PASS",
         "Date: Mon Apr 25 1938 00:13:20 GMT+0200": "PASS",
         "Date: Mon Feb 10 1653 07:13:20 GMT+0100": "PASS",
         "Date: Mon Jan 12 1970 14:46:40 GMT+0100": "PASS",
@@ -567,19 +567,19 @@
         "Error: Error: abc": "PASS",
         "EvalError: EvalError": "PASS",
         "EvalError: EvalError: ghi": "PASS",
-        "File: [object Object]": "FAIL",
+        "File: [object Object]": "PASS",
         "Float16Array: -Infinity,-1.5,-1,-0.5,0,0.5,1,1.5,Infinity,NaN": "PASS",
         "Float32Array: -Infinity,-1.5,-1,-0.5,0,0.5,1,1.5,Infinity,NaN": "PASS",
         "Float64Array: -Infinity,-1.7976931348623157e+308,-5e-324,0,5e-324,1.7976931348623157e+308,Infinity,NaN": "PASS",
-        "ImageData: [object Object]": "FAIL",
+        "ImageData: [object Object]": "PASS",
         "Int16Array: 0,1,-2,-1": "PASS",
         "Int32Array: 0,1,-2,-1": "PASS",
         "Int8Array: 0,1,-2,-1": "PASS",
         "Map: [object Map]": "PASS",
-        "Not serializable: : [object Object]": "FAIL",
-        "Not serializable: Event: [object Object]": "FAIL",
+        "Not serializable: : [object Object]": "PASS",
+        "Not serializable: Event: [object Object]": "PASS",
         "Not serializable: Object: [object Object]": "PASS",
-        "Not serializable: function: function() {}": "FAIL",
+        "Not serializable: function: function() {}": "PASS",
         "Not serializable: symbol: Symbol(desc)": "PASS",
         "Number: -0": "PASS",
         "Number: -1": "PASS",

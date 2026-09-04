@@ -449,6 +449,9 @@ fn cursor_seek_key_primary(state: &mut CursorState, key: &Key, primary: &Key, is
 pub struct DriverState {
     /// Pending opens.
     pub opens: VecDeque<PendingOpen>,
+    /// Upgrade opens whose abort notification must be delivered on the next
+    /// driver turn, matching IndexedDB's asynchronous request events.
+    pub deferred_open_errors: Vec<PendingOpen>,
     /// Core open queues per database (version compare, blocked, upgrade).
     pub open_queues: HashMap<String, OpenQueue>,
     /// Open transaction handles.
@@ -669,6 +672,7 @@ fn driver_turn(
 
     // Phase 1: opens / deletes (version compare, blocked, upgrades).
     progressed |= process_opens(engine_handle, driver_handle, context)?;
+    progressed |= process_deferred_open_errors(driver_handle, context);
 
     // Phase 2: start scheduler-ready transactions (backend handles).
     progressed |= start_ready_txns(engine_handle, driver_handle, context)?;
@@ -699,6 +703,24 @@ fn driver_turn(
     progressed |= finish_txns(driver_handle, context)?;
 
     Ok(progressed)
+}
+
+/// Delivers open errors deferred by a synchronous upgrade `abort()` call.
+fn process_deferred_open_errors(
+    driver_handle: &Arc<std::sync::Mutex<DriverState>>,
+    context: &mut Context,
+) -> bool {
+    let opens = {
+        let mut d = crate::runtime::lock_mutex(driver_handle);
+        std::mem::take(&mut d.deferred_open_errors)
+    };
+    if opens.is_empty() {
+        return false;
+    }
+    for open in opens {
+        let _ = fail_open(context, &open, &IdbError::Abort);
+    }
+    true
 }
 
 /// Records a macro-task boundary (timer fire): scopes go inactive.
@@ -1863,6 +1885,9 @@ fn abort_upgrade_open(
         if let Some(queue) = d.open_queues.get_mut(&open.name) {
             queue.on_operation_failed();
         }
+        if notify_request {
+            d.deferred_open_errors.push(open.clone());
+        }
         open
     };
     let db_obj = crate::runtime::request_object(context, open.request_id)
@@ -1876,13 +1901,13 @@ fn abort_upgrade_open(
         let event = make_event(context, "abort", Some(db_obj.clone()));
         let _ = dispatch_target(context, &db_obj, &event);
     }
-    if notify_request {
-        let _ = fail_open(context, &open, &IdbError::Abort);
-    } else if let Some(request) = crate::runtime::request_object(context, open.request_id) {
-        crate::api::request::with_request_mut(&request, |req| {
-            req.ready_state = ReadyState::Done;
-            req.error = None;
-        });
+    if !notify_request {
+        if let Some(request) = crate::runtime::request_object(context, open.request_id) {
+            crate::api::request::with_request_mut(&request, |req| {
+                req.ready_state = ReadyState::Done;
+                req.error = None;
+            });
+        }
     }
 }
 

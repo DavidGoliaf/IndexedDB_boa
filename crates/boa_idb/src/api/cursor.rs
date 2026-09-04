@@ -419,7 +419,15 @@ fn install_cursor_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
                     context,
                 ));
             }
-            let request = reuse_request(context, &view, CursorAction::Update(sc_value))?;
+            let request = crate::api::support::issue_request(
+                context,
+                view.txn_id,
+                crate::driver::PendingOp::CursorOp {
+                    cursor_id,
+                    action: CursorAction::Update(sc_value),
+                },
+                Some(obj),
+            )?;
             Ok(JsValue::from(request))
         }),
     );
@@ -445,8 +453,16 @@ fn install_cursor_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
                 );
             }
             require_readwrite(context, view.txn_id)?;
-            reuse_request(context, &view, CursorAction::Delete)?;
-            Ok(JsValue::undefined())
+            let request = crate::api::support::issue_request(
+                context,
+                view.txn_id,
+                crate::driver::PendingOp::CursorOp {
+                    cursor_id,
+                    action: CursorAction::Delete,
+                },
+                Some(obj),
+            )?;
+            Ok(JsValue::from(request))
         }),
     );
 

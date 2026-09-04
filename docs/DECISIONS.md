@@ -115,3 +115,17 @@ CRC here. CRC32 would add a dependency *and* a weaker (32-bit,
 non-cryptographic) check. GC and dedup are content-addressed too, so
 collision risk is bounded by the same SHA-256 assumptions as the rest of
 the design.
+
+## ADR-008: Explicitly allow transitive MPL-2.0 and Unicode-3.0 licenses (M5)
+
+**Context.** `cargo deny check` reports two transitive license families that
+are required by the existing dependency graph: `MPL-2.0` through the WPT
+runner's `colored` dependency and `Unicode-3.0` through Boa/ICU. The project
+does not distribute modified copies of either dependency.
+
+**Decision.** Add `MPL-2.0` and `Unicode-3.0` to the explicit license allowlist
+in `deny.toml`.
+
+**Rationale.** Both are OSI-approved licenses, and the allowlist records the
+actual transitive policy instead of silently accepting unknown licenses. No
+dependency, lockfile, or source code is changed by this decision.
