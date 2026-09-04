@@ -141,6 +141,51 @@ fn forged_messagechannel_prototype_does_not_reject() {
 }
 
 #[test]
+fn messagechannel_call_cannot_brand_arbitrary_this() {
+    assert!(eval_bool(
+        r"
+        const forged = { tag: 'plain' };
+        let threw = false;
+        try { MessageChannel.call(forged); } catch (e) { threw = e instanceof TypeError; }
+        const clone = structuredClone(forged);
+        return threw
+            && clone.tag === 'plain'
+            && Object.getPrototypeOf(clone) === Object.prototype;
+        ",
+    ));
+}
+
+#[test]
+fn messagechannel_apply_and_saved_ctor_cannot_brand_arbitrary_this() {
+    assert!(eval_bool(
+        r"
+        const forgedCall = { tag: 'call' };
+        const forgedApply = { tag: 'apply' };
+        const forgedReflect = { tag: 'reflect' };
+        const Saved = MessageChannel;
+        let callThrew = false;
+        let applyThrew = false;
+        let reflectThrew = false;
+        try { Saved.call(forgedCall); } catch (e) { callThrew = e instanceof TypeError; }
+        try { Saved.apply(forgedApply); } catch (e) { applyThrew = e instanceof TypeError; }
+        try { Reflect.apply(Saved, forgedReflect, []); } catch (e) {
+            reflectThrew = e instanceof TypeError;
+        }
+        const callClone = structuredClone(forgedCall);
+        const applyClone = structuredClone(forgedApply);
+        const reflectClone = structuredClone(forgedReflect);
+        return callThrew && applyThrew && reflectThrew
+            && callClone.tag === 'call'
+            && applyClone.tag === 'apply'
+            && reflectClone.tag === 'reflect'
+            && Object.getPrototypeOf(callClone) === Object.prototype
+            && Object.getPrototypeOf(applyClone) === Object.prototype
+            && Object.getPrototypeOf(reflectClone) === Object.prototype;
+        ",
+    ));
+}
+
+#[test]
 fn authentic_shims_keep_m5_clone_semantics() {
     assert!(eval_bool(
         r"

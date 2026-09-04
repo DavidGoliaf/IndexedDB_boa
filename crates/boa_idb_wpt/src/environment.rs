@@ -428,7 +428,11 @@ fn install_message_channel(context: &mut Context) -> JsResult<()> {
     context.eval(boa_engine::Source::from_bytes(
         r"
         var __boaRegister = globalThis.__boa_register_platform_clone;
-        globalThis.MessageChannel = function() {
+        // Anonymous class keeps constructor.name empty (matches the previous
+        // function() shim so WPT subtest titles stay stable) while still
+        // rejecting .call/.apply/Reflect.apply without `new`.
+        globalThis.MessageChannel = class {
+            constructor() {
                 if (typeof __boaRegister === 'function') {
                     __boaRegister(this, 'MessageChannel');
                 }
@@ -449,6 +453,7 @@ fn install_message_channel(context: &mut Context) -> JsResult<()> {
                 }
                 this.port1 = makePort();
                 this.port2 = makePort();
+            }
         };
         ",
     ))?;
