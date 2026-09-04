@@ -107,6 +107,24 @@ fn fault_matrix() -> Vec<FaultCase> {
             force_compact: false,
         },
         FaultCase {
+            name: "segment_write_short",
+            site: FaultSite::SegmentWrite,
+            kind: FaultKind::ShortWrite { bytes: 8 },
+            force_compact: true,
+        },
+        FaultCase {
+            name: "manifest_write_short",
+            site: FaultSite::ManifestWrite,
+            kind: FaultKind::ShortWrite { bytes: 8 },
+            force_compact: true,
+        },
+        FaultCase {
+            name: "current_write_short",
+            site: FaultSite::CurrentWrite,
+            kind: FaultKind::ShortWrite { bytes: 4 },
+            force_compact: true,
+        },
+        FaultCase {
             name: "wal_append_interrupt",
             site: FaultSite::WalAppend,
             kind: FaultKind::Interrupt,
@@ -188,21 +206,13 @@ fn fault_matrix_preserves_committed_prefix_on_reopen() {
 
         let second = put(&factory, &key, store, b"next", b"no");
         // Compaction faults are swallowed after a durable WAL commit; WAL faults
-        // should fail the user transaction (except intentional short-write Ok).
+        // (including short-write) must fail the user transaction before publish.
         if !case.force_compact {
-            match case.kind {
-                FaultKind::ShortWrite { .. } => {
-                    // Torn append may report success; durable reopen is the check.
-                    let _ = second;
-                }
-                _ => {
-                    assert!(
-                        second.is_err(),
-                        "{}: expected commit error, got {second:?}",
-                        case.name
-                    );
-                }
-            }
+            assert!(
+                second.is_err(),
+                "{}: expected commit error, got {second:?}",
+                case.name
+            );
         }
 
         faults.clear();
@@ -216,26 +226,67 @@ fn fault_matrix_preserves_committed_prefix_on_reopen() {
             case.name
         );
         if !case.force_compact {
-            match case.kind {
-                FaultKind::ShortWrite { .. } => {
-                    // Short write is not a durable COMMIT frame.
-                    assert_eq!(
-                        get(&factory, &key, store, b"next").unwrap(),
-                        None,
-                        "{}: torn second put must not appear",
-                        case.name
-                    );
-                }
-                _ => {
-                    assert_eq!(
-                        get(&factory, &key, store, b"next").unwrap(),
-                        None,
-                        "{}: failed put must not appear",
-                        case.name
-                    );
-                }
-            }
+            assert_eq!(
+                get(&factory, &key, store, b"next").unwrap(),
+                None,
+                "{}: failed put must not appear",
+                case.name
+            );
         }
+    }
+}
+
+#[test]
+fn atomic_publication_short_write_keeps_previous_tip() {
+    // Short write on segment / MANIFEST / CURRENT must fail before rename so
+    // reopen still sees a valid tip (not Corrupted from a truncated publish).
+    use boa_idb_core::backend::traits::BackendFactory;
+    use boa_idb_core::proto::{Durability, TxnMode};
+
+    let cases = [
+        ("seg-short", FaultSite::SegmentWrite),
+        ("man-short", FaultSite::ManifestWrite),
+        ("cur-short", FaultSite::CurrentWrite),
+    ];
+    for (name, site) in cases {
+        let dir = tempdir().unwrap();
+        let faults = FaultInjectingFs::new(OsFileSystem::shared());
+        let factory = FsBackendFactory::new(dir.path())
+            .with_filesystem(faults.clone())
+            .with_compact_config(CompactConfig {
+                wal_bytes: u64::MAX,
+                wal_frames: 1,
+            });
+        let key = StorageKey::new(name);
+        let store = setup_store(&factory, &key);
+        put(&factory, &key, store, b"ok", b"yes").unwrap();
+
+        let storage = factory.open_storage(&key).unwrap();
+        let mut db = storage.open_database("db").unwrap();
+        faults.clear();
+        faults.inject_once(site, FaultKind::ShortWrite { bytes: 8 });
+        {
+            let mut txn = db
+                .begin(TxnMode::ReadWrite, &[store], Durability::Strict)
+                .unwrap();
+            txn.begin_request().unwrap();
+            txn.put(store, b"next", b"no", false).unwrap();
+            txn.commit_request().unwrap();
+            // WAL commit succeeds; compact short-write fails without publishing
+            // a truncated tip (short write returns Err before rename).
+            txn.commit().unwrap();
+        }
+        drop(db);
+        drop(storage);
+        faults.clear();
+
+        let factory = clean_factory(dir.path());
+        // Must open successfully — truncated segment/manifest/CURRENT was not published.
+        assert_eq!(
+            get(&factory, &key, store, b"ok").unwrap(),
+            Some(b"yes".to_vec()),
+            "{name}: prior committed prefix must remain readable"
+        );
     }
 }
 

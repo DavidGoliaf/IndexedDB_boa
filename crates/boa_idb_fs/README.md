@@ -52,12 +52,14 @@ Tests inject `FaultInjectingFs` via `FsBackendFactory::with_filesystem`:
 
 | Site | Typical faults |
 |---|---|
-| WAL append/sync | ENOSPC, EIO, short write, interrupt, sync fail |
-| Segment / manifest / `CURRENT` | write/rename/sync fail during compaction |
+| WAL append/sync | ENOSPC, EIO, short write (Err after prefix), interrupt, sync fail |
+| Segment / manifest / `CURRENT` write | short write fails before rename; write/rename/sync fail |
 | Cleanup | remove fail on reclaimable segment drop |
 
-`ENOSPC` → `BackendError::QuotaExceeded`. After any fault + reopen, only a
-committed prefix is readable; torn/corrupt WAL/segment/manifest never panic.
+`ShortWrite` leaves a torn temp/WAL prefix but returns `WriteZero` so
+`atomic_write` never publishes via rename. `ENOSPC` → `BackendError::QuotaExceeded`.
+After any fault + reopen, only a committed prefix is readable; torn/corrupt
+WAL/segment/manifest never panic.
 
 ## Known platform notes
 

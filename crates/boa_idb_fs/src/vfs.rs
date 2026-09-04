@@ -31,6 +31,8 @@ pub enum FaultSite {
     SegmentWrite,
     /// Manifest file write / rename.
     ManifestWrite,
+    /// `CURRENT` body write (temp file before rename).
+    CurrentWrite,
     /// `CURRENT` rename (publication tip).
     CurrentRename,
     /// `meta.scf` write.
@@ -52,13 +54,13 @@ pub enum FaultKind {
     Enospc,
     /// Generic I/O failure.
     Eio,
-    /// Persist only the first `bytes` then succeed (torn write / crash seam).
+    /// Persist only the first `bytes`, then return an I/O error.
     ///
-    /// Intentionally returns success after the short prefix so callers exercise
-    /// recovery of a torn WAL/file the same way a crash mid-write would; this
-    /// is **not** how `OsFileSystem` behaves (`write_all` retries).
+    /// The partial bytes are left on disk (torn physical write), but the call
+    /// fails so [`crate::atomic::atomic_write`] never syncs/renames a truncated
+    /// tip into place. This matches `write_all`-style failure, not a silent Ok.
     ShortWrite {
-        /// Bytes actually written before "success".
+        /// Bytes actually written before the error.
         bytes: usize,
     },
     /// Fail during sync.
@@ -76,8 +78,22 @@ fn fault_io(kind: &FaultKind) -> io::Error {
         FaultKind::SyncFail => io::Error::other("fault: sync failed"),
         FaultKind::RenameFail => io::Error::other("fault: rename failed"),
         FaultKind::Interrupt => io::Error::new(io::ErrorKind::Interrupted, "fault: interrupt"),
-        FaultKind::ShortWrite { .. } => io::Error::other("fault: short-write control"),
+        FaultKind::ShortWrite { bytes } => io::Error::new(
+            io::ErrorKind::WriteZero,
+            format!("fault: short write after {bytes} bytes"),
+        ),
     }
+}
+
+/// Writes a prefix then returns a short-write error (never Ok).
+fn short_write_then_err(
+    write: impl FnOnce(&[u8]) -> io::Result<()>,
+    data: &[u8],
+    bytes: usize,
+) -> io::Result<()> {
+    let n = bytes.min(data.len());
+    write(&data[..n])?;
+    Err(fault_io(&FaultKind::ShortWrite { bytes: n }))
 }
 
 /// Directory entry returned by [`FileSystem::read_dir`].
@@ -464,7 +480,7 @@ fn classify_write(path: &Path) -> FaultSite {
     let lossy = path.to_string_lossy();
     // CURRENT body is written to a temp file; rename is [`FaultSite::CurrentRename`].
     if name == "CURRENT" {
-        return FaultSite::ManifestWrite;
+        return FaultSite::CurrentWrite;
     }
     if name.starts_with("MANIFEST") {
         return FaultSite::ManifestWrite;
@@ -521,8 +537,11 @@ impl FileSystem for FaultInjectingFs {
         if let Some(kind) = self.take_fault(site) {
             match kind {
                 FaultKind::ShortWrite { bytes } => {
-                    let n = bytes.min(data.len());
-                    return self.inner.write_truncate(path, &data[..n]);
+                    return short_write_then_err(
+                        |prefix| self.inner.write_truncate(path, prefix),
+                        data,
+                        bytes,
+                    );
                 }
                 other => return Err(fault_io(&other)),
             }
@@ -535,8 +554,11 @@ impl FileSystem for FaultInjectingFs {
         if let Some(kind) = self.take_fault(site) {
             match kind {
                 FaultKind::ShortWrite { bytes } => {
-                    let n = bytes.min(data.len());
-                    return self.inner.append(path, &data[..n]);
+                    return short_write_then_err(
+                        |prefix| self.inner.append(path, prefix),
+                        data,
+                        bytes,
+                    );
                 }
                 other => return Err(fault_io(&other)),
             }
@@ -639,16 +661,36 @@ impl FileSystem for FaultInjectingFs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
     use tempfile::tempdir;
 
     #[test]
-    fn short_write_leaves_prefix() {
+    fn short_write_leaves_prefix_and_errors() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("wal").join("000001.log");
         let fs = FaultInjectingFs::new(OsFileSystem::shared());
         fs.inject_once(FaultSite::WalAppend, FaultKind::ShortWrite { bytes: 3 });
-        fs.append(&path, b"abcdef").unwrap();
+        let err = fs.append(&path, b"abcdef").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::WriteZero);
         assert_eq!(fs.read(&path).unwrap(), b"abc");
+    }
+
+    #[test]
+    fn short_write_truncate_does_not_report_ok() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("MANIFEST-000001");
+        let fs = FaultInjectingFs::new(OsFileSystem::shared());
+        fs.write_truncate(&target, b"full-body-contents").unwrap();
+        fs.inject_once(FaultSite::ManifestWrite, FaultKind::ShortWrite { bytes: 4 });
+        let err = fs
+            .write_truncate(
+                &dir.path().join(".MANIFEST-000002.tmp"),
+                b"abcdefghijklmnop",
+            )
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::WriteZero);
+        // Original published tip untouched.
+        assert_eq!(fs.read(&target).unwrap(), b"full-body-contents");
     }
 
     #[test]
