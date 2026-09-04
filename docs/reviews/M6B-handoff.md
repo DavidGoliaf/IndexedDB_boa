@@ -66,4 +66,12 @@ cargo deny check
 cargo run -p boa_idb_wpt --bin boa-idb-wpt -- --backend fs --summary
 ```
 
-**Do not treat normative M6 as accepted until independent review.**
+## Remediations (post-B3 review)
+
+- Corrupt published `MANIFEST`/`CURRENT` tip → `BackendError::Corrupted` (no
+  silent empty `wal_seq=1` fallback).
+- After `CURRENT` publish, in-memory `wal_seq`/segments advance immediately so
+  a later `meta.scf` failure cannot leave commits on a superseded WAL;
+  superseded WAL is best-effort removed.
+- `list_databases` skips corrupt entries; `load_meta_with_wal` uses published
+  `wal_seq` when `CURRENT` exists.

@@ -42,12 +42,12 @@ pub fn wal_path(db_dir: &Path, wal_seq: u64) -> std::path::PathBuf {
 
 /// Runs compaction if thresholds are met.
 ///
-/// On success: new segment + manifest/`CURRENT` published, then WAL rotated to
-/// an empty generation. Mid-failure leaves either the previous or the new
-/// fully published generation (never a hybrid readable state). Committed
-/// in-memory data is left intact even if compaction fails — callers must not
-/// treat compaction `Err` as a failed user transaction once WAL commit
-/// succeeded; prefer logging/retry on the next write.
+/// On success: new segment + manifest/`CURRENT` published, in-memory tip updated
+/// to match disk, then superseded WAL best-effort removed. Mid-failure before
+/// `CURRENT` publish leaves the previous generation; after publish the in-memory
+/// tip tracks the new generation even if `meta.scf` sync fails (open heals meta).
+/// Callers must not treat compaction `Err` as a failed user transaction once WAL
+/// commit succeeded; prefer retry on the next write.
 pub fn maybe_compact(
     db_dir: &Path,
     state: &mut DbState,
@@ -67,6 +67,7 @@ pub fn compact_now(
     state: &mut DbState,
     fs: &Arc<dyn FileSystem>,
 ) -> Result<(), BackendError> {
+    let old_wal_seq = state.wal_seq;
     let new_seg_seq = state
         .segments
         .iter()
@@ -75,7 +76,7 @@ pub fn compact_now(
         .unwrap_or(0)
         .saturating_add(1);
     let new_manifest_seq = state.manifest_seq.saturating_add(1);
-    let new_wal_seq = state.wal_seq.saturating_add(1);
+    let new_wal_seq = old_wal_seq.saturating_add(1);
 
     // 1. Durable segment with full state (includes WAL-applied data).
     let guard = write_segment_file(db_dir, new_seg_seq, state, true, fs)?;
@@ -93,13 +94,11 @@ pub fn compact_now(
     };
     write_manifest(db_dir, &manifest, true, fs)?;
 
-    // 4. Persist meta.scf aligned with compacted state.
-    if let Some(meta) = &state.meta {
-        write_meta_file(db_dir, meta, true, fs)?;
-    }
-
-    // 5. Replace live segment set (old Arcs may remain in readonly snapshots).
-    for old in std::mem::take(&mut state.segments) {
+    // 4. Memory must match the published tip immediately. Otherwise a later
+    //    meta/cleanup failure plus ignored compact Err leaves commits appending
+    //    to the superseded WAL while CURRENT points at an empty generation.
+    let old_segments = std::mem::take(&mut state.segments);
+    for old in &old_segments {
         old.mark_reclaimable();
     }
     state.segments = vec![guard];
@@ -107,5 +106,21 @@ pub fn compact_now(
     state.wal_seq = new_wal_seq;
     state.wal_bytes_since_compact = 0;
     state.wal_frames_since_compact = 0;
+    drop(old_segments);
+
+    // 5. Align meta.scf (open heals mismatch if this fails).
+    let meta_err = if let Some(meta) = &state.meta {
+        write_meta_file(db_dir, meta, true, fs).err()
+    } else {
+        None
+    };
+
+    // 6. Best-effort remove superseded WAL (data now lives in the segment).
+    let old_wal = wal_path(db_dir, old_wal_seq);
+    let _ = fs.remove_file(&old_wal);
+
+    if let Some(err) = meta_err {
+        return Err(err);
+    }
     Ok(())
 }

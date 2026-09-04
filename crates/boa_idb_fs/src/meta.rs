@@ -239,7 +239,13 @@ pub fn load_meta_with_wal(
         meta: read_meta_file(db_dir, fs)?,
         ..crate::state::DbState::default()
     };
-    let wal_seq = load_manifest(db_dir, fs).map(|m| m.wal_seq).unwrap_or(1);
+    // When CURRENT exists, the published manifest is authoritative. Do not
+    // invent `wal_seq=1` on corruption (wrong generation / silent loss).
+    let wal_seq = if has_current {
+        load_manifest(db_dir, fs)?.wal_seq
+    } else {
+        1
+    };
     let wal_path = crate::compact::wal_path(db_dir, wal_seq);
     if fs.exists(&wal_path) {
         let bytes = fs

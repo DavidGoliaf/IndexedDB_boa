@@ -52,7 +52,11 @@ pub enum FaultKind {
     Enospc,
     /// Generic I/O failure.
     Eio,
-    /// Persist only the first `bytes` then succeed (torn write).
+    /// Persist only the first `bytes` then succeed (torn write / crash seam).
+    ///
+    /// Intentionally returns success after the short prefix so callers exercise
+    /// recovery of a torn WAL/file the same way a crash mid-write would; this
+    /// is **not** how `OsFileSystem` behaves (`write_all` retries).
     ShortWrite {
         /// Bytes actually written before "success".
         bytes: usize,

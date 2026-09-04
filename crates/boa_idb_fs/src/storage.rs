@@ -65,8 +65,11 @@ impl Storage for FsStorage {
             if !entry.is_dir {
                 continue;
             }
-            if let Some(meta) = load_meta_with_wal(&entry.path, &self.fs)? {
-                out.push((meta.name.to_string(), meta.version));
+            match load_meta_with_wal(&entry.path, &self.fs) {
+                Ok(Some(meta)) => out.push((meta.name.to_string(), meta.version)),
+                // Skip empty or corrupt directory entries so one bad DB does not hide others.
+                Ok(None) | Err(BackendError::Corrupted(_)) => {}
+                Err(err) => return Err(err),
             }
         }
         Ok(out)

@@ -330,6 +330,63 @@ fn corrupt_wal_tail_and_segment_manifest_are_safe() {
 }
 
 #[test]
+fn compact_meta_fail_keeps_memory_on_published_wal() {
+    // After CURRENT publish, in-memory wal_seq must advance even if meta.scf
+    // sync fails — otherwise later commits are written to a superseded WAL and
+    // vanish on reopen.
+    use boa_idb_core::backend::traits::BackendFactory;
+    use boa_idb_core::proto::{Durability, TxnMode};
+
+    let dir = tempdir().unwrap();
+    let faults = FaultInjectingFs::new(OsFileSystem::shared());
+    let factory = FsBackendFactory::new(dir.path())
+        .with_filesystem(faults.clone())
+        .with_compact_config(CompactConfig {
+            wal_bytes: u64::MAX,
+            wal_frames: 1,
+        });
+    let key = StorageKey::new("compact-meta");
+    let store = setup_store(&factory, &key);
+
+    let storage = factory.open_storage(&key).unwrap();
+    let mut db = storage.open_database("db").unwrap();
+    faults.clear();
+    faults.inject_once(FaultSite::MetaWrite, FaultKind::Eio);
+    {
+        let mut txn = db
+            .begin(TxnMode::ReadWrite, &[store], Durability::Strict)
+            .unwrap();
+        txn.begin_request().unwrap();
+        txn.put(store, b"a", b"1", false).unwrap();
+        txn.commit_request().unwrap();
+        txn.commit().unwrap();
+    }
+    faults.clear();
+    {
+        let mut txn = db
+            .begin(TxnMode::ReadWrite, &[store], Durability::Strict)
+            .unwrap();
+        txn.begin_request().unwrap();
+        txn.put(store, b"b", b"2", false).unwrap();
+        txn.commit_request().unwrap();
+        txn.commit().unwrap();
+    }
+    drop(db);
+    drop(storage);
+
+    let factory = clean_factory(dir.path());
+    assert_eq!(
+        get(&factory, &key, store, b"a").unwrap(),
+        Some(b"1".to_vec())
+    );
+    assert_eq!(
+        get(&factory, &key, store, b"b").unwrap(),
+        Some(b"2".to_vec()),
+        "post-compact commit must land on the published WAL generation"
+    );
+}
+
+#[test]
 fn enospc_maps_to_quota_exceeded() {
     let dir = tempdir().unwrap();
     let faults = FaultInjectingFs::new(OsFileSystem::shared());

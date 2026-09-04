@@ -257,10 +257,10 @@ fn readonly_does_not_see_writes_after_snapshot() {
 }
 
 #[test]
-fn malformed_manifest_does_not_panic() {
-    use boa_idb_fs::decode_frame; // touch crate
+fn malformed_manifest_returns_corrupted_without_panic() {
+    use boa_idb_core::backend::error::BackendError;
+    use boa_idb_fs::decode_frame;
     let _ = decode_frame(&[]);
-    // Exercise decode_manifest via open of crafted CURRENT.
     let dir = tempdir().unwrap();
     let key = StorageKey::new("bad-man");
     let storage = FsBackendFactory::new(dir.path())
@@ -269,7 +269,6 @@ fn malformed_manifest_does_not_panic() {
     let _ = storage.open_database("db").unwrap();
     drop(storage);
 
-    // Overwrite CURRENT to point at garbage manifest — open falls back / errors safely.
     for sk in fs::read_dir(dir.path()).unwrap().flatten() {
         for db in fs::read_dir(sk.path()).unwrap().flatten() {
             let man = db.path().join("MANIFEST-000001");
@@ -279,6 +278,11 @@ fn malformed_manifest_does_not_panic() {
     let storage = FsBackendFactory::new(dir.path())
         .open_storage(&key)
         .unwrap();
-    // Should not panic (either recovers with fallback or returns Err).
-    let _ = storage.open_database("db");
+    match storage.open_database("db") {
+        Ok(_) => panic!("corrupt published manifest must not invent an empty tip"),
+        Err(err) => assert!(
+            matches!(err, BackendError::Corrupted(_)),
+            "expected Corrupted, got {err:?}"
+        ),
+    }
 }

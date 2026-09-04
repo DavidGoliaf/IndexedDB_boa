@@ -94,8 +94,18 @@ fn verify_prefix(
     db: &mut dyn boa_idb_core::backend::traits::Database,
     durable: u32,
 ) -> Result<(), BackendError> {
-    let store = 1u64;
-    let index = 1u64;
+    let meta = db.metadata();
+    let store = meta
+        .stores
+        .first()
+        .map(|s| s.id)
+        .ok_or_else(|| BackendError::Internal("crash verify: missing store".into()))?;
+    let index = meta
+        .stores
+        .first()
+        .and_then(|s| s.indexes.first())
+        .map(|i| i.id)
+        .ok_or_else(|| BackendError::Internal("crash verify: missing index".into()))?;
     let mut txn = db.begin(TxnMode::ReadOnly, &[store], Durability::Relaxed)?;
 
     for i in 1..=durable {

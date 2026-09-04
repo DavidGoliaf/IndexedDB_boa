@@ -71,17 +71,9 @@ impl FsDatabase {
         }
 
         let mut state = DbState::default();
-        let manifest = match load_manifest(&db_dir, &fs) {
-            Ok(m) => m,
-            Err(_) => {
-                // Pre-B1 CURRENT bodies are not IMAN; treat as empty segment set.
-                ManifestData {
-                    manifest_seq: 1,
-                    wal_seq: 1,
-                    segments: Vec::new(),
-                }
-            }
-        };
+        // Corrupt / unreadable published tip must not invent an empty generation
+        // (silent data loss after compaction). Missing CURRENT is initialized above.
+        let manifest = load_manifest(&db_dir, &fs)?;
         state.manifest_seq = manifest.manifest_seq;
         state.wal_seq = manifest.wal_seq;
 
