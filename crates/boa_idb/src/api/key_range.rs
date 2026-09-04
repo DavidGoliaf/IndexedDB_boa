@@ -37,12 +37,9 @@ impl IdBKeyRange {
 
 fn create_key_range(data: IdBKeyRange, context: &mut Context) -> JsResult<boa_engine::JsObject> {
     let obj = IdBKeyRange::from_data(data, context)?;
-    obj.set(
-        js_string!("__boa_idb_key_range"),
-        JsValue::from(true),
-        false,
-        context,
-    )?;
+    if let Some(runtime) = context.get_data::<crate::runtime::IdbRuntime>() {
+        runtime.key_range_objects.borrow_mut().push(obj.clone());
+    }
     Ok(obj)
 }
 

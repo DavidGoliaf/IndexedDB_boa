@@ -669,6 +669,11 @@ impl Class for IdBObjectStore {
                     })?;
                     (data.name.clone(), data.transaction.clone())
                 };
+                let store_id = obj
+                    .downcast_ref::<IdBObjectStore>()
+                    .map(|data| data.store_id)
+                    .ok_or_else(|| JsNativeError::typ().with_message("Not an IDBObjectStore"))?;
+                crate::api::support::require_live_store(context, &txn_obj, store_id)?;
                 let txn_id = active_txn_id(context, &txn_obj)?;
 
                 let name = args
@@ -759,6 +764,11 @@ impl Class for IdBObjectStore {
                     })?;
                     (data.name.clone(), data.transaction.clone())
                 };
+                let store_id = obj
+                    .downcast_ref::<IdBObjectStore>()
+                    .map(|data| data.store_id)
+                    .ok_or_else(|| JsNativeError::typ().with_message("Not an IDBObjectStore"))?;
+                crate::api::support::require_live_store(context, &txn_obj, store_id)?;
                 let txn_id = active_txn_id(context, &txn_obj)?;
                 let name = args
                     .first()

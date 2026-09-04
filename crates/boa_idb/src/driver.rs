@@ -251,6 +251,8 @@ pub struct TxnHandle {
     pub active_epoch: u64,
     /// Explicit `commit()` was called.
     pub explicit_commit: bool,
+    /// Stores whose physical deletion is deferred until upgrade commit.
+    pub deleted_store_ids: Vec<StoreId>,
     /// Key generators per store.
     pub keygens: HashMap<StoreId, KeyGenerator>,
 }
@@ -273,6 +275,8 @@ pub struct CursorState {
     pub rows: Vec<CursorRow>,
     /// Current index (`rows.len()` = exhausted).
     pub pos: usize,
+    /// Whether a cursor request is currently pending (cursor is being iterated).
+    pub pending: bool,
 }
 
 /// A materialized cursor row.
@@ -305,6 +309,8 @@ pub struct CursorView {
     pub key_path: KeyPath,
     /// Current row (None = exhausted).
     pub current: Option<CursorRowView>,
+    /// Whether a navigation request is pending.
+    pub pending: bool,
 }
 
 /// Snapshot of a cursor row for the API layer.
@@ -342,7 +348,18 @@ pub fn cursor_view(d: &DriverState, cursor_id: u64) -> Option<CursorView> {
             primary_key: row.primary_key.clone(),
             value: row.value.clone(),
         }),
+        pending: c.pending,
     })
+}
+
+/// Marks a live cursor as waiting for its next request completion.
+pub fn set_cursor_pending(context: &mut Context, cursor_id: u64, pending: bool) {
+    if let Some(runtime) = context.get_data::<IdbRuntime>() {
+        let mut d = crate::runtime::lock_mutex(&runtime.driver);
+        if let Some(cursor) = d.cursors.get_mut(&cursor_id) {
+            cursor.pending = pending;
+        }
+    }
 }
 
 impl CursorState {
@@ -1078,7 +1095,10 @@ fn process_opens(
                     (d.txns.remove(&txn_id), open.name.clone())
                 };
                 if let Some(mut handle) = handle {
-                    if let Some(backend) = handle.backend.take() {
+                    if let Some(mut backend) = handle.backend.take() {
+                        for store_id in &handle.deleted_store_ids {
+                            let _ = backend.delete_store(*store_id);
+                        }
                         let _ = backend.commit();
                     }
                 }
@@ -1162,6 +1182,7 @@ fn start_upgrade_txn(
         active: true,
         active_epoch: d.task_epoch,
         explicit_commit: false,
+        deleted_store_ids: Vec::new(),
         keygens: HashMap::new(),
     };
     d.scheduler.enqueue(TxnQueueItem {
@@ -1256,7 +1277,6 @@ fn abort_failed_upgrade(
         d.scheduler.forget(txn_id);
         d.txn_queues.remove(&txn_id);
         d.txn_of_request.retain(|_, t| *t != txn_id);
-        d.cursors.retain(|_, c| c.txn_id != txn_id);
         d.opens.retain(|o| o.request_id != open.request_id);
         if let Some(queue) = d.open_queues.get_mut(&open.name) {
             queue.on_operation_failed();
@@ -1448,6 +1468,7 @@ enum TxnWork {
 /// queue (e.g. a `keep_alive` spin whose `onsuccess` enqueues the next
 /// request synchronously) must not keep `drive_turn` from returning, or
 /// the event loop could never yield to promise jobs and timers.
+#[allow(clippy::too_many_lines)]
 fn process_txn_requests(
     driver_handle: &Arc<std::sync::Mutex<DriverState>>,
     context: &mut Context,
@@ -1528,6 +1549,9 @@ fn process_txn_requests(
                 match outcome {
                     Ok(OpExec::Outcome(outcome)) => {
                         apply_outcome(request_id, outcome, context);
+                        if let PendingOp::CursorOp { cursor_id, .. } = op {
+                            set_cursor_pending(context, cursor_id, false);
+                        }
                         complete_request(driver_handle, txn_id, request_id, context);
                     }
                     Ok(OpExec::CursorOpened { cursor_id }) => {
@@ -1614,6 +1638,7 @@ pub fn create_txn(
             active: true,
             active_epoch: d.task_epoch,
             explicit_commit: false,
+            deleted_store_ids: Vec::new(),
             keygens: HashMap::new(),
         },
     );
@@ -1738,7 +1763,10 @@ fn finish_txns(
         let Some(mut handle) = taken else { break };
         let txn_id = handle.txn_id;
         // Commit lock-free (owned backend).
-        if let Some(backend) = handle.backend.take() {
+        if let Some(mut backend) = handle.backend.take() {
+            for store_id in &handle.deleted_store_ids {
+                let _ = backend.delete_store(*store_id);
+            }
             let _ = backend.commit();
         }
         // Bookkeeping (locks held, pure).
@@ -1747,7 +1775,6 @@ fn finish_txns(
             d.scheduler.forget(txn_id);
             d.txn_queues.remove(&txn_id);
             d.txn_of_request.retain(|_, t| *t != txn_id);
-            d.cursors.retain(|_, c| c.txn_id != txn_id);
         }
         // Dispatch (no guards held).
         if let Some(txn_obj) = crate::runtime::txn_object(context, txn_id) {
@@ -1789,7 +1816,6 @@ pub(crate) fn abort_transaction(
         d.scheduler.forget(txn_id);
         d.txn_queues.remove(&txn_id);
         d.txn_of_request.retain(|_, t| *t != txn_id);
-        d.cursors.retain(|_, c| c.txn_id != txn_id);
     }
     // Fail queued requests (dispatch, no guards held).
     fail_queued_requests(driver_handle, context, txn_id, &IdbError::Abort);
@@ -2045,6 +2071,7 @@ fn complete_cursor_continue(
     reached_end: bool,
     context: &mut Context,
 ) {
+    set_cursor_pending(context, cursor_id, false);
     refresh_txn_epoch(driver_handle, txn_id);
     if let Some(request) = crate::runtime::request_object(context, request_id) {
         crate::api::request::with_request_mut(&request, |req| {
@@ -2134,7 +2161,6 @@ fn dispatch_request(context: &mut Context, request: &JsObject, event: &JsValue) 
         .and_then(|o| o.get(js_string!("type"), context).ok())
         .and_then(|v| v.as_string().map(|s| s.to_std_string_escaped()))
         .unwrap_or_default();
-
     // Snapshot under one borrow; handlers run after it is released and may
     // re-enter (enqueue new requests, remove listeners).
     let snapshots = crate::dom::event_target::snapshot_listeners(request, &event_type);
@@ -2265,7 +2291,10 @@ pub fn txn_store_view(
             h.meta
                 .stores
                 .iter()
-                .find(|s| s.id == store_id && !s.deleted)
+                // A request queued before deleteObjectStore must still run;
+                // the handle is already marked deleted, while physical
+                // removal is deferred until commit.
+                .find(|s| s.id == store_id)
                 .cloned()
         })
         .ok_or_else(|| IdbError::NotFound(format!("Object store id {store_id} not found")))
@@ -2418,7 +2447,6 @@ pub fn schema_create_store(
 /// Deletes an object store in the upgrade transaction (records and index
 /// entries go through the store algorithm so nothing is orphaned).
 pub fn schema_delete_store(d: &mut DriverState, txn_id: TxnId, name: &str) -> Result<(), IdbError> {
-    let lim = limits();
     let uname = Utf16String::from(name);
     let store_id = {
         let handle = upgrade_handle_mut(d, txn_id)?;
@@ -2430,23 +2458,11 @@ pub fn schema_delete_store(d: &mut DriverState, txn_id: TxnId, name: &str) -> Re
             .map(|s| s.id)
             .ok_or_else(|| IdbError::NotFound(format!("Object store '{name}' not found")))?
     };
-    // Remove data first (index-aware), then the schema entry.
-    let store_meta = txn_store_view(d, txn_id, store_id)?;
-    {
-        let handle = upgrade_handle_mut(d, txn_id)?;
-        let backend: &mut dyn BackendTxn = handle
-            .backend
-            .as_mut()
-            .map(|b| b.as_mut())
-            .ok_or(IdbError::TransactionInactive)?;
-        boa_idb_core::engine::ops_store::clear(backend, &store_meta)?;
-        backend.delete_store(store_id).map_err(backend_err)?;
-    }
     let handle = upgrade_handle_mut(d, txn_id)?;
     if let Some(s) = handle.meta.stores.iter_mut().find(|s| s.id == store_id) {
         s.deleted = true;
     }
-    let _ = lim;
+    handle.deleted_store_ids.push(store_id);
     Ok(())
 }
 
@@ -3083,6 +3099,7 @@ fn execute_op_inner(
                 key_only: *key_only,
                 rows,
                 pos: 0,
+                pending: false,
             };
             d.cursors.insert(cursor_id, state);
             Ok(OpExec::CursorOpened { cursor_id })

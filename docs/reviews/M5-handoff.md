@@ -45,3 +45,24 @@ objects.
 No new dependency or ADR was needed. The runner keeps the existing synchronous
 Boa pump design documented by the previous handoff; the only M5 execution
 deviation is the deterministic single-worker default.
+
+## Follow-up stabilization
+
+The M5 branch also contains a bounded stabilization pass for the remaining
+IndexedDB lifecycle cases:
+
+- cursor navigation now tracks pending requests and preserves cursor state for
+  post-transaction error classification;
+- deleted object-store handles are rejected immediately, while queued writes
+  are allowed to complete before physical deletion at upgrade commit;
+- cursor update argument validation and getAll query parsing were tightened;
+- key-range handles use an explicit runtime identity registry because Boa's
+  native prototype/type checks are not reliable for these objects.
+
+Verification remains green for `cargo fmt --all -- --check`, workspace clippy,
+and `cargo test -p boa_idb --tests`. The following WPT cases still reproduce on
+the branch and must not be treated as resolved: one cursor-open assertion,
+deleted-store/recreate-store lifecycle assertions, the deleteDatabase
+open-queue close race, upgrade transaction abort event ordering, and invalid
+getAll keys. Unsupported exotic structured-clone failures remain outside this
+stabilization pass.

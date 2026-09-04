@@ -48,6 +48,8 @@ pub struct IdbRuntime {
     pub cursor_objects: GcRefCell<BTreeMap<u64, JsObject>>,
     /// Traced registry of live transaction objects.
     pub txn_objects: GcRefCell<BTreeMap<u64, JsObject>>,
+    /// Identity registry for `IDBKeyRange` objects.
+    pub key_range_objects: GcRefCell<Vec<JsObject>>,
     /// Plain (non-GC) driver state: pending opens, transactions, requests, cursors.
     #[unsafe_ignore_trace]
     pub driver: Arc<Mutex<crate::driver::DriverState>>,
@@ -78,6 +80,7 @@ impl IdbRuntime {
             request_objects: GcRefCell::default(),
             cursor_objects: GcRefCell::default(),
             txn_objects: GcRefCell::default(),
+            key_range_objects: GcRefCell::default(),
             driver: Arc::new(Mutex::new(crate::driver::DriverState::default())),
             auto_pump: Cell::new(true),
         }

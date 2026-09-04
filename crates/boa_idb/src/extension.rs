@@ -82,6 +82,12 @@ impl IndexedDbExtension {
         context.register_global_class::<crate::api::record::IdBRecordData>()?;
         context.register_global_class::<crate::api::cursor::IdBCursorData>()?;
         context.register_global_class::<crate::api::cursor::IdBCursorWithValueData>()?;
+        // `IDBCursorWithValue` derives from `IDBCursor` in WebIDL. Boa's
+        // native class registration does not infer that relation from the
+        // Rust wrapper type, so wire the prototype chain explicitly.
+        context.eval(boa_engine::Source::from_bytes(
+            "Object.setPrototypeOf(IDBCursorWithValue.prototype, IDBCursor.prototype);",
+        ))?;
         context
             .register_global_class::<crate::api::version_change_event::IdBVersionChangeEventData>(
             )?;

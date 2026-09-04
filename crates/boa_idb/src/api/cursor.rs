@@ -85,6 +85,13 @@ fn view_of(context: &Context, cursor_id: u64) -> Option<CursorView> {
 
 /// Requires a positioned cursor; throws `InvalidStateError` at the end.
 fn require_position(view: &CursorView, context: &mut Context) -> JsResult<()> {
+    if view.pending {
+        return crate::dom::exception::throw_invalid_state_error(
+            "The cursor is being iterated.",
+            context,
+        )
+        .map(|_| ());
+    }
     if view.current.is_none() {
         return crate::dom::exception::throw_invalid_state_error(
             "The cursor is exhausted.",
@@ -121,6 +128,7 @@ fn reuse_request(context: &mut Context, view: &CursorView, action: CursorAction)
         req.result = None;
         req.error = None;
     });
+    crate::driver::set_cursor_pending(context, view.cursor_id, true);
     crate::driver::enqueue_op(
         context,
         view.txn_id,
@@ -365,9 +373,12 @@ fn install_cursor_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
                     context,
                 );
             }
+            let Some(value_js) = args.first() else {
+                return Err(JsNativeError::typ()
+                    .with_message("update() requires a value argument")
+                    .into());
+            };
             require_readwrite(context, view.txn_id)?;
-            let default_val = JsValue::undefined();
-            let value_js = args.first().unwrap_or(&default_val);
             let sc_value = serialize_for_storage(value_js, context).map_err(|e| {
                 if e.as_opaque().is_some() {
                     e

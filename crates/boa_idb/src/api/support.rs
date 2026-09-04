@@ -1,6 +1,6 @@
 //! Shared API helpers: request issuance, query conversion, transaction guards.
 
-use boa_engine::object::builtins::{JsArrayBuffer, JsDate, JsTypedArray};
+use boa_engine::object::builtins::{JsArray, JsArrayBuffer, JsDate, JsTypedArray};
 use boa_engine::{Context, JsNativeError, JsObject, JsResult, JsValue, js_string};
 use boa_idb_core::key::value::Key;
 use boa_idb_core::proto::Direction;
@@ -156,17 +156,13 @@ pub fn require_live_index(
 
 /// Requires a cursor's source schema to remain live during an upgrade.
 pub fn require_live_cursor(context: &mut Context, cursor_id: u64, txn_id: u64) -> JsResult<()> {
-    let live = context
+    let source_live = context
         .get_data::<crate::runtime::IdbRuntime>()
-        .is_some_and(|r| {
+        .and_then(|r| {
             let d = crate::runtime::lock_mutex(&r.driver);
-            let Some(cursor) = d.cursors.get(&cursor_id) else {
-                return false;
-            };
+            let cursor = d.cursors.get(&cursor_id)?;
             let Some(txn) = d.txns.get(&txn_id) else {
-                // Once a transaction has finished, the normal activity guard
-                // below owns the error classification.
-                return true;
+                return Some(true);
             };
             let Some(store) = txn.meta.stores.iter().find(|store| match cursor.source {
                 SourceRef::Store(store_id) => store.id == store_id,
@@ -174,22 +170,45 @@ pub fn require_live_cursor(context: &mut Context, cursor_id: u64, txn_id: u64) -
                     store: store_id, ..
                 } => store.id == store_id,
             }) else {
-                return false;
+                return Some(false);
             };
-            if store.deleted {
-                return false;
-            }
-            match cursor.source {
-                SourceRef::Store(_) => true,
-                SourceRef::Index { index, .. } => store
-                    .indexes
-                    .iter()
-                    .any(|candidate| candidate.id == index && !candidate.deleted),
-            }
+            let source_live = if store.deleted {
+                false
+            } else {
+                match cursor.source {
+                    SourceRef::Store(_) => true,
+                    SourceRef::Index { index, .. } => store
+                        .indexes
+                        .iter()
+                        .any(|candidate| candidate.id == index && !candidate.deleted),
+                }
+            };
+            Some(source_live)
         });
-    if !live {
+    if source_live.is_none() {
         return crate::dom::exception::throw_invalid_state_error(
             "The cursor source has been deleted.",
+            context,
+        )
+        .map(|_| ());
+    }
+    if source_live == Some(false) {
+        return crate::dom::exception::throw_invalid_state_error(
+            "The cursor source has been deleted.",
+            context,
+        )
+        .map(|_| ());
+    }
+    let txn_present = context
+        .get_data::<crate::runtime::IdbRuntime>()
+        .is_some_and(|r| {
+            crate::runtime::lock_mutex(&r.driver)
+                .txns
+                .contains_key(&txn_id)
+        });
+    if !txn_present {
+        return crate::dom::exception::throw_transaction_inactive_error(
+            "The cursor transaction is inactive.",
             context,
         )
         .map(|_| ());
@@ -203,15 +222,14 @@ pub fn query_to_range(query: &JsValue, context: &mut Context) -> JsResult<RangeD
         return Ok(RangeData::All);
     }
     if let Some(obj) = query.as_object() {
-        if obj
-            .get(js_string!("__boa_idb_key_range"), context)
-            .is_ok_and(|value| value.to_boolean())
-        {
-            let Some(kr) = obj.downcast_ref::<IdBKeyRange>() else {
-                return Err(JsNativeError::typ()
-                    .with_message("Invalid IDBKeyRange object")
-                    .into());
-            };
+        let is_key_object = obj.is_array()
+            || JsDate::from_object(obj.clone()).is_ok()
+            || JsTypedArray::from_object(obj.clone()).is_ok()
+            || JsArrayBuffer::from_object(obj.clone()).is_ok();
+        if !is_key_object && is_key_range_object(context, &obj) {
+            let kr = obj
+                .downcast_ref::<IdBKeyRange>()
+                .ok_or_else(|| JsNativeError::typ().with_message("Invalid IDBKeyRange object"))?;
             return Ok(range_data_of(&kr));
         }
     }
@@ -296,9 +314,7 @@ pub fn parse_get_all_args(args: &[JsValue], context: &mut Context) -> JsResult<G
             || JsDate::from_object(obj.clone()).is_ok()
             || JsTypedArray::from_object(obj.clone()).is_ok()
             || JsArrayBuffer::from_object(obj.clone()).is_ok();
-        let is_key_range = obj
-            .get(js_string!("__boa_idb_key_range"), context)
-            .is_ok_and(|value| value.to_boolean());
+        let is_key_range = is_key_range_object(context, &obj);
         if !is_key_range && !is_key_object {
             let has_query = obj
                 .has_own_property(js_string!("query"), context)
@@ -345,6 +361,18 @@ pub fn parse_get_all_args(args: &[JsValue], context: &mut Context) -> JsResult<G
         limit: parse_count(args.get(1), context)?,
         direction: Direction::Next,
     })
+}
+
+fn is_key_range_object(context: &Context, object: &JsObject) -> bool {
+    context
+        .get_data::<crate::runtime::IdbRuntime>()
+        .is_some_and(|runtime| {
+            runtime
+                .key_range_objects
+                .borrow()
+                .iter()
+                .any(|candidate| candidate == object)
+        })
 }
 
 /// Converts a driver key to a JS value, mapping failures to `DataError`.
