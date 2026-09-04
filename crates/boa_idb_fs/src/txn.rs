@@ -1,7 +1,6 @@
 //! Filesystem-backed transaction with undo logs and WAL commit.
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -17,7 +16,7 @@ use crate::compact::{CompactConfig, maybe_compact, wal_path};
 use crate::cursor::FsCursor;
 use crate::meta::{encode_meta, write_meta_file};
 use crate::state::{DbState, IndexKey, RecordKey, SnapshotMeter};
-use crate::sync_hooks::SyncHooks;
+use crate::vfs::FileSystem;
 use crate::wal::{CodecError, WalOp, encode_txn_frames_limited};
 
 /// Undo operation for savepoint rollback.
@@ -61,7 +60,7 @@ pub struct FsTxn {
     state: Arc<RwLock<DbState>>,
     durability: Durability,
     db_dir: PathBuf,
-    hooks: Arc<dyn SyncHooks>,
+    fs: Arc<dyn FileSystem>,
     max_keys_in_memory: u64,
     max_frame_payload: u32,
     compact: CompactConfig,
@@ -88,7 +87,7 @@ impl FsTxn {
         state: Arc<RwLock<DbState>>,
         durability: Durability,
         db_dir: PathBuf,
-        hooks: Arc<dyn SyncHooks>,
+        fs: Arc<dyn FileSystem>,
         max_keys_in_memory: u64,
         max_frame_payload: u32,
         compact: CompactConfig,
@@ -101,7 +100,7 @@ impl FsTxn {
             state,
             durability,
             db_dir,
-            hooks,
+            fs,
             max_keys_in_memory,
             max_frame_payload,
             compact,
@@ -1055,7 +1054,7 @@ impl BackendTxn for FsTxn {
         let empty = ops.is_empty();
         let wal_seq = self.state.read().wal_seq;
         let wal_file = wal_path(&self.db_dir, wal_seq);
-        let wal_len_before = fs::metadata(&wal_file).map(|m| m.len()).unwrap_or(0);
+        let wal_len_before = self.fs.metadata_len(&wal_file).unwrap_or(0);
         let txn_seq = self.state.read().next_txn_seq;
 
         let mut appended = 0u64;
@@ -1078,8 +1077,8 @@ impl BackendTxn for FsTxn {
             for (i, bytes) in frames.iter().enumerate() {
                 let is_last = i + 1 == frames.len();
                 let do_sync = wal_sync && is_last;
-                if let Err(err) = append_and_maybe_sync(&wal_file, bytes, do_sync, &self.hooks) {
-                    let _ = truncate_file(&wal_file, wal_len_before);
+                if let Err(err) = append_and_maybe_sync(&wal_file, bytes, do_sync, &self.fs) {
+                    let _ = truncate_file(&wal_file, wal_len_before, &self.fs);
                     return Err(err);
                 }
                 appended += bytes.len() as u64;
@@ -1087,8 +1086,8 @@ impl BackendTxn for FsTxn {
         }
 
         if schema_dirty {
-            if let Err(err) = write_meta_file(&self.db_dir, &meta, sync, &self.hooks) {
-                let _ = truncate_file(&wal_file, wal_len_before);
+            if let Err(err) = write_meta_file(&self.db_dir, &meta, sync, &self.fs) {
+                let _ = truncate_file(&wal_file, wal_len_before, &self.fs);
                 return Err(err);
             }
         }
@@ -1100,7 +1099,7 @@ impl BackendTxn for FsTxn {
             state.wal_frames_since_compact =
                 state.wal_frames_since_compact.saturating_add(frame_groups);
             // Compaction errors must not undo a durable commit; retry next write.
-            let _ = maybe_compact(&self.db_dir, &mut state, self.compact, &self.hooks);
+            let _ = maybe_compact(&self.db_dir, &mut state, self.compact, &self.fs);
         }
         Ok(())
     }

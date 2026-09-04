@@ -4,7 +4,7 @@ use crate::atomic::{ensure_file, truncate_file};
 use crate::meta::{ManifestData, write_manifest, write_meta_file};
 use crate::segment::write_segment_file;
 use crate::state::DbState;
-use crate::sync_hooks::SyncHooks;
+use crate::vfs::FileSystem;
 use boa_idb_core::backend::error::BackendError;
 use std::path::Path;
 use std::sync::Arc;
@@ -52,12 +52,12 @@ pub fn maybe_compact(
     db_dir: &Path,
     state: &mut DbState,
     cfg: CompactConfig,
-    hooks: &Arc<dyn SyncHooks>,
+    fs: &Arc<dyn FileSystem>,
 ) -> Result<bool, BackendError> {
     if !cfg.should_compact(state) {
         return Ok(false);
     }
-    compact_now(db_dir, state, hooks)?;
+    compact_now(db_dir, state, fs)?;
     Ok(true)
 }
 
@@ -65,7 +65,7 @@ pub fn maybe_compact(
 pub fn compact_now(
     db_dir: &Path,
     state: &mut DbState,
-    hooks: &Arc<dyn SyncHooks>,
+    fs: &Arc<dyn FileSystem>,
 ) -> Result<(), BackendError> {
     let new_seg_seq = state
         .segments
@@ -78,12 +78,12 @@ pub fn compact_now(
     let new_wal_seq = state.wal_seq.saturating_add(1);
 
     // 1. Durable segment with full state (includes WAL-applied data).
-    let guard = write_segment_file(db_dir, new_seg_seq, state, true, hooks)?;
+    let guard = write_segment_file(db_dir, new_seg_seq, state, true, fs)?;
 
     // 2. Prepare empty next WAL before publishing CURRENT.
     let new_wal = wal_path(db_dir, new_wal_seq);
-    ensure_file(&new_wal)?;
-    truncate_file(&new_wal, 0)?;
+    ensure_file(&new_wal, fs)?;
+    truncate_file(&new_wal, 0, fs)?;
 
     // 3. Publish manifest + CURRENT (only after segment+empty WAL exist).
     let manifest = ManifestData {
@@ -91,11 +91,11 @@ pub fn compact_now(
         wal_seq: new_wal_seq,
         segments: vec![new_seg_seq],
     };
-    write_manifest(db_dir, &manifest, true, hooks)?;
+    write_manifest(db_dir, &manifest, true, fs)?;
 
     // 4. Persist meta.scf aligned with compacted state.
     if let Some(meta) = &state.meta {
-        write_meta_file(db_dir, meta, true, hooks)?;
+        write_meta_file(db_dir, meta, true, fs)?;
     }
 
     // 5. Replace live segment set (old Arcs may remain in readonly snapshots).

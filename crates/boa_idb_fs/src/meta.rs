@@ -1,12 +1,11 @@
 //! `meta.scf` and `CURRENT` / `MANIFEST` helpers.
 
 use crate::atomic::atomic_write;
-use crate::sync_hooks::{SyncHooks, io_to_backend};
+use crate::vfs::{FileSystem, io_to_backend};
 use boa_idb_core::backend::error::BackendError;
 use boa_idb_core::backend::types::{DatabaseMeta, IndexMeta, StoreMeta};
 use boa_idb_core::key::path::KeyPath;
 use boa_idb_core::key::utf16::Utf16String;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -27,9 +26,14 @@ pub struct ManifestData {
 }
 
 /// Reads `CURRENT` and returns the absolute manifest path.
-pub fn read_current_manifest(db_dir: &Path) -> Result<PathBuf, BackendError> {
+pub fn read_current_manifest(
+    db_dir: &Path,
+    fs: &Arc<dyn FileSystem>,
+) -> Result<PathBuf, BackendError> {
     let current = db_dir.join("CURRENT");
-    let name = fs::read_to_string(&current).map_err(|e| io_to_backend(e, "read CURRENT"))?;
+    let name = fs
+        .read_to_string(&current)
+        .map_err(|e| io_to_backend(e, "read CURRENT"))?;
     let name = name.trim();
     if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
         return Err(BackendError::Corrupted(format!(
@@ -107,9 +111,14 @@ pub fn decode_manifest(bytes: &[u8]) -> Result<ManifestData, BackendError> {
 }
 
 /// Reads and decodes the manifest referenced by `CURRENT`.
-pub fn load_manifest(db_dir: &Path) -> Result<ManifestData, BackendError> {
-    let path = read_current_manifest(db_dir)?;
-    let bytes = fs::read(&path).map_err(|e| io_to_backend(e, "read MANIFEST"))?;
+pub fn load_manifest(
+    db_dir: &Path,
+    fs: &Arc<dyn FileSystem>,
+) -> Result<ManifestData, BackendError> {
+    let path = read_current_manifest(db_dir, fs)?;
+    let bytes = fs
+        .read(&path)
+        .map_err(|e| io_to_backend(e, "read MANIFEST"))?;
     decode_manifest(&bytes)
 }
 
@@ -120,17 +129,17 @@ pub fn write_manifest(
     db_dir: &Path,
     data: &ManifestData,
     sync: bool,
-    hooks: &Arc<dyn SyncHooks>,
+    fs: &Arc<dyn FileSystem>,
 ) -> Result<(), BackendError> {
     let name = format!("MANIFEST-{:06}", data.manifest_seq);
     let path = db_dir.join(&name);
     let body = encode_manifest(data);
-    atomic_write(&path, &body, sync, hooks)?;
+    atomic_write(&path, &body, sync, fs)?;
     atomic_write(
         &db_dir.join("CURRENT"),
         format!("{name}\n").as_bytes(),
         sync,
-        hooks,
+        fs,
     )?;
     Ok(())
 }
@@ -192,18 +201,23 @@ pub fn write_meta_file(
     db_dir: &Path,
     meta: &DatabaseMeta,
     sync: bool,
-    hooks: &Arc<dyn SyncHooks>,
+    fs: &Arc<dyn FileSystem>,
 ) -> Result<(), BackendError> {
-    atomic_write(&db_dir.join("meta.scf"), &encode_meta(meta), sync, hooks)
+    atomic_write(&db_dir.join("meta.scf"), &encode_meta(meta), sync, fs)
 }
 
 /// Reads `meta.scf` if present.
-pub fn read_meta_file(db_dir: &Path) -> Result<Option<DatabaseMeta>, BackendError> {
+pub fn read_meta_file(
+    db_dir: &Path,
+    fs: &Arc<dyn FileSystem>,
+) -> Result<Option<DatabaseMeta>, BackendError> {
     let path = db_dir.join("meta.scf");
-    if !path.exists() {
+    if !fs.exists(&path) {
         return Ok(None);
     }
-    let bytes = fs::read(&path).map_err(|e| io_to_backend(e, "read meta.scf"))?;
+    let bytes = fs
+        .read(&path)
+        .map_err(|e| io_to_backend(e, "read meta.scf"))?;
     Ok(Some(decode_meta(&bytes)?))
 }
 
@@ -211,20 +225,26 @@ pub fn read_meta_file(db_dir: &Path) -> Result<Option<DatabaseMeta>, BackendErro
 ///
 /// Used by `list_databases` so a crash window where WAL advanced ahead of
 /// `meta.scf` still reports the recovered name/version.
-pub fn load_meta_with_wal(db_dir: &Path) -> Result<Option<DatabaseMeta>, BackendError> {
-    let has_current = db_dir.join("CURRENT").exists();
-    let has_meta = db_dir.join("meta.scf").exists();
+pub fn load_meta_with_wal(
+    db_dir: &Path,
+    fs: &Arc<dyn FileSystem>,
+) -> Result<Option<DatabaseMeta>, BackendError> {
+    let has_current = fs.exists(&db_dir.join("CURRENT"));
+    let has_meta = fs.exists(&db_dir.join("meta.scf"));
     if !has_current && !has_meta {
         return Ok(None);
     }
 
     let mut state = crate::state::DbState {
-        meta: read_meta_file(db_dir)?,
+        meta: read_meta_file(db_dir, fs)?,
         ..crate::state::DbState::default()
     };
-    let wal_path = db_dir.join("wal").join("000001.log");
-    if wal_path.exists() {
-        let bytes = fs::read(&wal_path).map_err(|e| io_to_backend(e, "read wal for list"))?;
+    let wal_seq = load_manifest(db_dir, fs).map(|m| m.wal_seq).unwrap_or(1);
+    let wal_path = crate::compact::wal_path(db_dir, wal_seq);
+    if fs.exists(&wal_path) {
+        let bytes = fs
+            .read(&wal_path)
+            .map_err(|e| io_to_backend(e, "read wal for list"))?;
         let recovered = crate::wal::recover_committed_frames(&bytes);
         crate::apply::apply_frames(&mut state, &recovered.frames)?;
     }

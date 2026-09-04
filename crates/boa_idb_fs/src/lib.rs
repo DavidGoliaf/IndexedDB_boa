@@ -1,8 +1,9 @@
-//! Filesystem backend for `IndexedDB` (M6-A foundation).
+//! Filesystem backend for `IndexedDB` (M6-A/B1/B2).
 //!
-//! Provides WAL-backed durability, advisory `LOCK`, atomic `CURRENT`/`MANIFEST`
-//! updates and an in-memory ordered index rebuilt on open. Segment compaction
-//! and O(1)/O(log n) MVCC snapshots are deferred to M6-B.
+//! Provides WAL-backed durability, advisory `LOCK`, immutable segments,
+//! structural-share MVCC snapshots, and a `FileSystem` seam with fault
+//! injection for recovery tests. Process-kill crash suite and WPT `--backend
+//! fs` remain M6-B3.
 
 #![deny(unsafe_code)]
 #![allow(
@@ -42,6 +43,7 @@ mod state;
 mod storage;
 mod sync_hooks;
 mod txn;
+mod vfs;
 mod wal;
 
 pub use compact::CompactConfig;
@@ -49,6 +51,7 @@ pub use factory::{DEFAULT_MAX_KEYS_IN_MEMORY, FsBackendFactory};
 pub use naming::{database_dir_name, database_root, storage_dir_name, storage_root};
 pub use state::{DEFAULT_WAL_COMPACT_BYTES, DEFAULT_WAL_COMPACT_FRAMES, SnapshotMeter};
 pub use sync_hooks::{CountingSyncHooks, OsSyncHooks, SyncHooks};
+pub use vfs::{FaultInjectingFs, FaultKind, FaultSite, FileSystem, OsFileSystem, SyncHooksFs};
 pub use wal::{
     CodecError, FLAG_COMMIT, FLAG_CONTINUES, MAX_FRAME_PAYLOAD, RecoveredWal, WAL_MAGIC, WalFrame,
     WalOp, decode_frame, encode_frame, encode_txn_frames, encode_txn_frames_limited,

@@ -1,7 +1,7 @@
 # boa_idb_fs
 
-Filesystem backend for IndexedDB. M6-A foundation (WAL/LOCK) plus M6-B1
-immutable segments, compaction, and structural-share MVCC snapshots.
+Filesystem backend for IndexedDB. M6-A foundation (WAL/LOCK), M6-B1
+immutable segments / MVCC snapshots, and M6-B2 `FileSystem` + fault injection.
 
 ## Memory limit (R8.3.5)
 
@@ -45,9 +45,22 @@ vs deep walks for proof tests.
   WAL before `meta.scf`).
 - `Strict`: sync WAL before commit returns.
 
+## FileSystem seam (R8.5.2 / R8.5.3)
+
+All production IO goes through `FileSystem` (`OsFileSystem` by default).
+Tests inject `FaultInjectingFs` via `FsBackendFactory::with_filesystem`:
+
+| Site | Typical faults |
+|---|---|
+| WAL append/sync | ENOSPC, EIO, short write, interrupt, sync fail |
+| Segment / manifest / `CURRENT` | write/rename/sync fail during compaction |
+| Cleanup | remove fail on reclaimable segment drop |
+
+`ENOSPC` → `BackendError::QuotaExceeded`. After any fault + reopen, only a
+committed prefix is readable; torn/corrupt WAL/segment/manifest never panic.
+
 ## Known gaps (later sub-orders)
 
-- M6-B2: `FileSystem` trait + fault injection matrix
 - M6-B3: kill-worker crash suite + WPT `--backend fs`
 
 ## Tests

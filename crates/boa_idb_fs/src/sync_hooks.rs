@@ -1,6 +1,8 @@
 //! Injectable sync hooks for durability tests (R8.3.2 / R8.5.3 seam).
+//!
+//! Prefer [`crate::vfs::FileSystem`] for new code; hooks remain as a thin
+//! adapter via [`crate::vfs::SyncHooksFs`].
 
-use boa_idb_core::backend::error::BackendError;
 use std::fs::File;
 use std::io;
 use std::path::Path;
@@ -78,9 +80,4 @@ impl SyncHooks for CountingSyncHooks {
         self.dir_syncs.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
-}
-
-/// Maps IO errors into backend errors without panicking.
-pub fn io_to_backend(err: io::Error, context: &str) -> BackendError {
-    BackendError::Io(format!("{context}: {err}"))
 }

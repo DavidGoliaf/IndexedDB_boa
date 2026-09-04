@@ -2,10 +2,9 @@
 
 use crate::meta::{decode_meta, encode_meta};
 use crate::state::{DbState, IndexKey, RecordKey, SegmentGuard};
-use crate::sync_hooks::{SyncHooks, io_to_backend};
+use crate::vfs::{FileSystem, io_to_backend};
 use boa_idb_core::backend::error::BackendError;
 use boa_idb_core::clone::crc32c::crc32c;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -125,13 +124,14 @@ pub fn write_segment_file(
     seq: u64,
     state: &DbState,
     sync: bool,
-    hooks: &Arc<dyn SyncHooks>,
+    fs: &Arc<dyn FileSystem>,
 ) -> Result<Arc<SegmentGuard>, BackendError> {
-    fs::create_dir_all(db_dir.join("seg")).map_err(|e| io_to_backend(e, "create seg dir"))?;
+    fs.create_dir_all(&db_dir.join("seg"))
+        .map_err(|e| io_to_backend(e, "create seg dir"))?;
     let path = segment_path(db_dir, seq);
     let bytes = encode_segment(seq, state)?;
-    crate::atomic::atomic_write(&path, &bytes, sync, hooks)?;
-    Ok(SegmentGuard::adopt_live(seq, path))
+    crate::atomic::atomic_write(&path, &bytes, sync, fs)?;
+    Ok(SegmentGuard::adopt_live(seq, path, fs.clone()))
 }
 
 /// Loads a segment file into `state` and adopts a guard.
@@ -139,16 +139,19 @@ pub fn load_segment_file(
     db_dir: &Path,
     seq: u64,
     state: &mut DbState,
+    fs: &Arc<dyn FileSystem>,
 ) -> Result<Arc<SegmentGuard>, BackendError> {
     let path = segment_path(db_dir, seq);
-    let bytes = fs::read(&path).map_err(|e| io_to_backend(e, "read segment"))?;
+    let bytes = fs
+        .read(&path)
+        .map_err(|e| io_to_backend(e, "read segment"))?;
     let decoded = decode_segment(&bytes, state)?;
     if decoded != seq {
         return Err(BackendError::Corrupted(format!(
             "segment seq mismatch file={seq} body={decoded}"
         )));
     }
-    Ok(SegmentGuard::adopt_live(seq, path))
+    Ok(SegmentGuard::adopt_live(seq, path, fs.clone()))
 }
 
 fn write_record_key(out: &mut Vec<u8>, key: &RecordKey) {

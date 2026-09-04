@@ -74,21 +74,37 @@ impl SnapshotMeter {
 ///
 /// Only segments marked reclaimable (superseded by compaction) are unlinked
 /// when the last `Arc` drops. The live published tip must never use reclaim.
-#[derive(Debug)]
 pub struct SegmentGuard {
     /// Segment sequence number.
     pub seq: u64,
     path: PathBuf,
     reclaim_on_drop: std::sync::atomic::AtomicBool,
+    fs: Arc<dyn crate::vfs::FileSystem>,
+}
+
+impl std::fmt::Debug for SegmentGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SegmentGuard")
+            .field("seq", &self.seq)
+            .field("path", &self.path)
+            .field(
+                "reclaim_on_drop",
+                &self
+                    .reclaim_on_drop
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl SegmentGuard {
     /// Claims a live published segment (file must outlive the process handle).
-    pub fn adopt_live(seq: u64, path: PathBuf) -> Arc<Self> {
+    pub fn adopt_live(seq: u64, path: PathBuf, fs: Arc<dyn crate::vfs::FileSystem>) -> Arc<Self> {
         Arc::new(Self {
             seq,
             path,
             reclaim_on_drop: std::sync::atomic::AtomicBool::new(false),
+            fs,
         })
     }
 
@@ -110,7 +126,7 @@ impl Drop for SegmentGuard {
             .reclaim_on_drop
             .load(std::sync::atomic::Ordering::SeqCst)
         {
-            let _ = std::fs::remove_file(&self.path);
+            let _ = self.fs.remove_file(&self.path);
         }
     }
 }

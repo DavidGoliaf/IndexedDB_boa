@@ -189,3 +189,33 @@ by record count). M6-A used `BTreeMap` with a full clone on readonly begin.
 **Consequences.** R8.3.3/R8.3.4 can be marked PASS for B1 once tests cover
 thresholds, publication order, snapshot retention, and the meter proof.
 
+## ADR-011: M6-B2 — `FileSystem` trait and fault injection
+
+**Context.** TASK-08 / M6-B2 must close R8.5.2 / R8.5.3 for the filesystem
+backend: every production IO path must be injectable so ENOSPC, EIO, short
+writes, sync/rename failures, and interrupts can be tested without changing
+commit/recovery control flow. Legacy `SyncHooks` only covered sync.
+
+**Decision.**
+1. Introduce internal trait `FileSystem` (`crates/boa_idb_fs/src/vfs.rs`)
+   covering create/read/write/append/truncate/rename/remove/dir listing/
+   sync/lock. Default implementation is `OsFileSystem`.
+2. Factory holds `Arc<dyn FileSystem>`; `with_filesystem` injects test
+   doubles. `with_sync_hooks` remains as a compatibility adapter
+   (`SyncHooksFs`) so existing durability counting tests keep working.
+3. `FaultInjectingFs` wraps any `FileSystem` and fires queued
+   `(FaultSite, FaultKind)` rules classified by path (WAL / segment /
+   manifest / `CURRENT` rename / meta / dir sync / cleanup / lock /
+   truncate). `ENOSPC` maps to `BackendError::QuotaExceeded`; other faults
+   to `BackendError::Io`. No production `unwrap`/`expect`/`panic!` on these
+   paths.
+4. Segment reclaim (`SegmentGuard` drop) unlinks through the same
+   `FileSystem` so cleanup faults are observable.
+5. Out of scope for B2: kill-worker process crash suite and WPT
+   `--backend fs` (M6-B3).
+
+**Consequences.** Table-driven `m6b2_tests` prove committed-prefix survival
+after each publication-stage fault and safe handling of corrupt WAL /
+segment / manifest tails. R8.5.2 / R8.5.3 → PASS for in-process injection;
+R8.5.1 / R8.3.6 process-kill remain PARTIAL until B3.
+
