@@ -3,16 +3,16 @@
 //! [`IdbRuntime`] lives in the Boa [`Context`] host data. It owns the
 //! [`IdbEngine`] and the plain [`DriverState`][crate::driver::DriverState].
 
+use crate::engine::IdbEngine;
 use boa_engine::job::{GenericJob, Job};
 use boa_engine::{Context, JsNativeError, JsObject, JsResult, JsValue};
 use boa_gc::{Finalize, GcRefCell, Trace};
 use boa_idb_core::backend::traits::BackendFactory;
 use boa_idb_core::error::IdbError;
 use boa_idb_core::proto::StorageKey;
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
-
-use crate::engine::IdbEngine;
 
 /// Locks a mutex, recovering from poisoning.
 ///
@@ -51,6 +51,16 @@ pub struct IdbRuntime {
     /// Plain (non-GC) driver state: pending opens, transactions, requests, cursors.
     #[unsafe_ignore_trace]
     pub driver: Arc<Mutex<crate::driver::DriverState>>,
+    /// Whether API calls schedule pump jobs (`true` by default).
+    ///
+    /// Embeddings that drive the pump themselves (the WPT runner calls
+    /// [`crate::driver::drive_turn`] directly for fair interleaving with
+    /// promise jobs and virtual timers) set this to `false`: a scheduled
+    /// pump job drains to quiescence inside [`Context::run_jobs`], which an
+    /// endless-but-productive queue (e.g. a `keep_alive` spin) would never
+    /// let return.
+    #[unsafe_ignore_trace]
+    pub auto_pump: Cell<bool>,
 }
 
 impl IdbRuntime {
@@ -69,6 +79,7 @@ impl IdbRuntime {
             cursor_objects: GcRefCell::default(),
             txn_objects: GcRefCell::default(),
             driver: Arc::new(Mutex::new(crate::driver::DriverState::default())),
+            auto_pump: Cell::new(true),
         }
     }
 
@@ -123,16 +134,25 @@ pub fn with_engine<R>(context: &mut Context, f: impl FnOnce(&mut IdbEngine) -> R
 /// API methods only enqueue work; actual execution (and event dispatch)
 /// happens in the pump job, i.e. as a separate Boa task after the current
 /// one — matching the asynchronous IndexedDB model.
+///
+/// No-op when [`IdbRuntime::auto_pump`] is disabled: the embedding drives
+/// [`crate::driver::drive_turn`] itself (see [`pump_all`]).
 pub fn schedule_pump(context: &mut Context) {
-    let already = context.get_data::<IdbRuntime>().is_some_and(|r| {
-        let mut d = lock_mutex(&r.driver);
+    let Some(runtime) = context.get_data::<IdbRuntime>() else {
+        return;
+    };
+    if !runtime.auto_pump.get() {
+        return;
+    }
+    let already = {
+        let mut d = lock_mutex(&runtime.driver);
         if d.pump_scheduled {
             true
         } else {
             d.pump_scheduled = true;
             false
         }
-    });
+    };
     if already {
         return;
     }
@@ -152,6 +172,16 @@ pub fn schedule_pump(context: &mut Context) {
         },
         realm,
     )));
+}
+
+/// Enables or disables automatic pump-job scheduling for a context.
+///
+/// Disabled by embeddings (like the WPT runner) that call
+/// [`crate::driver::drive_turn`] directly.
+pub fn set_auto_pump(context: &mut Context, auto_pump: bool) {
+    if let Some(runtime) = context.get_data::<IdbRuntime>() {
+        runtime.auto_pump.set(auto_pump);
+    }
 }
 
 /// Pumps the driver synchronously until no work remains.
@@ -232,21 +262,25 @@ pub fn unregister_txn(context: &Context, txn_id: u64) {
 /// execute; only *new* requests on these transactions will throw
 /// `TransactionInactiveError`.
 pub fn end_of_task(context: &mut Context) {
-    let ids: Vec<u64> = context
-        .get_data::<IdbRuntime>()
-        .map(|r| {
-            lock_mutex(&r.driver)
-                .txns
-                .iter()
-                .filter(|(_, t)| !t.finished)
-                .map(|(id, _)| *id)
-                .collect()
-        })
-        .unwrap_or_default();
-    for id in ids {
-        if let Some(obj) = txn_object(context, id) {
-            if let Some(mut data) = obj.downcast_mut::<crate::api::transaction::IdBTransaction>() {
-                data.active = false;
+    if let Some(runtime) = context.get_data::<IdbRuntime>() {
+        let mut d = lock_mutex(&runtime.driver);
+        for handle in d.txns.values_mut() {
+            handle.active = false;
+        }
+        let ids: Vec<u64> = d
+            .txns
+            .iter()
+            .filter(|(_, t)| !t.finished)
+            .map(|(id, _)| *id)
+            .collect();
+        drop(d);
+        for id in ids {
+            if let Some(obj) = txn_object(context, id) {
+                if let Some(mut data) =
+                    obj.downcast_mut::<crate::api::transaction::IdBTransaction>()
+                {
+                    data.active = false;
+                }
             }
         }
     }

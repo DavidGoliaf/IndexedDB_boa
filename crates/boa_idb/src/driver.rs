@@ -241,6 +241,16 @@ pub struct TxnHandle {
     pub backend: Option<Box<dyn BackendTxn>>,
     /// Finished (committed or aborted).
     pub finished: bool,
+    /// Transaction is currently active (accepts new requests).
+    pub active: bool,
+    /// Task epoch of the last activity (creation or own-request dispatch).
+    ///
+    /// [`DriverState::task_epoch`] advances on every macro-task boundary
+    /// (timer fire). `commit()` throws `InvalidStateError` when the epochs
+    /// differ: the transaction went inactive across tasks (§2.7).
+    pub active_epoch: u64,
+    /// Explicit `commit()` was called.
+    pub explicit_commit: bool,
     /// Key generators per store.
     pub keygens: HashMap<StoreId, KeyGenerator>,
 }
@@ -291,6 +301,8 @@ pub struct CursorView {
     pub key_only: bool,
     /// Whether the source is an index.
     pub is_index: bool,
+    /// Key path of the source object store.
+    pub key_path: KeyPath,
     /// Current row (None = exhausted).
     pub current: Option<CursorRowView>,
 }
@@ -315,6 +327,16 @@ pub fn cursor_view(d: &DriverState, cursor_id: u64) -> Option<CursorView> {
         direction: c.direction,
         key_only: c.key_only,
         is_index: matches!(c.source, SourceRef::Index { .. }),
+        key_path: d
+            .txns
+            .get(&c.txn_id)
+            .and_then(|txn| {
+                txn.meta
+                    .stores
+                    .iter()
+                    .find(|store| store.id == store_of(c.source))
+            })
+            .map_or(KeyPath::Empty, |store| store.key_path.clone()),
         current: c.current().map(|row| CursorRowView {
             key: row.key.clone(),
             primary_key: row.primary_key.clone(),
@@ -335,18 +357,12 @@ fn apply_cursor_action(state: &mut CursorState, action: &CursorAction) -> bool {
     let is_prev = state.direction.is_prev();
     match action {
         CursorAction::Advance(n) => {
-            if is_prev {
-                state.pos = state.pos.saturating_sub(*n as usize);
-            } else {
-                state.pos = state.pos.saturating_add(*n as usize);
-            }
+            // `rows` is materialized in cursor direction, so advancing is
+            // always movement toward the next vector element.
+            state.pos = state.pos.saturating_add(*n as usize);
         }
         CursorAction::Continue(None) => {
-            if is_prev {
-                state.pos = state.pos.saturating_sub(1);
-            } else {
-                state.pos = state.pos.saturating_add(1);
-            }
+            state.pos = state.pos.saturating_add(1);
         }
         CursorAction::Continue(Some(target)) => {
             if is_prev {
@@ -379,7 +395,7 @@ fn cursor_seek_key_next(state: &mut CursorState, target: &Key) {
 /// For a `prev` direction: greatest row strictly before/at the current whose
 /// key is not greater than `target`.
 fn cursor_seek_key_prev(state: &mut CursorState, target: &Key) {
-    for i in (0..state.pos).rev() {
+    for i in (state.pos + 1)..state.rows.len() {
         if compare_keys(&state.rows[i].key, target) != Ordering::Greater {
             state.pos = i;
             return;
@@ -439,6 +455,12 @@ pub struct DriverState {
     pub next_txn_id: u64,
     pub next_cursor_id: u64,
     pub next_conn_id: u64,
+    /// Macro-task epoch: bumped on every timer fire (task boundary).
+    ///
+    /// Transactions record the epoch of their last activity
+    /// ([`TxnHandle::active_epoch`]); a mismatch means the scope went
+    /// inactive across tasks.
+    pub task_epoch: u64,
 }
 
 impl DriverState {
@@ -637,15 +659,103 @@ fn driver_turn(
     // Phase 3: transaction request queues (one op per started txn).
     progressed |= process_txn_requests(driver_handle, context)?;
 
+    // Phase 3.25: microtask checkpoint (manual-pump embeddings only).
+    //
+    // Request completions resolve promises whose continuations may attach
+    // transaction watchers (`promiseForTransaction`) or enqueue follow-up
+    // requests. They must run BEFORE Phase 4 finishes transactions,
+    // otherwise the `complete` event fires before the watcher exists (lost
+    // wakeup) and the waiter hangs forever. Auto-pump embeddings skip
+    // this: completions there flow through scheduled jobs, and reentering
+    // the job queue from inside a pump job is not allowed.
+    if context
+        .get_data::<IdbRuntime>()
+        .is_none_or(|r| !r.auto_pump.get())
+    {
+        context.run_jobs()?;
+    }
+
+    // Phase 3.5: scope-close idle transactions (task-boundary approximation).
+    deactivate_idle_txns(driver_handle, context);
+
     // Phase 4: finish drained non-versionchange transactions.
     progressed |= finish_txns(driver_handle, context)?;
 
     Ok(progressed)
 }
 
+/// Records a macro-task boundary (timer fire): scopes go inactive.
+///
+/// Embeddings with virtual time (the WPT runner) call this whenever a timer
+/// callback fires. A later `commit()` on a transaction whose epoch was not
+/// refreshed by one of its own request dispatches since then throws
+/// `InvalidStateError` (§2.7: the scope is inactive in the new task).
+pub fn note_timer_task(context: &mut Context) {
+    if let Some(runtime) = context.get_data::<IdbRuntime>() {
+        crate::runtime::lock_mutex(&runtime.driver).task_epoch += 1;
+    }
+}
+
+/// Refreshes a transaction's activity epoch to the current task epoch.
+///
+/// Called when one of the transaction's own request events is dispatched:
+/// the scope is active in the dispatch task, so a `commit()` from its
+/// handlers (or the same task) is legal.
+fn refresh_txn_epoch(driver_handle: &Arc<std::sync::Mutex<DriverState>>, txn_id: TxnId) {
+    let mut d = crate::runtime::lock_mutex(driver_handle);
+    let epoch = d.task_epoch;
+    if let Some(handle) = d.txns.get_mut(&txn_id) {
+        handle.active_epoch = epoch;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Phases
 // ---------------------------------------------------------------------------
+
+/// Marks transactions with drained queues inactive (driver handle + JS object).
+///
+/// The pump coalesces many JS tasks into one drain, so there is no natural
+/// task boundary at which scopes become inactive — yet `finish_txns` only
+/// commits inactive (or explicitly committed) transactions. A transaction
+/// whose request queue just drained is idle: no handler is running that
+/// could still enqueue on it (handlers enqueue synchronously during
+/// dispatch), so it is safe to close its scope now. Transactions with queued
+/// work (e.g. `keep_alive` spins) stay active, as do finished and
+/// versionchange transactions (owned by the open flow).
+///
+/// Pure bookkeeping + attribute writes; never dispatches.
+fn deactivate_idle_txns(driver_handle: &Arc<std::sync::Mutex<DriverState>>, context: &mut Context) {
+    let ids: Vec<TxnId> = {
+        let mut d = crate::runtime::lock_mutex(driver_handle);
+        let mut ids = Vec::new();
+        let candidates: Vec<TxnId> = d
+            .txns
+            .iter()
+            .filter(|(_, handle)| {
+                !handle.finished && handle.active && handle.mode != TxnMode::VersionChange
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in candidates {
+            let idle = d.txn_queues.get(&id).is_none_or(VecDeque::is_empty);
+            if idle {
+                if let Some(handle) = d.txns.get_mut(&id) {
+                    handle.active = false;
+                }
+                ids.push(id);
+            }
+        }
+        ids
+    };
+    for id in ids {
+        if let Some(obj) = crate::runtime::txn_object(context, id) {
+            if let Some(mut data) = obj.downcast_mut::<IdBTransaction>() {
+                data.active = false;
+            }
+        }
+    }
+}
 
 /// Counts live (non-closed) connections of a database.
 fn live_connection_count(d: &DriverState, db_name: &str) -> u32 {
@@ -951,6 +1061,17 @@ fn process_opens(
                 progressed = true;
             }
             OpenStep::FinishUpgrade { open, txn_id } => {
+                let connection_closed = crate::runtime::request_object(context, open.request_id)
+                    .and_then(|request| {
+                        crate::api::request::with_request_ref(&request, |req| req.result.clone())
+                            .flatten()
+                    })
+                    .and_then(|value| value.as_object())
+                    .is_some_and(|object| {
+                        object
+                            .downcast_ref::<crate::api::database::IdBDatabase>()
+                            .is_some_and(|data| data.closed)
+                    });
                 // Take the handle out, commit lock-free, then clean up.
                 let (handle, db_name) = {
                     let mut d = crate::runtime::lock_mutex(driver_handle);
@@ -976,8 +1097,22 @@ fn process_opens(
                         }
                     }
                 }
+                if let Some(txn_obj) = crate::runtime::txn_object(context, txn_id) {
+                    if let Some(mut data) = txn_obj.downcast_mut::<IdBTransaction>() {
+                        data.active = false;
+                        data.finished = true;
+                    }
+                    let event = make_event(context, "complete", Some(txn_obj.clone()));
+                    let _ = dispatch_target(context, &txn_obj, &event);
+                }
                 crate::runtime::unregister_txn(context, txn_id);
-                complete_open_success(context, &open)?;
+                clear_upgrade_txn(context, &open);
+                if connection_closed {
+                    clear_open_request_result(context, &open);
+                    fail_open(context, &open, &IdbError::Abort)?;
+                } else {
+                    complete_open_success(context, &open)?;
+                }
                 progressed = true;
             }
         }
@@ -1024,6 +1159,9 @@ fn start_upgrade_txn(
         meta,
         backend: Some(backend),
         finished: false,
+        active: true,
+        active_epoch: d.task_epoch,
+        explicit_commit: false,
         keygens: HashMap::new(),
     };
     d.scheduler.enqueue(TxnQueueItem {
@@ -1073,28 +1211,21 @@ fn start_upgrade_txn(
 }
 
 /// Builds a real `IDBVersionChangeEvent` value.
-///
-/// The `type` is stored as an own property: versionchange events are
-/// dispatched as `upgradeneeded` (open) or `success` (delete), and the
-/// dispatch reads `event.type` to select listeners.
 fn make_versionchange_event(
     context: &mut Context,
     event_type: &str,
     old_version: u64,
     new_version: Option<u64>,
+    target: Option<JsObject>,
 ) -> JsValue {
-    let data =
-        crate::api::version_change_event::IdBVersionChangeEventData::new(old_version, new_version);
+    let data = crate::api::version_change_event::IdBVersionChangeEventData::new(
+        event_type.to_string(),
+        old_version,
+        new_version,
+        target,
+    );
     match crate::api::version_change_event::IdBVersionChangeEventData::from_data(data, context) {
-        Ok(obj) => {
-            let _ = obj.set(
-                js_string!("type"),
-                JsValue::from(js_string!(event_type)),
-                false,
-                context,
-            );
-            JsValue::from(obj)
-        }
+        Ok(obj) => JsValue::from(obj),
         Err(_) => JsValue::undefined(),
     }
 }
@@ -1109,6 +1240,7 @@ fn abort_failed_upgrade(
     open: &PendingOpen,
     txn_id: u64,
 ) {
+    reset_aborted_upgrade_request(context, open);
     // Take + abort the backend (scoped locks, pure).
     let taken = {
         let mut d = crate::runtime::lock_mutex(driver_handle);
@@ -1136,15 +1268,7 @@ fn abort_failed_upgrade(
             data.active = false;
             data.finished = true;
         }
-        let event = make_event(context, "abort");
-        if let Some(obj) = event.as_object() {
-            let _ = obj.set(
-                js_string!("target"),
-                JsValue::from(txn_obj.clone()),
-                false,
-                context,
-            );
-        }
+        let event = make_event(context, "abort", Some(txn_obj.clone()));
         let _ = dispatch_target(context, &txn_obj, &event);
     }
     crate::runtime::unregister_txn(context, txn_id);
@@ -1158,15 +1282,13 @@ fn abort_failed_upgrade(
 fn fire_upgradeneeded(context: &mut Context, open: &PendingOpen) -> JsResult<()> {
     if let Some(request) = crate::runtime::request_object(context, open.request_id) {
         let (old, new) = open.upgrade_versions.unwrap_or((0, open.version));
-        let event = make_versionchange_event(context, "upgradeneeded", old, Some(new));
-        if let Some(obj) = event.as_object() {
-            let _ = obj.set(
-                js_string!("target"),
-                JsValue::from(request.clone()),
-                false,
-                context,
-            );
-        }
+        let event = make_versionchange_event(
+            context,
+            "upgradeneeded",
+            old,
+            Some(new),
+            Some(request.clone()),
+        );
         dispatch_request(context, &request, &event)?;
     }
     Ok(())
@@ -1175,15 +1297,7 @@ fn fire_upgradeneeded(context: &mut Context, open: &PendingOpen) -> JsResult<()>
 /// Fires the `blocked` event on the open request.
 fn fire_blocked(context: &mut Context, open: &PendingOpen) -> JsResult<()> {
     if let Some(request) = crate::runtime::request_object(context, open.request_id) {
-        let event = make_event(context, "blocked");
-        if let Some(obj) = event.as_object() {
-            let _ = obj.set(
-                js_string!("target"),
-                JsValue::from(request.clone()),
-                false,
-                context,
-            );
-        }
+        let event = make_event(context, "blocked", Some(request.clone()));
         let _ = dispatch_request(context, &request, &event);
     }
     Ok(())
@@ -1222,15 +1336,7 @@ fn complete_open_success(context: &mut Context, open: &PendingOpen) -> JsResult<
         crate::api::request::with_request_mut(&request, |req| {
             req.ready_state = ReadyState::Done;
         });
-        let event = make_event(context, "success");
-        if let Some(obj) = event.as_object() {
-            let _ = obj.set(
-                js_string!("target"),
-                JsValue::from(request.clone()),
-                false,
-                context,
-            );
-        }
+        let event = make_event(context, "success", Some(request.clone()));
         let _ = dispatch_request(context, &request, &event);
     }
     Ok(())
@@ -1248,15 +1354,8 @@ fn complete_delete_success(
         crate::api::request::with_request_mut(&request, |req| {
             req.ready_state = ReadyState::Done;
         });
-        let event = make_versionchange_event(context, "success", old_version, None);
-        if let Some(obj) = event.as_object() {
-            let _ = obj.set(
-                js_string!("target"),
-                JsValue::from(request.clone()),
-                false,
-                context,
-            );
-        }
+        let event =
+            make_versionchange_event(context, "success", old_version, None, Some(request.clone()));
         let _ = dispatch_request(context, &request, &event);
     }
     Ok(())
@@ -1276,15 +1375,7 @@ fn fail_open(context: &mut Context, open: &PendingOpen, error: &IdbError) -> JsR
                 req.ready_state = ReadyState::Done;
             });
         }
-        let event = make_event(context, "error");
-        if let Some(obj) = event.as_object() {
-            let _ = obj.set(
-                js_string!("target"),
-                JsValue::from(request.clone()),
-                false,
-                context,
-            );
-        }
+        let event = make_event(context, "error", Some(request.clone()));
         let _ = dispatch_request(context, &request, &event);
     }
     Ok(())
@@ -1296,12 +1387,15 @@ pub(crate) fn dom_exception_value(error: &IdbError, context: &mut Context) -> Js
         IdbError::Constraint(_) => "ConstraintError",
         IdbError::TransactionInactive => "TransactionInactiveError",
         IdbError::DataClone(_) => "DataCloneError",
+        IdbError::InvalidAccess(_) => "InvalidAccessError",
         IdbError::InvalidState(_) => "InvalidStateError",
         IdbError::NotFound(_) => "NotFoundError",
         IdbError::ReadOnly => "ReadOnlyError",
         IdbError::Abort => "AbortError",
         IdbError::Syntax(_) => "SyntaxError",
         IdbError::Data(_) => "DataError",
+        IdbError::Version(_) => "VersionError",
+        IdbError::QuotaExceeded { .. } => "QuotaExceededError",
         _ => "UnknownError",
     };
     crate::dom::exception::create_dom_exception(name, &error.to_string(), context)
@@ -1331,7 +1425,7 @@ fn fail_queued_requests(
         ids
     };
     for request_id in ids {
-        fail_op(context, request_id, error.clone());
+        fail_op(driver_handle, context, txn_id, request_id, error.clone());
     }
 }
 
@@ -1349,17 +1443,28 @@ enum TxnWork {
 
 /// Processes all transaction request queues (one op per started txn per turn).
 /// Returns progress. Locks are never held across event dispatch.
+///
+/// Each transaction is served at most once per call: a self-replenishing
+/// queue (e.g. a `keep_alive` spin whose `onsuccess` enqueues the next
+/// request synchronously) must not keep `drive_turn` from returning, or
+/// the event loop could never yield to promise jobs and timers.
 fn process_txn_requests(
     driver_handle: &Arc<std::sync::Mutex<DriverState>>,
     context: &mut Context,
 ) -> JsResult<bool> {
     let mut progressed = false;
+    let mut served = std::collections::BTreeSet::new();
     loop {
         // A. Pure dequeue step (locks held, no JS).
         let work: Option<TxnWork> = {
             let mut d = crate::runtime::lock_mutex(driver_handle);
             let mut found = None;
             for txn_id in d.txn_queues.keys().copied().collect::<Vec<_>>() {
+                if !served.insert(txn_id) {
+                    // Already served this turn: yield so the event loop can
+                    // run jobs and timers before this queue is served again.
+                    continue;
+                }
                 match d.txns.get(&txn_id) {
                     Some(t) if !t.finished && t.backend.is_some() => {
                         if let Some(request_id) =
@@ -1443,7 +1548,7 @@ fn process_txn_requests(
                     }
                     Err(e) => {
                         // A `preventDefault()`d request error does not abort (§2.8).
-                        if !fail_op(context, request_id, e) {
+                        if !fail_op(driver_handle, context, txn_id, request_id, e) {
                             abort_transaction(driver_handle, txn_id, context);
                         }
                     }
@@ -1506,6 +1611,9 @@ pub fn create_txn(
             meta,
             backend: None,
             finished: false,
+            active: true,
+            active_epoch: d.task_epoch,
+            explicit_commit: false,
             keygens: HashMap::new(),
         },
     );
@@ -1608,18 +1716,23 @@ fn finish_txns(
     let mut progressed = false;
     loop {
         // Take one finished-eligible handle out (locks held, pure).
+        // Eligible transactions finish in creation (`txn_id`) order: same-
+        // scope transactions commit in program order (§2.7.2), which the
+        // WPT commit-ordering tests assert.
         let taken: Option<TxnHandle> = {
             let mut d = crate::runtime::lock_mutex(driver_handle);
             let ready = d
                 .txns
                 .iter()
-                .find(|(k, t)| {
+                .filter(|(k, t)| {
                     !t.finished
                         && t.backend.is_some()
                         && t.mode != TxnMode::VersionChange
+                        && (!t.active || t.explicit_commit)
                         && d.txn_queues.get(k).is_none_or(VecDeque::is_empty)
                 })
-                .map(|(k, _)| *k);
+                .map(|(k, _)| *k)
+                .min();
             ready.and_then(|txn_id| d.txns.remove(&txn_id))
         };
         let Some(mut handle) = taken else { break };
@@ -1641,15 +1754,7 @@ fn finish_txns(
             if let Some(mut data) = txn_obj.downcast_mut::<IdBTransaction>() {
                 data.active = false;
             }
-            let event = make_event(context, "complete");
-            if let Some(obj) = event.as_object() {
-                let _ = obj.set(
-                    js_string!("target"),
-                    JsValue::from(txn_obj.clone()),
-                    false,
-                    context,
-                );
-            }
+            let event = make_event(context, "complete", Some(txn_obj.clone()));
             let _ = dispatch_target(context, &txn_obj, &event);
         }
         crate::runtime::unregister_txn(context, txn_id);
@@ -1673,6 +1778,7 @@ pub(crate) fn abort_transaction(
         d.txns.remove(&txn_id)
     };
     let Some(mut handle) = taken else { return };
+    let is_upgrade = handle.mode == TxnMode::VersionChange;
     // Abort lock-free (owned backend).
     if let Some(backend) = handle.backend.take() {
         let _ = backend.abort();
@@ -1693,18 +1799,98 @@ pub(crate) fn abort_transaction(
             data.active = false;
             data.finished = true;
         }
-        let event = make_event(context, "abort");
-        if let Some(obj) = event.as_object() {
-            let _ = obj.set(
-                js_string!("target"),
-                JsValue::from(txn_obj.clone()),
-                false,
-                context,
-            );
-        }
+        let event = make_event(context, "abort", Some(txn_obj.clone()));
         let _ = dispatch_target(context, &txn_obj, &event);
     }
     crate::runtime::unregister_txn(context, txn_id);
+    if is_upgrade {
+        // Aborting the upgrade fails the open with `AbortError` (§2.9):
+        // without this the drained open would commit and succeed.
+        abort_upgrade_open(driver_handle, context, txn_id);
+    }
+}
+
+/// Fails the open gated by an aborted upgrade transaction.
+///
+/// Removes the open, releases the core open queue, clears the connection's
+/// upgrade marker, and fires `error` (`AbortError`) on the open request.
+/// No-op when no open references the transaction (already finished).
+fn abort_upgrade_open(
+    driver_handle: &Arc<std::sync::Mutex<DriverState>>,
+    context: &mut Context,
+    txn_id: u64,
+) {
+    let open = {
+        let mut d = crate::runtime::lock_mutex(driver_handle);
+        let position = d
+            .opens
+            .iter()
+            .position(|o| o.upgrade_txn_id == Some(txn_id));
+        let Some(position) = position else {
+            return;
+        };
+        let Some(open) = d.opens.remove(position) else {
+            return;
+        };
+        if let Some(queue) = d.open_queues.get_mut(&open.name) {
+            queue.on_operation_failed();
+        }
+        open
+    };
+    clear_upgrade_txn(context, &open);
+    reset_aborted_upgrade_request(context, &open);
+    let _ = fail_open(context, &open, &IdbError::Abort);
+}
+
+/// Restores the database object and request state after an aborted upgrade.
+fn reset_aborted_upgrade_request(context: &mut Context, open: &PendingOpen) {
+    let Some(request) = crate::runtime::request_object(context, open.request_id) else {
+        return;
+    };
+    if let Some((old_version, _)) = open.upgrade_versions {
+        let db_value =
+            crate::api::request::with_request_ref(&request, |req| req.result.clone()).flatten();
+        if let Some(db_obj) = db_value.and_then(|value| value.as_object())
+            && let Some(mut db_data) = db_obj.downcast_mut::<crate::api::database::IdBDatabase>()
+        {
+            db_data.version = old_version;
+            db_data.upgrade_txn_id = None;
+        }
+    }
+    crate::api::request::with_request_mut(&request, |req| {
+        req.result = None;
+        req.transaction = None;
+        req.upgrade_txn = None;
+    });
+}
+
+/// Clears the result and transaction of an open request that cannot succeed
+/// after its database connection was closed during upgrade.
+fn clear_open_request_result(context: &mut Context, open: &PendingOpen) {
+    if let Some(request) = crate::runtime::request_object(context, open.request_id) {
+        crate::api::request::with_request_mut(&request, |req| {
+            req.result = None;
+            req.transaction = None;
+            req.upgrade_txn = None;
+        });
+    }
+}
+
+/// Clears the connection database object's upgrade-transaction marker.
+///
+/// Called when the upgrade finishes, aborts, or otherwise stops being the
+/// connection's versionchange transaction, so later `createObjectStore` /
+/// `deleteObjectStore` calls correctly throw `InvalidStateError` outside an
+/// upgrade.
+fn clear_upgrade_txn(context: &mut Context, open: &PendingOpen) {
+    let db_obj = crate::runtime::request_object(context, open.request_id).and_then(|request| {
+        crate::api::request::with_request_ref(&request, |req| req.result.clone()).flatten()
+    });
+    if let Some(db_obj) = db_obj.and_then(|v| v.as_object()) {
+        if let Some(mut db_data) = db_obj.downcast_mut::<crate::api::database::IdBDatabase>() {
+            db_data.upgrade_txn_id = None;
+        }
+    }
 }
 
 /// Reads back whether `preventDefault()` was called on a dispatched event.
@@ -1721,7 +1907,14 @@ fn event_default_prevented(event: &JsValue) -> bool {
 /// Returns `true` when the `error` event was default-prevented: the caller
 /// must then NOT abort the transaction (§2.8: handled request errors).
 #[allow(clippy::needless_pass_by_value)]
-fn fail_op(context: &mut Context, request_id: u64, error: IdbError) -> bool {
+fn fail_op(
+    driver_handle: &Arc<std::sync::Mutex<DriverState>>,
+    context: &mut Context,
+    txn_id: TxnId,
+    request_id: u64,
+    error: IdbError,
+) -> bool {
+    refresh_txn_epoch(driver_handle, txn_id);
     if let Some(request) = crate::runtime::request_object(context, request_id) {
         match dom_exception_value(&error, context) {
             Ok(err_val) => crate::api::request::with_request_mut(&request, |req| {
@@ -1732,17 +1925,20 @@ fn fail_op(context: &mut Context, request_id: u64, error: IdbError) -> bool {
                 req.ready_state = ReadyState::Done;
             }),
         };
-        let event = make_event(context, "error");
-        if let Some(obj) = event.as_object() {
-            let _ = obj.set(
-                js_string!("target"),
-                JsValue::from(request.clone()),
-                false,
-                context,
-            );
-        }
+        let event = make_event(context, "error", Some(request.clone()));
         let _ = dispatch_request(context, &request, &event);
-        return event_default_prevented(&event);
+        let request_prevented = event_default_prevented(&event);
+        // The transaction observes every request failure through its own
+        // `error` event (this is what `transactionWatcher` waits for).
+        // Canceling either event keeps the transaction alive.
+        let txn_prevented = if let Some(txn_obj) = crate::runtime::txn_object(context, txn_id) {
+            let txn_event = make_event(context, "error", Some(txn_obj.clone()));
+            let _ = dispatch_target(context, &txn_obj, &txn_event);
+            event_default_prevented(&txn_event)
+        } else {
+            false
+        };
+        return request_prevented || txn_prevented;
     }
     false
 }
@@ -1757,19 +1953,12 @@ fn complete_request(
     request_id: u64,
     context: &mut Context,
 ) {
+    refresh_txn_epoch(driver_handle, txn_id);
     if let Some(request) = crate::runtime::request_object(context, request_id) {
         crate::api::request::with_request_mut(&request, |req| {
             req.ready_state = ReadyState::Done;
         });
-        let event = make_event(context, "success");
-        if let Some(obj) = event.as_object() {
-            let _ = obj.set(
-                js_string!("target"),
-                JsValue::from(request.clone()),
-                false,
-                context,
-            );
-        }
+        let event = make_event(context, "success", Some(request.clone()));
         if dispatch_request(context, &request, &event).is_err() {
             abort_transaction(driver_handle, txn_id, context);
         }
@@ -1793,7 +1982,9 @@ fn complete_cursor_open(
     };
     let Some((direction, key_only, empty)) = meta else {
         fail_op(
+            driver_handle,
             context,
+            txn_id,
             request_id,
             IdbError::InvalidState("cursor not found".into()),
         );
@@ -1819,13 +2010,16 @@ fn complete_cursor_open(
     };
     let Ok(cursor_obj) = cursor_obj else {
         fail_op(
+            driver_handle,
             context,
+            txn_id,
             request_id,
             IdbError::Unknown("Failed to create cursor object".into()),
         );
         return;
     };
     crate::runtime::register_cursor(context, cursor_id, cursor_obj.clone());
+    refresh_txn_epoch(driver_handle, txn_id);
     crate::api::request::with_request_mut(&request, |req| {
         req.ready_state = ReadyState::Done;
         // Empty range: result is null; otherwise the cursor itself (the same
@@ -1836,15 +2030,7 @@ fn complete_cursor_open(
             req.result = Some(JsValue::from(cursor_obj));
         }
     });
-    let event = make_event(context, "success");
-    if let Some(obj) = event.as_object() {
-        let _ = obj.set(
-            js_string!("target"),
-            JsValue::from(request.clone()),
-            false,
-            context,
-        );
-    }
+    let event = make_event(context, "success", Some(request.clone()));
     if dispatch_request(context, &request, &event).is_err() {
         abort_transaction(driver_handle, txn_id, context);
     }
@@ -1859,6 +2045,7 @@ fn complete_cursor_continue(
     reached_end: bool,
     context: &mut Context,
 ) {
+    refresh_txn_epoch(driver_handle, txn_id);
     if let Some(request) = crate::runtime::request_object(context, request_id) {
         crate::api::request::with_request_mut(&request, |req| {
             req.ready_state = ReadyState::Done;
@@ -1870,15 +2057,7 @@ fn complete_cursor_continue(
                 req.result = Some(JsValue::null());
             }
         });
-        let event = make_event(context, "success");
-        if let Some(obj) = event.as_object() {
-            let _ = obj.set(
-                js_string!("target"),
-                JsValue::from(request.clone()),
-                false,
-                context,
-            );
-        }
+        let event = make_event(context, "success", Some(request.clone()));
         if dispatch_request(context, &request, &event).is_err() {
             abort_transaction(driver_handle, txn_id, context);
         }
@@ -1939,10 +2118,10 @@ fn outcome_to_js(outcome: RawOutcome, context: &mut Context) -> JsResult<JsValue
 // ---------------------------------------------------------------------------
 
 /// Builds a `{ type, target, currentTarget }` wrapper object.
-fn make_event(context: &mut Context, event_type: &str) -> JsValue {
+fn make_event(context: &mut Context, event_type: &str, target: Option<JsObject>) -> JsValue {
     // Request `error` events are cancelable (preventDefault keeps the txn).
     let cancelable = event_type == "error";
-    crate::dom::event::create_event_object_cancelable(event_type, cancelable, context)
+    crate::dom::event::create_event_object_cancelable(event_type, cancelable, target, context)
 }
 
 /// Dispatches an event on a request (listeners + attribute handlers).

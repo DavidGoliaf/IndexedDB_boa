@@ -5,7 +5,7 @@
 //! See BOA_022_INCOMPATIBILITIES.md §1, §2, §7, §8.
 
 use boa_engine::object::builtins::{JsArray, JsArrayBuffer, JsDate, JsTypedArray};
-use boa_engine::{Context, JsNativeError, JsObject, JsResult, JsValue, js_string};
+use boa_engine::{Context, JsError, JsNativeError, JsObject, JsResult, JsValue, js_string};
 use boa_idb_core::error::KeyError;
 use boa_idb_core::key::utf16::Utf16String;
 use boa_idb_core::key::value::Key;
@@ -15,23 +15,69 @@ use super::boa_compat::{JsObjectExt, create_array_buffer, js_string_to_utf16};
 /// Maximum array nesting depth for keys.
 const MAX_KEY_DEPTH: usize = 32;
 
+/// Failure while converting a JavaScript value to an IndexedDB key.
+///
+/// A failed property access is kept as the original [`JsError`]. WebIDL key
+/// conversion must rethrow that value; only values which are successfully
+/// inspected but are not valid keys become `DataError` at the API boundary.
+#[derive(Debug, Clone)]
+pub enum KeyConversionError {
+    /// The input is not a valid IndexedDB key.
+    Invalid(KeyError),
+    /// JavaScript threw while the key was being inspected.
+    Exception(JsError),
+}
+
+impl std::fmt::Display for KeyConversionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid(error) => error.fmt(f),
+            Self::Exception(error) => error.fmt(f),
+        }
+    }
+}
+
+impl From<KeyError> for KeyConversionError {
+    fn from(error: KeyError) -> Self {
+        Self::Invalid(error)
+    }
+}
+
+/// Converts a conversion failure to the JavaScript exception required by
+/// IndexedDB. Original JavaScript exceptions are returned unchanged.
+pub fn throw_key_conversion_error(error: KeyConversionError, context: &mut Context) -> JsError {
+    match error {
+        KeyConversionError::Exception(error) => error,
+        KeyConversionError::Invalid(error) => {
+            match crate::dom::exception::data_error(&format!("Invalid key: {error}"), context) {
+                Ok(value) => JsError::from_opaque(value),
+                Err(error) => error,
+            }
+        }
+    }
+}
+
 /// Converts a `JsValue` to a `Key` (§7.3).
 ///
 /// Supports: Number, Date, String, Array, ArrayBuffer, TypedArray, DataView.
 /// Returns `KeyError::InvalidType` for unsupported types (null, undefined, Object, Function, Symbol).
-pub fn value_to_key(val: &JsValue, context: &mut Context) -> Result<Key, KeyError> {
+pub fn value_to_key(val: &JsValue, context: &mut Context) -> Result<Key, KeyConversionError> {
     value_to_key_depth(val, context, 0)
 }
 
-fn value_to_key_depth(val: &JsValue, context: &mut Context, depth: usize) -> Result<Key, KeyError> {
+fn value_to_key_depth(
+    val: &JsValue,
+    context: &mut Context,
+    depth: usize,
+) -> Result<Key, KeyConversionError> {
     if depth > MAX_KEY_DEPTH {
-        return Err(KeyError::MaxDepthExceeded(MAX_KEY_DEPTH));
+        return Err(KeyError::MaxDepthExceeded(MAX_KEY_DEPTH).into());
     }
 
     // Number — используем as_number() без аллокации (BOA_022 §1)
     if let Some(n) = val.as_number() {
         if n.is_nan() {
-            return Err(KeyError::InvalidValue("NaN is not a valid key".into()));
+            return Err(KeyError::InvalidValue("NaN is not a valid key".into()).into());
         }
         return Ok(Key::Number(n));
     }
@@ -48,16 +94,11 @@ fn value_to_key_depth(val: &JsValue, context: &mut Context, depth: usize) -> Res
 
     // BigInt — not a valid key type
     if val.is_bigint() {
-        return Err(KeyError::InvalidType(
-            "BigInt cannot be used as a key".into(),
-        ));
+        return Err(KeyError::InvalidType("BigInt cannot be used as a key".into()).into());
     }
 
     // null, undefined, Symbol, Function
-    Err(KeyError::InvalidType(format!(
-        "Cannot convert {:?} to key",
-        val.type_of()
-    )))
+    Err(KeyError::InvalidType(format!("Cannot convert {:?} to key", val.type_of())).into())
 }
 
 /// Converts an object JsValue to a Key.
@@ -65,13 +106,13 @@ fn value_object_to_key(
     obj: &JsObject,
     context: &mut Context,
     depth: usize,
-) -> Result<Key, KeyError> {
+) -> Result<Key, KeyConversionError> {
     // Check for Date — используем JsDate::from_object (BOA_022 §9)
     if let Ok(date) = JsDate::from_object(obj.clone()) {
         if let Ok(time_val) = date.get_time(context) {
             if let Some(d) = time_val.as_number() {
                 if d.is_nan() {
-                    return Err(KeyError::InvalidValue("Date value is NaN".into()));
+                    return Err(KeyError::InvalidValue("Date value is NaN".into()).into());
                 }
                 return Ok(Key::Date(d));
             }
@@ -93,7 +134,7 @@ fn value_object_to_key(
         if let Some(data) = buf.data() {
             return Ok(Key::Binary(data.to_vec()));
         }
-        return Err(KeyError::InvalidValue("ArrayBuffer is detached".into()));
+        return Err(KeyError::InvalidValue("ArrayBuffer is detached".into()).into());
     }
 
     // Check for DataView — it has buffer, byteOffset, byteLength properties
@@ -101,26 +142,32 @@ fn value_object_to_key(
         return Ok(Key::Binary(bytes));
     }
 
-    Err(KeyError::InvalidType("Cannot convert object to key".into()))
+    Err(KeyError::InvalidType("Cannot convert object to key".into()).into())
 }
 
 /// Converts an Array to a Key with cycle detection.
-fn array_to_key(obj: &JsObject, context: &mut Context, depth: usize) -> Result<Key, KeyError> {
-    let length =
-        obj.array_length(context)
-            .map_err(|_| KeyError::InvalidType("Cannot get array length".into()))? as u32;
+fn array_to_key(
+    obj: &JsObject,
+    context: &mut Context,
+    depth: usize,
+) -> Result<Key, KeyConversionError> {
+    let length = obj
+        .array_length(context)
+        .map_err(KeyConversionError::Exception)? as u32;
 
     let mut keys = Vec::with_capacity(length as usize);
     for i in 0..length {
-        let elem = obj
-            .get(i, context)
-            .map_err(|_| KeyError::InvalidType("Cannot get array element".into()))?;
+        let elem = obj.get(i, context).map_err(KeyConversionError::Exception)?;
 
         // Check for array holes (explicit undefined vs missing property)
-        if elem.is_undefined() && !obj.has_property(i, context).unwrap_or(false) {
-            return Err(KeyError::InvalidValue(
-                "Array holes are not allowed in keys".into(),
-            ));
+        if elem.is_undefined()
+            && !obj
+                .has_property(i, context)
+                .map_err(KeyConversionError::Exception)?
+        {
+            return Err(
+                KeyError::InvalidValue("Array holes are not allowed in keys".into()).into(),
+            );
         }
 
         let key = value_to_key_depth(&elem, context, depth + 1)?;
@@ -130,17 +177,20 @@ fn array_to_key(obj: &JsObject, context: &mut Context, depth: usize) -> Result<K
 }
 
 /// Extracts bytes from a TypedArray.
-fn typed_array_to_key(typed: &JsTypedArray, context: &mut Context) -> Result<Key, KeyError> {
+fn typed_array_to_key(
+    typed: &JsTypedArray,
+    context: &mut Context,
+) -> Result<Key, KeyConversionError> {
     let byte_offset = typed
         .byte_offset(context)
-        .map_err(|_| KeyError::InvalidType("Cannot get TypedArray byteOffset".into()))?;
+        .map_err(KeyConversionError::Exception)?;
     let byte_length = typed
         .byte_length(context)
-        .map_err(|_| KeyError::InvalidType("Cannot get TypedArray byteLength".into()))?;
+        .map_err(KeyConversionError::Exception)?;
 
     let buffer_val = typed
         .buffer(context)
-        .map_err(|_| KeyError::InvalidType("Cannot get TypedArray buffer".into()))?;
+        .map_err(KeyConversionError::Exception)?;
 
     let buf_obj = buffer_val
         .as_object()
@@ -156,9 +206,7 @@ fn typed_array_to_key(typed: &JsTypedArray, context: &mut Context) -> Result<Key
         }
     }
 
-    Err(KeyError::InvalidValue(
-        "TypedArray buffer is detached or out of bounds".into(),
-    ))
+    Err(KeyError::InvalidValue("TypedArray buffer is detached or out of bounds".into()).into())
 }
 
 /// Attempts to extract bytes from a DataView object.

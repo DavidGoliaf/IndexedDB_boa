@@ -253,6 +253,7 @@ fn install_cursor_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
             }
             let view = view_of(context, cursor_id)
                 .ok_or_else(|| JsNativeError::error().with_message("Cursor is gone"))?;
+            crate::api::support::require_live_cursor(context, view.cursor_id, view.txn_id)?;
             require_position(&view, context)?;
             reuse_request(context, &view, CursorAction::Advance(count))?;
             Ok(JsValue::undefined())
@@ -271,6 +272,7 @@ fn install_cursor_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
                 .ok_or_else(|| JsNativeError::typ().with_message("'this' is not an IDBCursor"))?;
             let view = view_of(context, cursor_id)
                 .ok_or_else(|| JsNativeError::error().with_message("Cursor is gone"))?;
+            crate::api::support::require_live_cursor(context, view.cursor_id, view.txn_id)?;
             require_position(&view, context)?;
             let Some(current) = view.current.clone() else {
                 // `require_position` above guarantees this; the branch
@@ -284,12 +286,8 @@ fn install_cursor_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
             let action = if key_arg.is_undefined() {
                 CursorAction::Continue(None)
             } else {
-                let target = value_to_key(&key_arg, context).map_err(|e| {
-                    crate::dom::exception::throw_idb_error(
-                        &boa_idb_core::error::IdbError::Data(e.to_string()),
-                        context,
-                    )
-                })?;
+                let target = value_to_key(&key_arg, context)
+                    .map_err(|e| crate::convert::key::throw_key_conversion_error(e, context))?;
                 check_continue_key(&view, &current.key, &target, context)?;
                 CursorAction::Continue(Some(target))
             };
@@ -310,6 +308,7 @@ fn install_cursor_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
                 .ok_or_else(|| JsNativeError::typ().with_message("'this' is not an IDBCursor"))?;
             let view = view_of(context, cursor_id)
                 .ok_or_else(|| JsNativeError::error().with_message("Cursor is gone"))?;
+            crate::api::support::require_live_cursor(context, view.cursor_id, view.txn_id)?;
             require_position(&view, context)?;
             if !matches!(view.direction, Direction::Next | Direction::Prev) {
                 return Err(crate::dom::exception::throw_idb_error(
@@ -332,18 +331,11 @@ fn install_cursor_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
                     .with_message("continuePrimaryKey requires two arguments")
                     .into());
             }
-            let key = value_to_key(&args[0], context).map_err(|e| {
-                crate::dom::exception::throw_idb_error(
-                    &boa_idb_core::error::IdbError::Data(e.to_string()),
-                    context,
-                )
-            })?;
-            let primary_key = value_to_key(&args[1], context).map_err(|e| {
-                crate::dom::exception::throw_idb_error(
-                    &boa_idb_core::error::IdbError::Data(e.to_string()),
-                    context,
-                )
-            })?;
+            let key = value_to_key(&args[0], context)
+                .map_err(|e| crate::convert::key::throw_key_conversion_error(e, context))?;
+            let primary_key = value_to_key(&args[1], context)
+                .map_err(|e| crate::convert::key::throw_key_conversion_error(e, context))?;
+            check_continue_primary_key(&view, &key, &primary_key, context)?;
             reuse_request(
                 context,
                 &view,
@@ -365,6 +357,7 @@ fn install_cursor_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
                 .ok_or_else(|| JsNativeError::typ().with_message("'this' is not an IDBCursor"))?;
             let view = view_of(context, cursor_id)
                 .ok_or_else(|| JsNativeError::error().with_message("Cursor is gone"))?;
+            crate::api::support::require_live_cursor(context, view.cursor_id, view.txn_id)?;
             require_position(&view, context)?;
             if view.key_only {
                 return crate::dom::exception::throw_invalid_state_error(
@@ -376,11 +369,23 @@ fn install_cursor_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
             let default_val = JsValue::undefined();
             let value_js = args.first().unwrap_or(&default_val);
             let sc_value = serialize_for_storage(value_js, context).map_err(|e| {
-                crate::dom::exception::throw_idb_error(
-                    &boa_idb_core::error::IdbError::DataClone(e.to_string()),
-                    context,
-                )
+                if e.as_opaque().is_some() {
+                    e
+                } else {
+                    crate::dom::exception::throw_idb_error(
+                        &boa_idb_core::error::IdbError::DataClone(e.to_string()),
+                        context,
+                    )
+                }
             })?;
+            if !matches!(view.key_path, boa_idb_core::key::path::KeyPath::Empty)
+                && let Err(error) = view.key_path.extract(&sc_value)
+            {
+                return Err(crate::convert::key::throw_key_conversion_error(
+                    error.into(),
+                    context,
+                ));
+            }
             reuse_request(context, &view, CursorAction::Update(sc_value))?;
             Ok(JsValue::undefined())
         }),
@@ -398,6 +403,7 @@ fn install_cursor_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
                 .ok_or_else(|| JsNativeError::typ().with_message("'this' is not an IDBCursor"))?;
             let view = view_of(context, cursor_id)
                 .ok_or_else(|| JsNativeError::error().with_message("Cursor is gone"))?;
+            crate::api::support::require_live_cursor(context, view.cursor_id, view.txn_id)?;
             require_position(&view, context)?;
             if view.key_only {
                 return crate::dom::exception::throw_invalid_state_error(
@@ -412,6 +418,43 @@ fn install_cursor_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
     );
 
     Ok(())
+}
+
+/// Validates the strict direction ordering required by continuePrimaryKey().
+fn check_continue_primary_key(
+    view: &crate::driver::CursorView,
+    key: &Key,
+    primary_key: &Key,
+    context: &mut Context,
+) -> JsResult<()> {
+    let Some(current) = view.current.as_ref() else {
+        return Ok(());
+    };
+    let key_order = boa_idb_core::key::compare::compare_keys(key, &current.key);
+    let valid = match view.direction {
+        Direction::Next => {
+            key_order == Ordering::Greater
+                || (key_order == Ordering::Equal
+                    && boa_idb_core::key::compare::compare_keys(primary_key, &current.primary_key)
+                        == Ordering::Greater)
+        }
+        Direction::Prev => {
+            key_order == Ordering::Less
+                || (key_order == Ordering::Equal
+                    && boa_idb_core::key::compare::compare_keys(primary_key, &current.primary_key)
+                        == Ordering::Less)
+        }
+        Direction::NextUnique | Direction::PrevUnique => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        crate::dom::exception::throw_data_error(
+            "continuePrimaryKey target must advance in cursor direction.",
+            context,
+        )
+        .map(|_| ())
+    }
 }
 
 /// Validates a `continue(key)` target against the direction and position.

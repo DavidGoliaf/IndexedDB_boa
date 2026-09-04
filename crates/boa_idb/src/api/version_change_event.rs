@@ -1,14 +1,16 @@
 //! `IDBVersionChangeEvent` implementation.
 
+use crate::dom::event::EventData;
 use boa_engine::class::{Class, ClassBuilder};
 use boa_engine::native_function::NativeFunction;
 use boa_engine::property::Attribute;
-use boa_engine::{Context, JsNativeError, JsResult, JsValue, js_string};
+use boa_engine::{Context, JsNativeError, JsObject, JsResult, JsValue, js_string};
 use boa_gc::{Finalize, Trace};
 
 /// Native data for `IDBVersionChangeEvent`.
 #[derive(Debug, Trace, Finalize, boa_engine::JsData)]
 pub struct IdBVersionChangeEventData {
+    pub event_data: EventData,
     #[unsafe_ignore_trace]
     pub old_version: u64,
     #[unsafe_ignore_trace]
@@ -16,8 +18,16 @@ pub struct IdBVersionChangeEventData {
 }
 
 impl IdBVersionChangeEventData {
-    pub fn new(old_version: u64, new_version: Option<u64>) -> Self {
+    pub fn new(
+        event_type: String,
+        old_version: u64,
+        new_version: Option<u64>,
+        target: Option<JsObject>,
+    ) -> Self {
+        let mut data = EventData::new(event_type, false, false);
+        data.target = target;
         Self {
+            event_data: data,
             old_version,
             new_version,
         }
@@ -35,7 +45,12 @@ impl Class for IdBVersionChangeEventData {
         args: &[JsValue],
         context: &mut Context,
     ) -> JsResult<Self> {
-        // `new IDBVersionChangeEvent(type, init)` — init is optional.
+        let event_type = args
+            .first()
+            .unwrap_or(&JsValue::undefined())
+            .to_string(context)?
+            .to_std_string_escaped();
+
         let mut old_version = 0u64;
         let mut new_version = None;
         if let Some(init) = args.get(1) {
@@ -58,14 +73,47 @@ impl Class for IdBVersionChangeEventData {
                 }
             }
         }
-        Ok(Self {
-            old_version,
-            new_version,
-        })
+        Ok(Self::new(event_type, old_version, new_version, None))
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
         let realm = class.context().realm().clone();
+
+        let type_getter = NativeFunction::from_fn_ptr(|this, _args, _ctx| {
+            if let Some(obj) = this.as_object() {
+                if let Some(data) = obj.downcast_ref::<IdBVersionChangeEventData>() {
+                    return Ok(JsValue::from(js_string!(
+                        data.event_data.event_type.as_str()
+                    )));
+                }
+            }
+            Ok(JsValue::undefined())
+        })
+        .to_js_function(&realm);
+
+        let target_getter = NativeFunction::from_fn_ptr(|this, _args, _ctx| {
+            if let Some(obj) = this.as_object() {
+                if let Some(data) = obj.downcast_ref::<IdBVersionChangeEventData>() {
+                    if let Some(ref target) = data.event_data.target {
+                        return Ok(JsValue::from(target.clone()));
+                    }
+                }
+            }
+            Ok(JsValue::null())
+        })
+        .to_js_function(&realm);
+
+        let current_target_getter = NativeFunction::from_fn_ptr(|this, _args, _ctx| {
+            if let Some(obj) = this.as_object() {
+                if let Some(data) = obj.downcast_ref::<IdBVersionChangeEventData>() {
+                    if let Some(ref ct) = data.event_data.current_target {
+                        return Ok(JsValue::from(ct.clone()));
+                    }
+                }
+            }
+            Ok(JsValue::null())
+        })
+        .to_js_function(&realm);
 
         let old_version_getter = NativeFunction::from_fn_ptr(|this, _args, _ctx| {
             if let Some(obj) = this.as_object() {
@@ -90,6 +138,24 @@ impl Class for IdBVersionChangeEventData {
         })
         .to_js_function(&realm);
 
+        class.accessor(
+            js_string!("type"),
+            Some(type_getter),
+            None,
+            Attribute::READONLY,
+        );
+        class.accessor(
+            js_string!("target"),
+            Some(target_getter),
+            None,
+            Attribute::READONLY,
+        );
+        class.accessor(
+            js_string!("currentTarget"),
+            Some(current_target_getter),
+            None,
+            Attribute::READONLY,
+        );
         class.accessor(
             js_string!("oldVersion"),
             Some(old_version_getter),

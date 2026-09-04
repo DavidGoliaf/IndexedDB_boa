@@ -3,7 +3,11 @@
 /// Safety limits and quotas for the core engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LimitConfig {
-    /// Maximum encoded key size in bytes (default 1024).
+    /// Maximum encoded key size in bytes (default 1 MiB).
+    ///
+    /// The IndexedDB spec sets no key size limit; this only guards against
+    /// pathological inputs. It must comfortably fit legitimate WPT keys such
+    /// as 10k-element array keys (~100 KiB encoded).
     pub max_key_len: usize,
     /// Maximum nesting depth for key arrays (default 32).
     pub max_key_depth: usize,
@@ -16,7 +20,7 @@ pub struct LimitConfig {
 impl Default for LimitConfig {
     fn default() -> Self {
         Self {
-            max_key_len: 1024,
+            max_key_len: 1024 * 1024,
             max_key_depth: 32,
             max_value_len: 64 * 1024 * 1024,
             max_clone_depth: 512,

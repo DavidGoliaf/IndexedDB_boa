@@ -14,6 +14,7 @@ boa_idb_memory = { path = "../boa_idb_memory", optional = true }
 boa_engine = "0.22"
 boa_gc = "0.22"
 boa_runtime = { version = "0.22", optional = true }
+num-bigint = { workspace = true }
 thiserror = { workspace = true }
 smallvec = { workspace = true }
 indexmap = { workspace = true }

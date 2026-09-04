@@ -117,43 +117,50 @@ impl OpenQueue {
 
         match &request.request_type {
             OpenRequestType::Open { requested_version } => {
-                if *requested_version == 0 {
-                    // Opening any version - just open current
-                    self.queue.pop_front();
-                    Some(OpenQueueAction::OpenConnection {
-                        request_id,
-                        version: self.current_version,
-                    })
-                } else if *requested_version < self.current_version {
-                    // Requested version is too old
-                    self.queue.pop_front();
-                    Some(OpenQueueAction::FailOpen {
-                        request_id,
-                        error: IdbError::Version(format!(
-                            "Requested version {} is less than current version {}",
-                            requested_version, self.current_version
-                        )),
-                    })
-                } else if *requested_version == self.current_version {
-                    // Same version - just open
-                    self.queue.pop_front();
-                    Some(OpenQueueAction::OpenConnection {
-                        request_id,
-                        version: self.current_version,
-                    })
-                } else {
-                    // Need to upgrade
-                    if self.blocking_connections > 0 {
-                        self.state = OpenQueueState::WaitingForConnections;
-                        Some(OpenQueueAction::SendBlocked { request_id })
+                let target_version = if *requested_version == 0 {
+                    if self.current_version == 0 {
+                        1
                     } else {
-                        self.state = OpenQueueState::RunningUpgrade;
+                        self.current_version
+                    }
+                } else {
+                    *requested_version
+                };
+
+                match target_version.cmp(&self.current_version) {
+                    std::cmp::Ordering::Less => {
+                        // Requested version is too old
                         self.queue.pop_front();
-                        Some(OpenQueueAction::StartUpgrade {
+                        Some(OpenQueueAction::FailOpen {
                             request_id,
-                            old_version: self.current_version,
-                            new_version: *requested_version,
+                            error: IdbError::Version(format!(
+                                "Requested version {} is less than current version {}",
+                                target_version, self.current_version
+                            )),
                         })
+                    }
+                    std::cmp::Ordering::Equal => {
+                        // Same version - just open
+                        self.queue.pop_front();
+                        Some(OpenQueueAction::OpenConnection {
+                            request_id,
+                            version: self.current_version,
+                        })
+                    }
+                    std::cmp::Ordering::Greater => {
+                        // Need to upgrade
+                        if self.blocking_connections > 0 {
+                            self.state = OpenQueueState::WaitingForConnections;
+                            Some(OpenQueueAction::SendBlocked { request_id })
+                        } else {
+                            self.state = OpenQueueState::RunningUpgrade;
+                            self.queue.pop_front();
+                            Some(OpenQueueAction::StartUpgrade {
+                                request_id,
+                                old_version: self.current_version,
+                                new_version: target_version,
+                            })
+                        }
                     }
                 }
             }

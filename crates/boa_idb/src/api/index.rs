@@ -65,6 +65,9 @@ fn index_of(this: &JsValue, context: &mut Context) -> JsResult<(JsObject, u64, u
             .ok_or_else(|| JsNativeError::typ().with_message("Index store is gone"))?;
         (store_data.store_id, store_data.transaction.clone())
     };
+    // Deleted/aborted-upgrade handles first (InvalidStateError), then the
+    // activity check (TransactionInactiveError).
+    crate::api::support::require_live_index(context, &txn_obj, store_id, index_id)?;
     let txn_id = active_txn_id(context, &txn_obj)?;
     Ok((obj, index_id, store_id, txn_obj))
 }
@@ -413,7 +416,7 @@ fn open_cursor_impl(
     let (obj, index_id, store_id, txn_obj) = index_of(this, context)?;
     let default_val = JsValue::undefined();
     let query = args.first().unwrap_or(&default_val);
-    let range = query_to_range(query, context)?;
+    let range = crate::api::support::nullable_query_to_range(query, context)?;
     let direction = match args.get(1) {
         Some(v) if !v.is_undefined() => crate::api::support::parse_direction(v, context)?,
         _ => boa_idb_core::proto::Direction::Next,

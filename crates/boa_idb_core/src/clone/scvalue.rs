@@ -230,7 +230,7 @@ pub enum ScValue {
         /// Maximum byte length for resizable buffers (`None` = not resizable).
         max_byte_length: Option<usize>,
     },
-    /// TypedArray (references a buffer via memo index).
+    /// TypedArray (owns its backing buffer inline).
     TypedArray {
         /// Element type.
         kind: ScTypedArrayKind,
@@ -238,17 +238,17 @@ pub enum ScValue {
         byte_offset: usize,
         /// Number of elements.
         length: usize,
-        /// Memo index of the backing `ArrayBuffer`.
-        buffer_memo_index: usize,
+        /// Backing buffer (`ScValue::ArrayBuffer`).
+        buffer: Box<ScValue>,
     },
-    /// DataView (references a buffer via memo index).
+    /// DataView (owns its backing buffer inline).
     DataView {
         /// Byte offset into the buffer.
         byte_offset: usize,
         /// Byte length of the view.
         byte_length: usize,
-        /// Memo index of the backing `ArrayBuffer`.
-        buffer_memo_index: usize,
+        /// Backing buffer (`ScValue::ArrayBuffer`).
+        buffer: Box<ScValue>,
     },
     /// Boxed boolean (`new Boolean(true)`).
     BoxedBoolean(bool),

@@ -368,18 +368,17 @@ fn install_event_listener_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> 
             if !callback.is_callable() {
                 return Ok(JsValue::undefined());
             }
-            if let Some(obj) = this.as_object()
-                && let Some(data) = obj.downcast_ref::<IdBRequest>()
-            {
-                let mut listeners = data.listeners.borrow_mut();
-                let id = listeners.len() as u64;
-                listeners.push(crate::dom::event_target::EventListenerEntry {
-                    event_type,
-                    callback,
-                    capture: false,
-                    once: false,
-                    passive: false,
-                    id,
+            if let Some(obj) = this.as_object() {
+                let id = crate::dom::event_target::next_listener_id(&obj);
+                crate::dom::event_target::with_listeners_mut(&obj, |listeners| {
+                    listeners.push(crate::dom::event_target::EventListenerEntry {
+                        event_type,
+                        callback,
+                        capture: false,
+                        once: false,
+                        passive: false,
+                        id,
+                    });
                 });
             }
             Ok(JsValue::undefined())
@@ -397,13 +396,12 @@ fn install_event_listener_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> 
                 .to_string(context)?
                 .to_std_string_escaped();
             let callback = args.get(1).cloned().unwrap_or(JsValue::undefined());
-            if let Some(obj) = this.as_object()
-                && let Some(data) = obj.downcast_ref::<IdBRequest>()
-            {
-                let mut listeners = data.listeners.borrow_mut();
-                listeners.retain(|l| {
-                    !(l.event_type == event_type
-                        && crate::dom::event_target::listener_equal(&l.callback, &callback))
+            if let Some(obj) = this.as_object() {
+                crate::dom::event_target::with_listeners_mut(&obj, |listeners| {
+                    listeners.retain(|l| {
+                        !(l.event_type == event_type
+                            && crate::dom::event_target::listener_equal(&l.callback, &callback))
+                    });
                 });
             }
             Ok(JsValue::undefined())

@@ -218,19 +218,13 @@ impl Class for IdBFactory {
                 let k1 = match value_to_key(&args[0], context) {
                     Ok(key) => key,
                     Err(e) => {
-                        return crate::dom::exception::throw_data_error(
-                            &format!("Invalid key: {e}"),
-                            context,
-                        );
+                        return Err(crate::convert::key::throw_key_conversion_error(e, context));
                     }
                 };
                 let k2 = match value_to_key(&args[1], context) {
                     Ok(key) => key,
                     Err(e) => {
-                        return crate::dom::exception::throw_data_error(
-                            &format!("Invalid key: {e}"),
-                            context,
-                        );
+                        return Err(crate::convert::key::throw_key_conversion_error(e, context));
                     }
                 };
 

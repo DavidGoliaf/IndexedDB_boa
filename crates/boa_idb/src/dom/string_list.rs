@@ -117,6 +117,23 @@ impl Class for DomStringListData {
 }
 
 /// Builds a `DOMStringList` object from implementation-side names.
+///
+/// Integer indices are materialized as readonly own properties
+/// (`list[0]`, …): WebIDL legacy-platform-object indexed access. Lists are
+/// rebuilt on every access, so the snapshot is always current.
 pub fn dom_string_list(items: Vec<String>, context: &mut Context) -> JsResult<JsObject> {
-    DomStringListData::from_data(DomStringListData::new(items), context)
+    let obj = DomStringListData::from_data(DomStringListData::new(items), context)?;
+    let snapshot = obj
+        .downcast_ref::<DomStringListData>()
+        .map(|d| d.items.clone())
+        .unwrap_or_default();
+    for (index, item) in snapshot.into_iter().enumerate() {
+        obj.set(
+            index,
+            JsValue::from(js_string!(item.as_str())),
+            false,
+            context,
+        )?;
+    }
+    Ok(obj)
 }

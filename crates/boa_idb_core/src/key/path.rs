@@ -70,6 +70,28 @@ impl KeyPath {
         }
     }
 
+    /// Extracts the members of a multiEntry key path.
+    ///
+    /// Invalid members of an array are ignored by IndexedDB; they do not
+    /// invalidate the other index entries produced by the record.
+    pub fn extract_multi_entry(&self, value: &ScValue) -> Result<Vec<Key>, KeyError> {
+        let raw = match self {
+            KeyPath::Empty => Some(value),
+            KeyPath::Single(path) => resolve_single_path(path, value),
+            KeyPath::Array(_) => None,
+        };
+        let Some(raw) = raw else {
+            return Ok(Vec::new());
+        };
+        match raw {
+            ScValue::Array { elements, .. } => Ok(elements
+                .iter()
+                .filter_map(|element| element.as_ref()?.to_key().ok().flatten())
+                .collect()),
+            _ => Ok(raw.to_key()?.into_iter().collect()),
+        }
+    }
+
     /// Checks whether a key can be injected into the given value without side effects.
     pub fn can_inject(&self, target: &ScValue) -> bool {
         match self {
@@ -254,6 +276,11 @@ fn is_length_step(step: &[u16]) -> bool {
 
 /// Extracts a key from a value using a single dot-separated key path.
 fn extract_single_path(path: &Utf16String, value: &ScValue) -> Result<Option<Key>, KeyError> {
+    // An empty path means "the value itself is the key" (used for `''`
+    // key paths and `['']` array components).
+    if path.as_slice().is_empty() {
+        return value.to_key();
+    }
     let steps = split_path_units(path.as_slice());
     let mut curr = value;
 
@@ -289,6 +316,22 @@ fn extract_single_path(path: &Utf16String, value: &ScValue) -> Result<Option<Key
     }
 
     curr.to_key()
+}
+
+/// Resolves a single path while preserving the final structured-clone value.
+fn resolve_single_path<'a>(path: &Utf16String, value: &'a ScValue) -> Option<&'a ScValue> {
+    if path.as_slice().is_empty() {
+        return Some(value);
+    }
+    let steps = split_path_units(path.as_slice());
+    let mut curr = value;
+    for step in steps {
+        match curr {
+            ScValue::Object(map) => curr = map.get(&Utf16String::from_slice(step))?,
+            _ => return None,
+        }
+    }
+    Some(curr)
 }
 
 /// Checks if a key can be injected at the given path without side effects.

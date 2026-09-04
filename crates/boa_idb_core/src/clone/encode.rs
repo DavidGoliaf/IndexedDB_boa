@@ -42,8 +42,12 @@ const BOXED_BIGINT: u8 = 3;
 
 /// SCF-v1 magic bytes.
 pub const SCF_MAGIC: &[u8; 4] = b"IDB1";
-/// SCF-v1 format version.
-pub const SCF_VERSION: u8 = 1;
+/// SCF format version.
+///
+/// v2: `TypedArray`/`DataView` embed their backing buffer as a nested
+/// `ArrayBuffer` value instead of a memo-table index (v1 never stored the
+/// bytes anywhere, so views could not round-trip).
+pub const SCF_VERSION: u8 = 2;
 
 /// Encodes an `ScValue` into the SCF-v1 binary format.
 ///
@@ -133,13 +137,13 @@ impl<'a> ScfEncoder<'a> {
                 kind,
                 byte_offset,
                 length,
-                buffer_memo_index,
-            } => self.encode_typedarray(*kind, *byte_offset, *length, *buffer_memo_index),
+                buffer,
+            } => self.encode_typedarray(*kind, *byte_offset, *length, buffer, depth)?,
             ScValue::DataView {
                 byte_offset,
                 byte_length,
-                buffer_memo_index,
-            } => self.encode_dataview(*byte_offset, *byte_length, *buffer_memo_index),
+                buffer,
+            } => self.encode_dataview(*byte_offset, *byte_length, buffer, depth)?,
             ScValue::BoxedBoolean(b) => self.encode_boxed_bool(*b),
             ScValue::BoxedNumber(n) => self.encode_boxed_num(*n),
             ScValue::BoxedString(s) => self.encode_boxed_str(s),
@@ -154,8 +158,14 @@ impl<'a> ScfEncoder<'a> {
 
     #[allow(clippy::float_cmp, clippy::cast_possible_truncation)]
     fn encode_number(&mut self, n: f64) {
-        // Try i32 optimization
-        if n.fract() == 0.0 && n >= f64::from(i32::MIN) && n <= f64::from(i32::MAX) {
+        // Try i32 optimization. `-0.0 == 0.0` in IEEE comparison, but
+        // `SameValue` distinguishes them: keep negative zero on the exact
+        // double path so round-trips preserve it.
+        if n.fract() == 0.0
+            && (n != 0.0 || n.is_sign_positive())
+            && n >= f64::from(i32::MIN)
+            && n <= f64::from(i32::MAX)
+        {
             let i = n as i32;
             if f64::from(i) == n {
                 self.buf.push(TAG_INT32);
@@ -330,29 +340,31 @@ impl<'a> ScfEncoder<'a> {
         kind: ScTypedArrayKind,
         byte_offset: usize,
         length: usize,
-        buffer_memo_index: usize,
-    ) {
+        buffer: &ScValue,
+        depth: usize,
+    ) -> Result<(), ScError> {
         let _memo_idx = self.allocate_memo();
 
         self.buf.push(TAG_TYPEDARRAY);
         self.buf.push(kind as u8);
         encode_uvarint(byte_offset as u64, &mut self.buf);
         encode_uvarint(length as u64, &mut self.buf);
-        encode_uvarint(buffer_memo_index as u64, &mut self.buf);
+        self.encode_with_depth(buffer, depth + 1)
     }
 
     fn encode_dataview(
         &mut self,
         byte_offset: usize,
         byte_length: usize,
-        buffer_memo_index: usize,
-    ) {
+        buffer: &ScValue,
+        depth: usize,
+    ) -> Result<(), ScError> {
         let _memo_idx = self.allocate_memo();
 
         self.buf.push(TAG_DATAVIEW);
         encode_uvarint(byte_offset as u64, &mut self.buf);
         encode_uvarint(byte_length as u64, &mut self.buf);
-        encode_uvarint(buffer_memo_index as u64, &mut self.buf);
+        self.encode_with_depth(buffer, depth + 1)
     }
 
     /// Boxed values are encoded as `TAG_BOXED`, a one-byte subtag

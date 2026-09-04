@@ -83,14 +83,15 @@ fn delete_lifecycle_resets_version() {
     q.on_delete_complete();
     assert_eq!(q.state(), OpenQueueState::Idle);
 
-    // Fresh open after delete sees version 0.
+    // Fresh open after delete sees version 0 and upgrades to 1.
     q.enqueue_open(10, 0);
     let action = q.process_next().expect("open");
     assert!(matches!(
         action,
-        OpenQueueAction::OpenConnection {
+        OpenQueueAction::StartUpgrade {
             request_id: 10,
-            version: 0
+            old_version: 0,
+            new_version: 1,
         }
     ));
 }

@@ -259,13 +259,30 @@ impl Class for IdBTransaction {
                 let obj = this.as_object().ok_or_else(|| {
                     JsNativeError::typ().with_message("'this' is not an IDBTransaction")
                 })?;
-                let (active, finished, explicit) = {
+                let (txn_id, active, finished, explicit) = {
                     let data = obj.downcast_ref::<IdBTransaction>().ok_or_else(|| {
                         JsNativeError::typ().with_message("'this' is not an IDBTransaction")
                     })?;
-                    (data.active, data.finished, data.explicit_commit)
+                    (
+                        data.txn_id,
+                        data.active,
+                        data.finished,
+                        data.explicit_commit,
+                    )
                 };
-                if finished || explicit || !active {
+                // A transaction whose scope went inactive across a task
+                // boundary (timer fire) cannot be committed (§2.7): compare
+                // the task epochs, not just the sticky `active` flag, which
+                // a `keep_alive` spin keeps set indefinitely.
+                let epoch_stale = if let Some(runtime) = context.get_data::<IdbRuntime>() {
+                    let d = crate::runtime::lock_mutex(&runtime.driver);
+                    d.txns
+                        .get(&txn_id)
+                        .is_some_and(|h| h.active_epoch != d.task_epoch)
+                } else {
+                    false
+                };
+                if finished || explicit || !active || epoch_stale {
                     return crate::dom::exception::throw_invalid_state_error(
                         "The transaction cannot be committed in its current state.",
                         context,
@@ -273,6 +290,12 @@ impl Class for IdBTransaction {
                 }
                 if let Some(mut data) = obj.downcast_mut::<IdBTransaction>() {
                     data.explicit_commit = true;
+                }
+                if let Some(runtime) = context.get_data::<IdbRuntime>() {
+                    let mut d = crate::runtime::lock_mutex(&runtime.driver);
+                    if let Some(handle) = d.txns.get_mut(&txn_id) {
+                        handle.explicit_commit = true;
+                    }
                 }
                 crate::runtime::schedule_pump(context);
                 Ok(JsValue::undefined())

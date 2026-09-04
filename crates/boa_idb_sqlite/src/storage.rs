@@ -50,20 +50,21 @@ impl Storage for SqliteStorage {
     fn list_databases(&self) -> Result<Vec<(String, u64)>, BackendError> {
         let mut stmt = self
             .registry_conn
-            .prepare("SELECT name, version FROM databases")
+            .prepare("SELECT name, version, db_file FROM databases")
             .map_err(|e| BackendError::Internal(format!("Failed to list databases: {e}")))?;
 
         let rows = stmt
             .query_map([], |row| {
                 let name_bytes: Vec<u8> = row.get(0)?;
                 let version: i64 = row.get(1)?;
-                Ok((name_bytes, version as u64))
+                let db_file: String = row.get(2)?;
+                Ok((name_bytes, version as u64, db_file))
             })
             .map_err(|e| BackendError::Internal(format!("List databases query failed: {e}")))?;
 
         let mut result = Vec::new();
         for row in rows {
-            let (name_bytes, version) =
+            let (name_bytes, reg_version, db_file) =
                 row.map_err(|e| BackendError::Internal(format!("List row error: {e}")))?;
             let name = String::from_utf16_lossy(
                 &name_bytes
@@ -71,6 +72,10 @@ impl Storage for SqliteStorage {
                     .map(|c| u16::from_le_bytes([c[0], c[1]]))
                     .collect::<Vec<_>>(),
             );
+            // The registry copy goes stale at open time (upgrades bump the
+            // file afterwards); serve the live version from the database
+            // file, falling back to the registry copy when unreadable.
+            let version = read_file_version(&self.root.join(&db_file)).unwrap_or(reg_version);
             result.push((name, version));
         }
 
@@ -259,6 +264,29 @@ impl Storage for SqliteStorage {
 
         Ok(total)
     }
+}
+
+/// Reads the live database version from a database file's `meta` table.
+///
+/// Used by [`list_databases`][Storage::list_databases]: the registry copy is
+/// only synced at open time, so post-open upgrades would otherwise be
+/// invisible (and version-0 databases wrongly omitted).
+fn read_file_version(path: &Path) -> Result<u64, BackendError> {
+    let conn =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| BackendError::Internal(format!("Failed to open db file: {e}")))?;
+    let bytes: Vec<u8> = conn
+        .query_row("SELECT v FROM meta WHERE k = 'version'", [], |row| {
+            row.get(0)
+        })
+        .map_err(|e| BackendError::Internal(format!("Failed to read version: {e}")))?;
+    if bytes.len() < 8 {
+        return Err(BackendError::Corrupted("Invalid version blob".into()));
+    }
+    let arr: [u8; 8] = bytes[..8]
+        .try_into()
+        .map_err(|_| BackendError::Corrupted("Invalid version blob".into()))?;
+    Ok(u64::from_le_bytes(arr))
 }
 
 /// Recursively calculates directory size.
