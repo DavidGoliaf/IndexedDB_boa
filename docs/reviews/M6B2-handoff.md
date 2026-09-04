@@ -2,6 +2,7 @@
 
 Work order: `tasks/08_TASK_M6B_FILESYSTEM_COMPLETION.md` (sub-order **B2**)  
 Branch: `task/m6-fs-completion` (continues from M6-B1 tip `10f227c`)  
+Tip: `d3a6c48`  
 Scope gate: `QUESTIONS.md` — B1 done; B2 in this delivery; B3 next
 
 ## Design
