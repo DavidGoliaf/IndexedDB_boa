@@ -10,7 +10,7 @@ Scope gate: `QUESTIONS.md` (B1→B2→B3)
 |---|---|---|
 | M6-B1 | `488c837` / handoff `10f227c` | Segments, compaction, `rpds` MVCC |
 | M6-B2 | `d3a6c48` / handoff `b556a6d` | `FileSystem` + fault matrix |
-| M6-B3 | *(this delivery)* | Crash worker, WPT `--backend fs`, differential |
+| M6-B3 | `2ea992a` | Crash worker, WPT `--backend fs`, differential |
 
 ## Design summary
 
