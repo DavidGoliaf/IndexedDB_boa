@@ -7,7 +7,7 @@ Branch: `task/m6-fs-foundation`
 
 - `ba4af08` — Record M6-A work order and ADR-009
 - `1c91a7a` — Implement `boa_idb_fs` WAL, lock, and backend traits
-- (this handoff + traceability follow in the docs commit)
+- `34c2f19` — Document M6-A in handoff and traceability
 
 ## Delivered
 
