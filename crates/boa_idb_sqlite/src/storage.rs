@@ -162,6 +162,19 @@ impl Storage for SqliteStorage {
             }
         };
 
+        // Schema migrations must run on every open, not just pool creation:
+        // a cached pool would otherwise serve a file whose schema version
+        // predates this build (e.g. rewound out-of-band) without migrating.
+        // A busy writer (`Locked`) keeps today's behavior — no blocking, and
+        // the next contention-free open retries the migration.
+        match pool.checkout_writer() {
+            Ok(checkout) => {
+                schema::migrate_if_needed(checkout.conn()?)?;
+            }
+            Err(BackendError::Locked) => {}
+            Err(other) => return Err(other),
+        }
+
         // For a freshly created database, store the canonical name in metadata
         // so `DatabaseMeta::name` is populated after reopen.
         if is_new {
