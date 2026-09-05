@@ -32,3 +32,25 @@ jobs:
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets --all-features -- -D warnings
           cargo test --workspace
+          cargo test -p boa_idb --features tracing --test observer_tests
+      - name: Strict documentation (no warnings)
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+  bench-smoke:
+    # Diagnostic only: heterogeneous runners must never be quoted as release
+    # evidence. The authoritative baseline comparison (blocking >10 %
+    # regression gate) lives on the pinned benchmark host (M7-B).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+      - name: Benchmark smoke (reduced scale)
+        env:
+          BOA_IDB_BENCH_SMOKE: 1
+        run: cargo bench -p boa_idb --bench backends

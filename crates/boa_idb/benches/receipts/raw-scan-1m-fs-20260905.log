@@ -1,0 +1,3 @@
+scan-1m: backend=fs records=1000000
+scan-1m: fixture_build_s=1734.0
+scan-1m: RESULT records=1000000 elapsed_s=0.7 records_per_s=1429222 checksum=200000000

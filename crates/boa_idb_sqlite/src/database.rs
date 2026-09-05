@@ -206,7 +206,7 @@ impl Database for SqliteDatabase {
         mode: TxnMode,
         scope: &[StoreId],
         durability: Durability,
-    ) -> Result<Box<dyn BackendTxn + 'static>, BackendError> {
+    ) -> Result<Box<dyn BackendTxn + Send + 'static>, BackendError> {
         // Refresh the cached metadata from the last committed state so every
         // transaction starts from a consistent snapshot of the schema.
         {

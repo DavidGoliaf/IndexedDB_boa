@@ -57,8 +57,9 @@ pub enum FaultKind {
     /// Persist only the first `bytes`, then return an I/O error.
     ///
     /// The partial bytes are left on disk (torn physical write), but the call
-    /// fails so [`crate::atomic::atomic_write`] never syncs/renames a truncated
-    /// tip into place. This matches `write_all`-style failure, not a silent Ok.
+    /// fails so the atomic replacement path (temp → sync → rename) never
+    /// publishes a truncated tip. This matches `write_all`-style failure,
+    /// not a silent Ok.
     ShortWrite {
         /// Bytes actually written before the error.
         bytes: usize,

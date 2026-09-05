@@ -1,0 +1,64 @@
+   Compiling boa_idb_core v0.1.0 (D:\projects\BoaX\boa-idb\crates\boa_idb_core)
+   Compiling boa_idb_memory v0.1.0 (D:\projects\BoaX\boa-idb\crates\boa_idb_memory)
+   Compiling boa_idb_sqlite v0.1.0 (D:\projects\BoaX\boa-idb\crates\boa_idb_sqlite)
+   Compiling boa_idb_fs v0.1.0 (D:\projects\BoaX\boa-idb\crates\boa_idb_fs)
+   Compiling boa_idb v0.1.0 (D:\projects\BoaX\boa-idb\crates\boa_idb)
+    Finished `bench` profile [optimized] target(s) in 27.06s
+     Running benches\backends.rs (target\release\deps\backends-146e99a9c111741e.exe)
+Gnuplot not found, using plotters backend
+Benchmarking memory/put_batch
+Benchmarking memory/put_batch: Warming up for 1.0000 s
+Benchmarking memory/put_batch: Collecting 20 samples in estimated 3.5435 s (420 iterations)
+Benchmarking memory/put_batch: Analyzing
+memory/put_batch        time:   [8.9983 ms 9.6681 ms 10.459 ms]
+                        thrpt:  [956.10 Kelem/s 1.0343 Melem/s 1.1113 Melem/s]
+Benchmarking memory/pk_get
+Benchmarking memory/pk_get: Warming up for 1.0000 s
+Benchmarking memory/pk_get: Collecting 20 samples in estimated 3.0208 s (21k iterations)
+Benchmarking memory/pk_get: Analyzing
+memory/pk_get           time:   [129.36 ┬╡s 134.86 ┬╡s 139.72 ┬╡s]
+                        thrpt:  [7.1573 Melem/s 7.4150 Melem/s 7.7302 Melem/s]
+Benchmarking memory/cursor_scan
+Benchmarking memory/cursor_scan: Warming up for 1.0000 s
+
+Warning: Unable to complete 20 samples in 3.0s. You may wish to increase target time to 7.5s, or reduce sample count to 10.
+Benchmarking memory/cursor_scan: Collecting 20 samples in estimated 7.4648 s (20 iterations)
+Benchmarking memory/cursor_scan: Analyzing
+memory/cursor_scan      time:   [312.16 ms 320.57 ms 329.10 ms]
+                        thrpt:  [3.0386 Melem/s 3.1195 Melem/s 3.2035 Melem/s]
+Benchmarking memory/empty_txn
+Benchmarking memory/empty_txn: Warming up for 1.0000 s
+Benchmarking memory/empty_txn: Collecting 20 samples in estimated 3.0008 s (244k iterations)
+Benchmarking memory/empty_txn: Analyzing
+memory/empty_txn        time:   [10.678 ┬╡s 11.448 ┬╡s 12.322 ┬╡s]
+                        thrpt:  [4.0579 Melem/s 4.3676 Melem/s 4.6825 Melem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) high mild
+  1 (5.00%) high severe
+Benchmarking memory/strict_commit
+Benchmarking memory/strict_commit: Warming up for 1.0000 s
+Benchmarking memory/strict_commit: Collecting 20 samples in estimated 3.0003 s (589k iterations)
+Benchmarking memory/strict_commit: Analyzing
+memory/strict_commit    time:   [5.3462 ┬╡s 5.4820 ┬╡s 5.5961 ┬╡s]
+                        thrpt:  [893.48 Kelem/s 912.07 Kelem/s 935.24 Kelem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) low mild
+  1 (5.00%) high mild
+
+Benchmarking sqlite/put_batch
+Benchmarking sqlite/put_batch: Warming up for 1.0000 s
+Benchmarking sqlite/put_batch: Collecting 20 samples in estimated 3.1096 s (40 iterations)
+Benchmarking sqlite/put_batch: Analyzing
+sqlite/put_batch        time:   [82.007 ms 87.634 ms 93.521 ms]
+                        thrpt:  [106.93 Kelem/s 114.11 Kelem/s 121.94 Kelem/s]
+Benchmarking sqlite/pk_get
+Benchmarking sqlite/pk_get: Warming up for 1.0000 s
+Benchmarking sqlite/pk_get: Collecting 20 samples in estimated 3.0848 s (4410 iterations)
+Benchmarking sqlite/pk_get: Analyzing
+sqlite/pk_get           time:   [730.50 ┬╡s 775.26 ┬╡s 811.05 ┬╡s]
+                        thrpt:  [1.2330 Melem/s 1.2899 Melem/s 1.3689 Melem/s]
+Benchmarking sqlite/cursor_scan
+Benchmarking sqlite/cursor_scan: Warming up for 1.0000 s
+
+Warning: Unable to complete 20 samples in 3.0s. You may wish to increase target time to 21015.2s, or reduce sample count to 10.
+Benchmarking sqlite/cursor_scan: Collecting 20 samples in estimated  21015 s (20 iterations)

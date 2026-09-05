@@ -26,6 +26,13 @@
 | R13.4.1–R13.4.2 | Backend differential behavior | `differential_model_tests.rs`, `differential_fs_tests.rs` (memory↔FS), backend suites | PASS |
 | R13.5.1–R13.5.2 | Ordering and concurrency | `scheduler_tests.rs`, `sqlite_concurrency_tests.rs` | PASS |
 | R13.6.1–R13.6.2 | GC/resource lifecycle | WPT isolated-context runner and backend cleanup tests | PASS |
+| R12.1 | Benchmark harness, 7 §12.1 scenarios (SQLite/FS + memory control), receipts, CI smoke | `crates/boa_idb/benches/backends.rs` (scan ids carry `N`, diagnostic), `examples/scan-1m.rs` (normative 1M one-pass runner, defaults = 1M), `benches/receipts/` (`README.md`, `RECEIPT-2026-09-05-*`, raw logs), `.github/workflows/ci.yml` (`bench-smoke`) | PARTIAL (harness + smoke + real 1M evidence with honest MISS verdicts; authoritative baseline comparison and >10 % blocking gate need the pinned host → M7-B; misses carry magnitude + bounded follow-ups F1–F5, profiles → M7-B) |
+| R12.2 | Memory: no range materialization, connection/txn overhead probes, lifecycle RSS gates | Observer byte counters + bench suite as measurement base; full gates (cursor O(1) memory, ≤64 KiB/≤8 KiB probes, `dhat`/`valgrind`) | PARTIAL (measurement base only → M7-B) |
+| R12.3 | Observability: `tracing` spans, `IdbObserver`, dev CLI | `boa_idb::observer` (`idb.open/txn/request`, counters, bounded histograms), `IndexedDbExtensionBuilder::observer`, `examples/boa-idb-cli.rs` (`ls/dump/verify/compact/stats`, `--values` gate); `observer_tests.rs`, `cli_tests.rs`, CI tracing job | PASS |
+| R13.1 | Test levels: perf benchmarks + memory gates | `criterion` suite (perf level present); `dhat`/`valgrind` lifecycle gates | PARTIAL (memory level → M7-B) |
+| R13.2 | Coverage thresholds (`boa_idb_core` ≥90 %, `boa_idb` ≥80 %, `llvm-cov` gate) | No enforced gate yet | PARTIAL (gate + evidence → M7-B) |
+| R13.4.1 | Backend differential behavior (10 000 nightly scenarios) | `differential_model_tests.rs` (10 000 proptest cases), `differential_fs_tests.rs`, backend suites | PASS (existing evidence; 10k seeded nightly expansion → M7-B) |
+| R13.6.1–R13.6.2 | GC/resource lifecycle: RSS growth, handle release | WPT isolated-context runner and backend cleanup tests; long-lifecycle RSS gate | PARTIAL (existing cleanup PASS; RSS/long-lifecycle gate → M7-B) |
 | R14.1–R14.6 | Documentation, build and delivery; license allowlist hygiene | `cargo fmt`, `cargo doc`, `cargo deny check`, this matrix, crate READMEs, `M6-handoff.md`, `M6A-handoff.md` | PASS |
 
 ## Requirement ID coverage
@@ -39,3 +46,4 @@ normative TZ and points it to the grouped row above:
 * R8: `R8.1.1 R8.1.2 R8.1.3 R8.1.4 R8.1.5 R8.1.6 R8.2.1 R8.2.2 R8.2.3 R8.3.1 R8.3.2 R8.3.3 R8.3.4 R8.3.5 R8.3.6 R8.5.1 R8.5.2 R8.5.3`.
 * R9–R11: `R9.1.1 R9.1.2 R9.2.1 R9.3.1 R9.3.2 R9.3.3 R9.4.1 R9.4.2 R10.2.1 R10.2.2 R10.2.3 R11.1 R11.2 R11.3 R11.4 R11.5 R11.6 R11.7`.
 * R13–R14: `R13.3.1 R13.3.2 R13.3.3 R13.4.1 R13.4.2 R13.5.1 R13.5.2 R13.6.1 R13.6.2 R14.1 R14.2 R14.3 R14.4 R14.5 R14.6`.
+* R12–R13 (M7-A): `R12.1 R12.2 R12.3 R13.1 R13.2 R13.4.1 R13.6.1 R13.6.2` (grouped rows above).

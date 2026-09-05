@@ -4,6 +4,7 @@
 //! [`IdbEngine`] and the plain [`DriverState`][crate::driver::DriverState].
 
 use crate::engine::IdbEngine;
+use crate::observer::{IdbObserver, IdbStats, ObserverState};
 use boa_engine::job::{GenericJob, Job};
 use boa_engine::{Context, JsNativeError, JsObject, JsResult, JsValue};
 use boa_gc::{Finalize, GcRefCell, Trace};
@@ -55,6 +56,12 @@ pub struct IdbRuntime {
     /// Plain (non-GC) driver state: pending opens, transactions, requests, cursors.
     #[unsafe_ignore_trace]
     pub driver: Arc<Mutex<crate::driver::DriverState>>,
+    /// Host observability: counters, histograms and [`IdbObserver`] fan-out.
+    ///
+    /// Plain data only (no JS values or IDB objects), so observers can never
+    /// retain garbage-collected state.
+    #[unsafe_ignore_trace]
+    pub observer: Arc<Mutex<ObserverState>>,
     /// Whether API calls schedule pump jobs (`true` by default).
     ///
     /// Embeddings that drive the pump themselves (the WPT runner calls
@@ -85,8 +92,19 @@ impl IdbRuntime {
             key_range_objects: GcRefCell::default(),
             key_range_set: GcRefCell::default(),
             driver: Arc::new(Mutex::new(crate::driver::DriverState::default())),
+            observer: Arc::new(Mutex::new(ObserverState::new())),
             auto_pump: Cell::new(true),
         }
+    }
+
+    /// Registers a host observer for lifecycle events (§4.3, §12.3).
+    pub fn add_observer(&self, observer: Arc<dyn IdbObserver>) {
+        lock_mutex(&self.observer).add_observer(observer);
+    }
+
+    /// Snapshots the built-in counters and bounded latency histograms.
+    pub fn stats(&self) -> IdbStats {
+        lock_mutex(&self.observer).stats()
     }
 
     /// Initializes the engine if not already done.

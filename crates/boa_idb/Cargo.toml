@@ -20,10 +20,13 @@ smallvec = { workspace = true }
 indexmap = { workspace = true }
 hashbrown = { workspace = true }
 parking_lot = "0.12"
+tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
 boa_idb_memory = { path = "../boa_idb_memory" }
 boa_idb_sqlite = { path = "../boa_idb_sqlite" }
+boa_idb_fs = { path = "../boa_idb_fs" }
+criterion = { workspace = true }
 tempfile = "3"
 proptest = { workspace = true }
 rstest = { workspace = true }
@@ -33,6 +36,26 @@ default = ["dom-shim", "memory"]
 dom-shim = []
 memory = ["dep:boa_idb_memory"]
 runtime-interop = ["dep:boa_runtime"]
+tracing = ["dep:tracing", "boa_idb_core/tracing"]
+
+[[bench]]
+name = "backends"
+harness = false
+
+# Dev-only storage inspector (M7-A observability, TZ §12.3 "examples or
+# binary"). An example uses dev-dependencies (backend crates) without
+# growing the library's feature surface; it is not a production API.
+[[example]]
+name = "boa-idb-cli"
+path = "examples/boa-idb-cli.rs"
+required-features = ["memory"]
+
+# Normative 1M cursor-scan runner (M7-A rework P1-2). Same dev-only status
+# as the CLI above.
+[[example]]
+name = "scan-1m"
+path = "examples/scan-1m.rs"
+required-features = ["memory"]
 
 [lints]
 workspace = true

@@ -42,6 +42,10 @@ fn issue_open(
     let request_id = crate::driver::alloc_request_id(context);
     let conn_id = crate::driver::alloc_conn_id(context);
     let req_obj = create_open_request(request_id, context)?;
+    // The `idb.open` trace starts at the JS call (M7-A; deletes excluded).
+    #[cfg(feature = "tracing")]
+    let open_trace =
+        matches!(kind, OpenKind::Open).then(|| crate::observer::start_open_trace(&name, version));
     crate::driver::enqueue_open(
         context,
         PendingOpen {
@@ -55,6 +59,8 @@ fn issue_open(
             queued: false,
             blocked_fired: false,
             upgrade_versions: None,
+            #[cfg(feature = "tracing")]
+            open_trace,
         },
     );
     crate::runtime::schedule_pump(context);

@@ -120,7 +120,7 @@ impl TransactionScheduler {
     }
 
     /// Moves a running transaction that never obtained a backend (e.g. transient
-    /// [`BackendError::Locked`]) back to the front of the pending queue.
+    /// `BackendError::Locked`) back to the front of the pending queue.
     ///
     /// `poll_ready` places candidates into `running_txns` before the backend
     /// `begin` call. If begin fails with `Locked`, leaving the id in `running`

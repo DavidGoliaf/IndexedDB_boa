@@ -162,7 +162,7 @@ impl Database for FsDatabase {
         mode: TxnMode,
         scope: &[StoreId],
         durability: Durability,
-    ) -> Result<Box<dyn BackendTxn + 'static>, BackendError> {
+    ) -> Result<Box<dyn BackendTxn + Send + 'static>, BackendError> {
         if let Some(meta) = self.state.read().meta.clone() {
             self.meta = meta;
         }

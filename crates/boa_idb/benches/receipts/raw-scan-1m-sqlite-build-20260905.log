@@ -1,0 +1,2 @@
+scan-1m: backend=sqlite records=1000000
+scan-1m: fixture_build_s=13.2
