@@ -3,7 +3,7 @@
 use boa_engine::{Context, JsNativeError, JsObject, JsResult, JsValue, js_string};
 
 use super::event::{AT_TARGET, BUBBLING_PHASE, CAPTURING_PHASE, EventDataHelper, NONE};
-use super::event_target::EventTargetData;
+use super::event_target::{remove_listener_by_id, snapshot_listeners_full};
 
 /// Dispatches an event to a target object.
 /// Returns `true` if the event was not cancelled.
@@ -135,20 +135,13 @@ fn invoke_listeners(
         .map(|d| d.data.event_type.clone())
         .unwrap_or_default();
 
-    let listeners: Vec<_> = if let Some(data) = target.downcast_ref::<EventTargetData>() {
-        data.listeners
-            .borrow()
-            .iter()
-            .filter(|l| {
-                l.event_type == event_type && capture_filter.is_none_or(|cap| l.capture == cap)
-            })
-            .map(|l| (l.callback.clone(), l.once))
-            .collect()
-    } else {
-        return Ok(());
-    };
+    let listeners = snapshot_listeners_full(target, &event_type)
+        .into_iter()
+        .filter(|(_, _, capture, _)| capture_filter.is_none_or(|cap| *capture == cap))
+        .map(|(id, callback, _, once)| (id, callback, once))
+        .collect::<Vec<_>>();
 
-    for (callback, once) in listeners {
+    for (id, callback, once) in listeners {
         // Check stopImmediatePropagation before each invocation
         if let Some(ed) = event.downcast_ref::<EventDataHelper>() {
             if ed.data.immediate_propagation_stopped {
@@ -156,12 +149,11 @@ fn invoke_listeners(
             }
         }
 
-        // Remove 'once' listeners before invoking
+        // Remove 'once' listeners before invoking (by registration id:
+        // duplicate type/callback/capture registrations are rejected at
+        // add time, so this removes exactly this registration).
         if once {
-            if let Some(data) = target.downcast_ref::<EventTargetData>() {
-                let mut listeners = data.listeners.borrow_mut();
-                listeners.retain(|l| l.callback != callback);
-            }
+            remove_listener_by_id(target, id);
         }
 
         // Invoke the callback

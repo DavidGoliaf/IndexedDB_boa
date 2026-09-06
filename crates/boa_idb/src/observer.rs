@@ -554,3 +554,82 @@ pub(crate) fn request_span(txn_seq: u64, request_seq: u64) -> tracing::Span {
         failed = tracing::field::Empty,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use boa_idb_core::error::IdbError;
+    use boa_idb_core::proto::TxnMode;
+    use std::time::Duration;
+
+    #[test]
+    fn classify_error_routes_quota_and_corruption() {
+        assert_eq!(
+            classify_error(&IdbError::QuotaExceeded {
+                needed: 10,
+                available: 5
+            }),
+            Some(ErrorClass::Quota)
+        );
+        assert_eq!(
+            classify_error(&IdbError::NotReadable("torn".to_string())),
+            Some(ErrorClass::Corruption)
+        );
+        for other in [
+            IdbError::Abort,
+            IdbError::Constraint("c".to_string()),
+            IdbError::Data("d".to_string()),
+            IdbError::Unknown("u".to_string()),
+        ] {
+            assert_eq!(classify_error(&other), None);
+        }
+    }
+
+    #[test]
+    fn error_name_covers_all_variants() {
+        let cases: Vec<(IdbError, &str)> = vec![
+            (IdbError::Constraint("c".to_string()), "ConstraintError"),
+            (IdbError::TransactionInactive, "TransactionInactiveError"),
+            (IdbError::DataClone("c".to_string()), "DataCloneError"),
+            (
+                IdbError::InvalidAccess("a".to_string()),
+                "InvalidAccessError",
+            ),
+            (IdbError::InvalidState("s".to_string()), "InvalidStateError"),
+            (IdbError::NotFound("n".to_string()), "NotFoundError"),
+            (IdbError::ReadOnly, "ReadOnlyError"),
+            (IdbError::Abort, "AbortError"),
+            (IdbError::Syntax("s".to_string()), "SyntaxError"),
+            (IdbError::Data("d".to_string()), "DataError"),
+            (IdbError::Version("v".to_string()), "VersionError"),
+            (
+                IdbError::QuotaExceeded {
+                    needed: 1,
+                    available: 0,
+                },
+                "QuotaExceededError",
+            ),
+            (IdbError::NotReadable("r".to_string()), "NotReadableError"),
+            (IdbError::Unknown("u".to_string()), "UnknownError"),
+        ];
+        for (error, name) in cases {
+            assert_eq!(error_name(&error), name);
+        }
+    }
+
+    #[test]
+    fn txn_mode_names_and_time_helpers() {
+        assert_eq!(txn_mode_name(TxnMode::ReadOnly), "readonly");
+        assert_eq!(txn_mode_name(TxnMode::ReadWrite), "readwrite");
+        assert_eq!(txn_mode_name(TxnMode::VersionChange), "versionchange");
+        assert_eq!(millis(Duration::from_millis(1500)), 1500);
+        assert_eq!(micros(Duration::from_micros(42)), 42);
+        assert_eq!(millis(Duration::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn histogram_and_state_defaults() {
+        let _histo = LatencyHistogram::default();
+        let _state = ObserverState::default();
+    }
+}
