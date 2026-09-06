@@ -38,15 +38,18 @@ jobs:
           key: ${{ runner.os }}-cargo-nightly-cov-${{ hashFiles('**/Cargo.lock') }}
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --version 0.9.0 --locked
+      - name: Pre-build example binaries (cli_tests needs boa-idb-cli)
+        # MUST run before the coverage step below: the llvm-cov run
+        # retargets builds into target/llvm-cov-target, where the plain-named
+        # example binary was absent at test time in run 34050610807 (and a
+        # failed step skips everything after it, so building afterwards
+        # could never help). Pre-building into the normal target dir lets
+        # the test's workspace-fallback probe resolve the binary.
+        run: cargo build --workspace --examples
       - name: Tests under coverage (lib+bins+tests+examples)
         # NOTE: `--doc` is deliberately excluded (unstable in cargo-llvm-cov,
         # issue #2); doctests still run in CI's test job, just unmeasured.
-        # `--examples` is required (not just for coverage of example code):
-        # `cli_tests` shells out to the built `boa-idb-cli` example binary,
-        # which plain `--tests` never builds (M7-C CI failure 2026-09-06).
         run: cargo llvm-cov --workspace --lib --bins --tests --examples --no-report
-      - name: Pre-build example binaries (cli_tests needs boa-idb-cli)
-        run: cargo build --workspace --examples
       - name: WPT under coverage (memory, sqlite, fs)
         run: |
           cargo llvm-cov run --no-clean -p boa_idb_wpt --bin boa-idb-wpt -- --backend memory --summary

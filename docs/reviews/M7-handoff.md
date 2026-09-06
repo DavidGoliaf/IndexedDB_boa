@@ -1,11 +1,14 @@
 # Handoff: M7 — performance, reliability, final acceptance (EXTERNAL BLOCKER)
 
-> **Status 2026-09-07 (M7-C):** `EXTERNAL BLOCKER` — code scope M7-A/M7-B
-> closed and locally green on this tree. All CI-backed acceptance items
-> (§7 work order) remain without run URLs/artifacts: no labelled runner,
-> no labelled baseline, no inaugural nightly runs. No `PASS` is claimed
-> for them. Owner: CI maintainer; recheck: after runner provisioning +
-> first scheduled runs (see §6).
+> **Status 2026-09-07 (M7-C):** `EXTERNAL BLOCKER` — M7-A/M7-B code
+> scope closed; inaugural CI runs executed and triaged
+> (`nightly-fs-crash` run `34050249898` green; `nightly-m7` run
+> `34050610807` found one real WAL OOM + one coverage-harness defect,
+> both fixed on this branch). Still missing, hence the blocker: labelled
+> runner + baseline + actual required `bench-regression` check, and a new
+> all-green `nightly-m7` run on the fixed SHA. No `PASS` is claimed for
+> them. Owner: CI maintainer; recheck: after runner provisioning + fresh
+> dispatch (see §§4–5).
 
 Work order: `tasks/10_TASK_M7C_CI_EVIDENCE_AND_FINAL_ACCEPTANCE.md`
 (`TASK-10-M7C-CI-EVIDENCE-FINAL-ACCEPTANCE`)
@@ -14,9 +17,12 @@ tip `40f6681`)
 Predecessors: M7-A handoff `docs/reviews/M7A-handoff.md`, M7-B handoff
 `docs/reviews/M7B-handoff.md` (rework №3 code closure `3d29f8b` + WAL-sidecar
 test fix `f1912a6`)
-Scope: M7-C opens no optimization and changes no IndexedDB semantics,
-formats, or WPT expectations. Docs-only delivery: this file + pointer in
-M7B-handoff. No production code touched.
+Scope: M7-C collects CI evidence and closes M7 documentally. CI-driven
+changes on this branch: `workflow_dispatch: {}` registration fix
+(`49a85e7`), `boa-idb-cli` example pre-build + `resolve_cli_exe`
+harness fix (§5.2), WAL `decode_ops` OOM production fix (§5.1 — one line,
+no semantic/format change, see below). No IndexedDB semantics, SCF/KEY/
+WAL/segment formats, or WPT expectations changed.
 
 ## 1. What M7 delivered (A → B → C)
 
@@ -24,21 +30,30 @@ M7B-handoff. No production code touched.
 |---|---|---|
 | M7-A | Criterion harness (7 §12.1 scenarios × SQLite/FS + memory control), baseline workflow, `tracing` feature, `IdbObserver`, dev-only `boa-idb-cli`, traceability skeleton | `docs/reviews/M7A-handoff.md` |
 | M7-B | Keyset SQLite cursor (F2), FS quota/packing fixes (F1), SQLite blob-sweep fast path (F4), F3/F5 dispositions, lazy cursors memory+FS, dhat gates, 1M matrix, absolute coverage gate, 5 fuzz targets, `bench_compare.py` fail-closed comparator + host-id binding, `bench-regression.yml` PR gate, nightly workflows | `docs/reviews/M7B-handoff.md` |
-| M7-C | CI evidence collection + final acceptance (this file). No code changes required or made beyond docs | — |
+| M7-C | CI evidence collection + final acceptance (this file): CI-forced fixes (workflow registration, example pre-build, WAL OOM one-liner) + run triage | — |
 
 ## 2. Commits (this branch)
 
 Base `40f6681 Clarify M7-C labelled baseline identity` (tip of
 `task/m7b-optimizations-reliability`, includes `f1912a6` WAL-sidecar test
-fix). M7-C adds:
+fix). M7-C adds (oldest → newest):
 
-- `M7-handoff.md` (this file, mandatory deliverable §8 of the M7 work order)
-- pointer in `docs/reviews/M7B-handoff.md` → this file
-- `docs/traceability.md`: audited, no drift found (PARTIALs stay PARTIAL,
-  see §7); no status change needed
+| Commit | Content |
+|---|---|
+| `fd54458` | `M7-handoff.md` (mandatory deliverable §8) + pointer in `M7B-handoff.md` |
+| `49a85e7` (via merge `5f21831`) | `workflow_dispatch: {}` registration fix — bare `workflow_dispatch:` keys made GitHub silently skip `nightly-m7`/`nightly-fs-crash`/`bench-regression` (YAML 1.1 `on:`-as-bool); API showed 1/4 workflows before, 4/4 after |
+| `1c17eb3` (+ sync merges `6f6ccd9`, `4d211ac`) | coverage-harness fix (§5.2): example pre-build in `nightly-m7.yml` + `resolve_cli_exe()` in `cli_tests.rs` |
+| `60c3321` | WAL `decode_ops` OOM production fix (§5.1): `Vec::with_capacity(count)` → `Vec::new()` + regression test |
+| `7f13ae5` | handoff §5 evidence for both findings above |
 
-No workflow/comparator code change: §1 work order allows it only when a
-real CI run demands it. No such run exists, so none was made.
+(Cherry-picks `66be8f0`, `ba43a6f` carry the same two fixes on
+`task/m7b-optimizations-reliability`.)
+
+Per §1 work order, workflow/comparator changes are allowed when a real
+CI run demands them — runs `34050249898`/`34050610807` did, and each
+change above carries a regression test + rerun requirement. The single
+production line (§5.1) fixes an abort-on-untrusted-input with no
+behavioral change on valid inputs (suite green).
 
 ## 3. Platform receipts (local, diagnostic — not release evidence)
 
@@ -106,11 +121,12 @@ Workflows are wired and reviewed:
 | `fuzz` (5 targets × 48 min, ≥4 h total) | final stats, corpus/cache identity, crash artifacts + replay | **MIXED** — inaugural run `34050610807` (`workflow_dispatch` on `task/m7c-ci-evidence-final` @ `c950302`, 2026-09-06): 1 real crash found and fixed (see §5.1); `memory-massif` success, `differential-and-lifecycle` success, `coverage` failed on missing `boa-idb-cli` example build (workflow+test fixed, see §5.2); remaining fuzz jobs were still running at the time of writing — final stats pending rerun. Run: https://github.com/DavidGoliaf/IndexedDB_boa/actions/runs/34050610807 |
 | `nightly-fs-crash` (`BOA_IDB_FS_CRASH_ITERS=200`) | run URL/ID, seed/replay, green M6 fault matrix | **PASS (CI)** — run `34050249898` 2026-09-06, `workflow_dispatch` on `task/m7c-ci-evidence-final` @ `5f21831`: `crash-consistency (ubuntu-latest)` success (43 s step) + `crash-consistency (windows-latest)` success; seed `0xC0FFEE`, command `BOA_IDB_FS_CRASH_ITERS=200 BOA_IDB_FS_CRASH_SEED=0xC0FFEE cargo test -p boa_idb_fs --test m6b3_crash_tests -- --nocapture` per `.github/workflows/nightly-fs-crash.yml`. Run: https://github.com/DavidGoliaf/IndexedDB_boa/actions/runs/34050249898 |
 
-Dispatch (owner with Actions access):
+Dispatch (owner with Actions access) — always fresh `workflow_dispatch`
+on the current tip (never `rerun --failed`, see §5.3):
 
 ```sh
 gh workflow run nightly-m7.yml --ref task/m7c-ci-evidence-final
-gh workflow run nightly-fs-crash.yml --ref task/m7c-ci-evidence-final
+gh workflow run nightly-fs-crash.yml --ref task/m7c-ci-evidence-final  # green on 5f21831; re-dispatch only if the tree changed beneath it
 gh workflow run bench-regression.yml --ref task/m7c-ci-evidence-final  # after §4 baseline
 ```
 
@@ -170,29 +186,53 @@ both pre- and post-fix code return `Err(unknown op kind)` with exit 0;
 libFuzzer itself cannot link on Windows (no ASan runtime — limitation
 3 in §10). The attribution therefore rests on the malloc-size
 arithmetic above plus the regression test, not on a local abort.
-Rerun after fix: `gh run rerun 34050610807 --failed`.
+
+### 5.3 Required fresh runs (do not use `rerun --failed`)
+
+`gh run rerun 34050610807 --failed` would re-execute the recorded SHAs
+(`c950302` for `nightly-m7`), i.e. the code WITHOUT the §§5.1–5.2
+fixes. The fixes can only be verified by a fresh `workflow_dispatch`
+on the fixed SHA. Owner commands:
+
+```sh
+gh workflow run nightly-m7.yml --ref task/m7c-ci-evidence-final
+```
+
+(after the push of this handoff; the dispatch resolves the current tip,
+which must contain `60c3321` + `1c17eb3`). `nightly-fs-crash` needs no
+re-dispatch (green on `5f21831`, unaffected by later fixes).
+`bench-regression` stays queued until the §4 runner exists.
+
+File the new run URL/ID, per-job URLs/IDs, commands, and artifact names
+in the table above before flipping any status to PASS.
 
 ### 5.2 Coverage job failure: missing `boa-idb-cli` example build
 
 Same run `34050610807`, job `coverage`: `cli_tests` (3/3) failed with
-`boa-idb-cli example binary must exist` — `cargo llvm-cov --...--no-report`
-instruments but never links `--examples`, and the retarget dir
-`target/llvm-cov-target/debug/examples/` stays empty (locally green
-only because `target/debug/examples/boa-idb-cli.exe` was built earlier).
+`boa-idb-cli example binary must exist` — the coverage run retargets
+builds into `target/llvm-cov-target/`, whose `debug/examples/` dir never
+received the plain-named example binary at test time (locally green only
+because `target/debug/examples/boa-idb-cli.exe` was built earlier, via
+the workspace-fallback probe).
 
 Fix (commits `1c17eb3` / cherry-pick `ba43a6f`, sync `6f6ccd9`/`4d211ac`;
 workflow + test only, no production change): `nightly-m7.yml`
 (`coverage`, `differential-and-lifecycle`) now runs
-`cargo build --workspace --examples` first; `cli_tests.rs` resolution
-extracted into `resolve_cli_exe()` (plain → hashed-sorted → workspace
-fallback; no `read_dir` panic on a missing `examples/` dir) with 4
-unit tests (`cli_tests` 7/7 locally). Rerun after fix: same
-`gh run rerun 34050610807 --failed` (picks up both §§5.1–5.2 fixes).
+`cargo build --workspace --examples` BEFORE the llvm-cov step (a later
+build could never help: the failed step skips the rest of the job);
+`cli_tests.rs` resolution extracted into `resolve_cli_exe()` (plain →
+hashed-sorted → workspace fallback; no `read_dir` panic on a missing
+`examples/` dir) with 4 unit tests (`cli_tests` 7/7 locally).
 
-## 6. Local quality suite (§6, this tree, 2026-09-07)
+Do NOT `gh run rerun 34050610807 --failed`: GitHub re-runs the recorded
+SHA (`c950302`), not the fixed tree. A fresh dispatch on the fixed SHA
+is required (see §5.3).
 
-HEAD `40f6681`, branch `task/m7c-ci-evidence-final`, clean except
-untracked `docs/reviews/M6-review.md` (M6 material, out of M7 scope).
+## 6. Local quality suite (§6, this tree — re-verified for this handoff)
+
+Branch `task/m7c-ci-evidence-final`, clean except untracked
+`docs/reviews/M6-review.md` (M6 material, out of M7 scope) and
+`artefacts/` (local CI evidence zips, intentionally uncommitted).
 
 | Command | Result |
 |---|---|
@@ -218,8 +258,8 @@ CI-dependent item stays PARTIAL.
 | R12.1 | PARTIAL | fixes + receipts + fail-closed comparator shipped; blocking enforcement needs labelled runner + baseline (§4 blocker) |
 | R12.2 | PASS on local evidence | 1M matrix 12/12 with local receipts `RECEIPT-MATRIX-1M-20260906.md`; nightly run URL pending (not claimed) |
 | R12.3 | PASS | tracing spans + observer + CLI covered by tests, CI tracing job present |
-| R13.1 | PARTIAL | all levels wired; first fuzz crash found+fixed with CI evidence (§5.1); full 4 h green pending rerun |
-| R13.1-fuzz | PARTIAL | 5 targets wired; inaugural run produced 1 real OOM crash (fixed, §5.1); 4 h all-green pending rerun |
+| R13.1 | PARTIAL | all levels wired; first fuzz crash found+fixed with CI evidence (§5.1); full 4 h green pending fresh run (§5.3) |
+| R13.1-fuzz | PARTIAL | 5 targets wired; inaugural run produced 1 real OOM crash (fixed, §5.1); 4 h all-green pending fresh run (§5.3) |
 | R13.2 | PARTIAL | local 90.1/80.9 + enforcing absolute gate; CI coverage artifact pending |
 | R13.4.1 | PASS | 10k differential suites green locally; nightly re-runs with long-lifecycle env |
 | R13.6 | PASS | lifecycle + massif wiring + local lifecycle gates green |
@@ -248,7 +288,8 @@ scope; dead-`engine`-module removal proposal needs its own review.
 - [ ] Successful nightly evidence: coverage, 1M matrix, massif,
   differential/lifecycle, ≥4 h fuzz — **IN PROGRESS** (§5):
   massif + differential/lifecycle green; fs-crash green; fuzz crash
-  found+fixed (§5.1); coverage workflow+test fixed (§5.2); rerun pending
+  found+fixed (§5.1); coverage workflow+test fixed (§5.2); fresh dispatch
+  on the fixed SHA pending (§5.3)
 - [x] Successful `nightly-fs-crash` evidence at 200 iterations — **done**
   (run `34050249898`, §5)
 - [x] Targets/misses have receipts/profiles/follow-ups without requirement
