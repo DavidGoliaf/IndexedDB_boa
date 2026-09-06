@@ -82,16 +82,16 @@ fn test_meta_table_schema_version() {
         .unwrap();
     let _db = storage.open_database("meta_db").unwrap();
 
-    // Find the database file (inside the storage-key directory)
-    let key = boa_idb_core::proto::StorageKey::new("test");
-    let db_files: Vec<_> = std::fs::read_dir(factory.storage_dir(&key))
-        .unwrap()
-        .filter_map(Result::ok)
-        .filter(|e| e.file_name().to_string_lossy().starts_with("db-"))
-        .collect();
-    assert!(!db_files.is_empty());
+    // Resolve the database file via the shared helper: it sorts entries and
+    // excludes WAL/SHM sidecars (`db-….sqlite-wal`), which a live pooled
+    // connection keeps around. Picking an unsorted `read_dir` entry here
+    // could open the WAL file as a database, yielding an empty `meta`
+    // table and a spurious "schema_version should be in meta table"
+    // failure (filesystem-dependent `read_dir` order).
+    let files = db_files(&tmp);
+    assert!(!files.is_empty());
 
-    let conn = Connection::open(db_files[0].path()).unwrap();
+    let conn = Connection::open(&files[0]).unwrap();
 
     // Check that schema_version exists in meta table
     let version: Option<Vec<u8>> = conn
@@ -272,12 +272,19 @@ fn test_registry_schema_is_usable() {
 }
 
 /// Lists the `db-*.sqlite` files inside the storage-key directory.
+///
+/// WAL/SHM sidecars (`db-….sqlite-wal`) are excluded: a live pooled
+/// connection keeps them around and opening one as a database yields an
+/// empty `meta` table.
 fn db_files(tmp: &tempfile::TempDir) -> Vec<std::path::PathBuf> {
     let dir = tmp.path().join(boa_idb_sqlite::storage_dir_name("test"));
     let mut files: Vec<_> = std::fs::read_dir(dir)
         .unwrap()
         .filter_map(Result::ok)
-        .filter(|e| e.file_name().to_string_lossy().starts_with("db-"))
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.starts_with("db-") && name.ends_with(".sqlite")
+        })
         .map(|e| e.path())
         .collect();
     files.sort();
