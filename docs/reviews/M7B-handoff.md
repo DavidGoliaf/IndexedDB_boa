@@ -1,8 +1,10 @@
 # Handoff: M7-B — optimizations, memory/reliability gates (REWORK REQUIRED)
 
-> **Status 2026-09-07 (rework №2):** `REWORK REQUIRED` — all code that can
-> execute on the dev host is green with local artifacts (see evidence
-> table). Two external operations remain and are marked `EXTERNAL
+> **Status 2026-09-07 (rework №3 code closure):** `EXTERNAL BLOCKER` —
+> all code that can execute on the dev host is green with local artifacts
+> (see evidence table). Rework №3 P1-1 (host-id binding), P1-2 (R13.2
+> single status), P3 (diff hygiene) are closed on this tree with commands
+> below. Two external operations remain and are marked `EXTERNAL
 > BLOCKER` with owner and recheck date; no `PASS` is claimed for them.
 
 Work order: `tasks/09_TASK_M7_PERFORMANCE_RELIABILITY.md` (M7-B half)
@@ -303,6 +305,26 @@ artifact from the evidence table below).
 4. Stream FS WAL replay (H-FS-OPEN follow-up).
 5. `docs/reviews/M6-review.md` left untracked (M6 material, not mine).
 
+### Rework №3 closure (this tree, 2026-09-07)
+
+- P1-1 host-id binding: `python scripts/test_bench_compare.py` → 15/15
+  PASS incl. 4 host-id cases (matching PASS, missing-env/missing-baseline/
+  mismatch rejected, `run_bench` never called); fail-closed before benches;
+  `bench-regression.yml` forwards protected `vars.BOA_IDB_BENCH_HOST_ID`;
+  procedure in `crates/boa_idb/benches/baselines/README.md`.
+- P1-2 single status: `R13.2` is `PARTIAL` both in this handoff and in
+  `docs/traceability.md`; full R12/R13 audit done — no conflicting `PASS`.
+- P3 diff hygiene: `git diff --check ac3284f..HEAD` → exit 0
+  (untracked `docs/reviews/M6-review.md` is M6 material, not M7-B scope;
+  `fuzz/target/` and `scripts/__pycache__/` removed before сдача).
+- Re-verified on this tree: `cargo fmt --check` (exit 0), `cargo clippy
+  --workspace --all-targets --all-features -- -D warnings` (exit 0),
+  `cargo test --workspace` (zero failures), WPT 482/482 ×3 (memory/SQLite/FS),
+  `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS="-D warnings"` (exit 0),
+  `cargo deny check` with `CARGO_DENY_DB_PATH=target/cargo-deny-advisories`
+  (advisories/bans/licenses/sources ok).
+- `docs/reviews/M6-review.md` stays untracked (M6 material, not mine).
+
 ### Verification (all green, this tree)
 
 `cargo fmt --check`, workspace `clippy --all-targets --all-features
@@ -319,7 +341,7 @@ WPT 482/482 on memory/SQLite/FS (×3, inside the coverage runs),
 replaced the shim; P1-1 done). No new production dependencies
 (dhat/criterion are dev-only with ADR-013/ADR-014 entries).
 
-### Evidence table (rework №2 — requirement, commit, command, host, artifact, date, result)
+### Evidence table (rework №3 — requirement, commit, command, host, artifact, date, result)
 
 | Requirement | Commit | Command | Host / runner | Artifact / run URL | Date | Result |
 |---|---|---|---|---|---|---|
@@ -330,7 +352,7 @@ replaced the shim; P1-1 done). No new production dependencies
 | coverage 90/80 | `ac3284f`+ | chunked-equivalent of nightly `llvm-cov` (suite + 3 WPT), same fail-closed threshold script | dev | `docs/reviews/coverage-20260907/` (cov.json + lcov.info + package-totals: core 90.1, boa_idb 80.9, gate exit 0) | 2026-09-07 | PASS (local) |
 | deny | `ac3284f`+ | `cargo deny check` with `CARGO_DENY_DB_PATH` | dev | `docs/reviews/coverage-20260907/deny-check.log` (all ok; advisory DB `5a0ebed` 2026-09-02, fetch no-op offline) | 2026-09-07 | PASS (cached DB; fresh-fetch note recorded) |
 | 1M cursor matrix | `a184e48` | `BOA_IDB_FULL_MATRIX=1 cargo test --release ...` (store+index) | dev | `docs/reviews/RECEIPT-MATRIX-1M-20260906.md` (12/12) | 2026-09-06 | PASS (local) |
-| bench comparator | HEAD | `python3 scripts/test_bench_compare.py` | dev | 11/11 + CI step in `ci.yml` | 2026-09-07 | PASS |
+| bench comparator | HEAD | `python3 scripts/test_bench_compare.py` | dev | 15/15 + CI step in `ci.yml` | 2026-09-07 | PASS |
 | bench interim baseline | HEAD | `bench_compare.py write/compare` | dev | `m7b-label-ref.json` (interim, diagnostic only) | 2026-09-06 | harness validated |
 | labelled PR gate run | — | `bench-regression.yml` on `pull_request` | labelled runner | **no run URL — EXTERNAL BLOCKER** | — | BLOCKED |
 | nightly inaugural (coverage/matrix/massif/fuzz) | — | `nightly-m7.yml` schedule/dispatch | ubuntu-latest | **no run URL — EXTERNAL BLOCKER** | — | BLOCKED |
