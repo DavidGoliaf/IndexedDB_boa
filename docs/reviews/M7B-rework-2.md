@@ -1,8 +1,8 @@
 # M7-B — наряд на доработку № 2
 
-**Статус:** `REWORK REQUIRED`  
-**Основание:** повторная приёмка от 2026-09-06  
-**Ветка:** `task/m7b-optimizations-reliability`  
+**Статус:** `REWORK REQUIRED`
+**Основание:** повторная приёмка от 2026-09-06
+**Ветка:** `task/m7b-optimizations-reliability`
 **Норматив:** `tasks/09_TASK_M7_PERFORMANCE_RELIABILITY.md`, §3 и §7; `AGENTS.md`.
 
 Предыдущие технические блокеры частично устранены: unsafe allocator заменён
