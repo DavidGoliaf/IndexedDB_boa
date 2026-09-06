@@ -39,7 +39,8 @@ Chunks (all PASS, zero failures):
 - `cov.json` (6.4 MB) — llvm-cov JSON report
 - `lcov.info` (1.5 MB) — LCOV report (same as the nightly artifact)
 - `package-totals.txt` — threshold gate output
-- `deny-check.log` — `cargo deny check` output
+- `deny-check.log` — `cargo deny check` output (trailing whitespace
+  normalized on export; content is byte-identical otherwise)
 
 ## cargo-deny
 

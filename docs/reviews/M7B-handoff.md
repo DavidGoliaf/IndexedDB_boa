@@ -219,8 +219,11 @@ removed after use; none ship.
 
 - Official-equivalent command (chunked locally, same accumulation as the
   nightly job: workspace lib+bins+tests+examples, then 3 WPT backend runs):
-  core **90.37 %** (2336/2585), boa_idb **80.52 %** (7225/8973) — TZ §13.2
-  absolutes met. WPT 482/482 ×3 in the same runs.
+  core **90.1 %** (2329/2585), boa_idb **80.9 %** (7232/8938) — TZ §13.2
+  absolutes met; evidence in `docs/reviews/coverage-20260907/` (cov.json,
+  lcov.info, package-totals exit 0). WPT 482/482 ×3 in the same runs.
+  (An earlier drive commit measured 90.37/80.52 on a mixed profile; the
+  current numbers come from one clean `llvm-cov clean` accumulation.)
 - Drive: `engine_units_tests` (196 engine lines: connection/transaction/
   registry/request/CoreCursor-with-fake + capabilities/error conversions),
   `clone_units_tests` (tag roundtrips, to_key/from_key arms, malformed
@@ -263,13 +266,18 @@ removed after use; none ship.
 
 ### Traceability deltas
 
-R12.1 PARTIAL (fixes + receipts + blocking-gate harness + interim
-baseline + `bench-regression.yml`; enforcement needs the labelled
-runner), R12.2 PASS (store/index × Next/Prev × all backends at 10^6 with
-local receipts + nightly job), R12.3 PASS, R13.1 PARTIAL (all levels
-wired; 4 h fuzz evidence pending inaugural Linux run), R13.2 PASS
-(90.37/80.52 + enforcing absolute gate), R13.4.1 PASS, R13.6 PASS. Full
-matrix in `docs/traceability.md`.
+R12.1 PARTIAL (fixes + receipts + comparator with host-id binding +
+interim baseline + `bench-regression.yml`; enforcement needs the labelled
+runner with protected `BOA_IDB_BENCH_HOST_ID`), R12.2 PASS on local
+evidence only (store/index × Next/Prev × all backends at 10^6 with local
+receipts `docs/reviews/RECEIPT-MATRIX-1M-20260906.md`; nightly run URL
+pending — not claimed), R12.3 PASS, R13.1
+PARTIAL (all levels wired; 4 h fuzz evidence pending inaugural Linux
+run), R13.2 PARTIAL (local 90.1/80.9 + enforcing absolute gate; CI
+coverage artifact with command/SHA/percentages pending inaugural nightly
+run), R13.4.1 PASS, R13.6 PASS. Full matrix in `docs/traceability.md`
+(one status per requirement; PASS only with a local receipt or CI
+artifact from the evidence table below).
 
 ### Residual (maintainer — CI infrastructure only, no code)
 

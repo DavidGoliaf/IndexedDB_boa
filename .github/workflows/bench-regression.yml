@@ -44,6 +44,13 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-benchreg-${{ hashFiles('**/Cargo.lock') }}
       - name: Compare against labelled baseline (blocking)
+        # BOA_IDB_BENCH_HOST_ID must come from the runner's PROTECTED
+        # configuration (runner-level env or a secrets-backed environment),
+        # never from this file or any PR-controlled file. The comparator
+        # fail-closes (exit 2, no bench runs) when it is missing or when the
+        # baseline's host id differs from this machine's.
+        env:
+          BOA_IDB_BENCH_HOST_ID: ${{ vars.BOA_IDB_BENCH_HOST_ID }}
         run: >
           python3 scripts/bench_compare.py compare
           --baseline crates/boa_idb/benches/baselines/m7b-label-baseline.json

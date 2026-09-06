@@ -1,10 +1,10 @@
 warning[duplicate]: found 2 duplicate entries for crate 'cpufeatures'
    тФМтФА D:\projects\BoaX\boa-idb/Cargo.lock:55:1
-   тФВ  
+   тФВ
 55 тФВ тХн cpufeatures 0.2.17 registry+https://github.com/rust-lang/crates.io-index
 56 тФВ тФВ cpufeatures 0.3.1 registry+https://github.com/rust-lang/crates.io-index
    тФВ тХ░тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФШ lock entries
-   тФВ  
+   тФВ
    тФЬ cpufeatures v0.2.17
      тФФтФАтФА sha2 v0.10.9
          тФЬтФАтФА boa_idb_fs v0.1.0
@@ -24,11 +24,11 @@ warning[duplicate]: found 2 duplicate entries for crate 'cpufeatures'
 
 warning[duplicate]: found 2 duplicate entries for crate 'foldhash'
    тФМтФА D:\projects\BoaX\boa-idb/Cargo.lock:88:1
-   тФВ  
+   тФВ
 88 тФВ тХн foldhash 0.1.5 registry+https://github.com/rust-lang/crates.io-index
 89 тФВ тФВ foldhash 0.2.0 registry+https://github.com/rust-lang/crates.io-index
    тФВ тХ░тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФШ lock entries
-   тФВ  
+   тФВ
    тФЬ foldhash v0.1.5
      тФФтФАтФА hashbrown v0.15.5
          тФЬтФАтФА boa_idb v0.1.0
@@ -98,12 +98,12 @@ warning[duplicate]: found 2 duplicate entries for crate 'foldhash'
 
 warning[duplicate]: found 3 duplicate entries for crate 'hashbrown'
     тФМтФА D:\projects\BoaX\boa-idb/Cargo.lock:104:1
-    тФВ  
+    тФВ
 104 тФВ тХн hashbrown 0.14.5 registry+https://github.com/rust-lang/crates.io-index
 105 тФВ тФВ hashbrown 0.15.5 registry+https://github.com/rust-lang/crates.io-index
 106 тФВ тФВ hashbrown 0.17.1 registry+https://github.com/rust-lang/crates.io-index
     тФВ тХ░тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФШ lock entries
-    тФВ  
+    тФВ
     тФЬ hashbrown v0.14.5
       тФЬтФАтФА dashmap v6.2.1
       тФВ   тФФтФАтФА boa_engine v0.22.0
@@ -182,11 +182,11 @@ warning[duplicate]: found 3 duplicate entries for crate 'hashbrown'
 
 warning[duplicate]: found 2 duplicate entries for crate 'num-bigint'
     тФМтФА D:\projects\BoaX\boa-idb/Cargo.lock:140:1
-    тФВ  
+    тФВ
 140 тФВ тХн num-bigint 0.4.8 registry+https://github.com/rust-lang/crates.io-index
 141 тФВ тФВ num-bigint 0.5.1 registry+https://github.com/rust-lang/crates.io-index
     тФВ тХ░тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФШ lock entries
-    тФВ  
+    тФВ
     тФЬ num-bigint v0.4.8
       тФЬтФАтФА boa_idb v0.1.0
       тФВ   тФФтФАтФА boa_idb_wpt v0.1.0
@@ -216,11 +216,11 @@ warning[duplicate]: found 2 duplicate entries for crate 'num-bigint'
 
 warning[duplicate]: found 2 duplicate entries for crate 'syn'
     тФМтФА D:\projects\BoaX\boa-idb/Cargo.lock:223:1
-    тФВ  
+    тФВ
 223 тФВ тХн syn 2.0.119 registry+https://github.com/rust-lang/crates.io-index
 224 тФВ тФВ syn 3.0.4 registry+https://github.com/rust-lang/crates.io-index
     тФВ тХ░тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФШ lock entries
-    тФВ  
+    тФВ
     тФЬ syn v2.0.119
       тФЬтФАтФА dynify-macros v0.1.2
       тФВ   тФФтФАтФА dynify v0.1.2
@@ -487,11 +487,11 @@ warning[duplicate]: found 2 duplicate entries for crate 'syn'
 
 warning[duplicate]: found 2 duplicate entries for crate 'synstructure'
     тФМтФА D:\projects\BoaX\boa-idb/Cargo.lock:225:1
-    тФВ  
+    тФВ
 225 тФВ тХн synstructure 0.13.2 registry+https://github.com/rust-lang/crates.io-index
 226 тФВ тФВ synstructure 0.14.0 registry+https://github.com/rust-lang/crates.io-index
     тФВ тХ░тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФШ lock entries
-    тФВ  
+    тФВ
     тФЬ synstructure v0.13.2
       тФЬтФАтФА yoke-derive v0.8.2
       тФВ   тФФтФАтФА yoke v0.8.3
@@ -573,11 +573,11 @@ warning[duplicate]: found 2 duplicate entries for crate 'synstructure'
 
 warning[duplicate]: found 2 duplicate entries for crate 'windows-sys'
     тФМтФА D:\projects\BoaX\boa-idb/Cargo.lock:263:1
-    тФВ  
+    тФВ
 263 тФВ тХн windows-sys 0.59.0 registry+https://github.com/rust-lang/crates.io-index
 264 тФВ тФВ windows-sys 0.61.2 registry+https://github.com/rust-lang/crates.io-index
     тФВ тХ░тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФШ lock entries
-    тФВ  
+    тФВ
     тФЬ windows-sys v0.59.0
       тФФтФАтФА colored v2.2.0
           тФФтФАтФА boa_idb_wpt v0.1.0

@@ -14,7 +14,14 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from bench_compare import BaselineError, evaluate, load_baseline
+from bench_compare import (
+    BaselineError,
+    evaluate,
+    host_id,
+    load_baseline,
+)
+
+HOST = "pinned-host-01"
 
 PROVENANCE = {
     "git_sha": "abc123",
@@ -33,9 +40,10 @@ def write_doc(tmp, doc):
     return path
 
 
-def labelled_doc(scenarios=None):
+def labelled_doc(scenarios=None, host=HOST):
     return {
         "host_role": "labelled",
+        "host_id": host,
         "provenance": dict(PROVENANCE),
         "scenarios": scenarios
         if scenarios is not None
@@ -44,11 +52,41 @@ def labelled_doc(scenarios=None):
 
 
 class LoadBaselineTests(unittest.TestCase):
-    def test_labelled_passes(self):
+    def test_labelled_matching_id_passes(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = write_doc(tmp, labelled_doc())
-            doc = load_baseline(path)
+            doc = load_baseline(path, current_host=HOST)
             self.assertEqual(len(doc["scenarios"]), 2)
+
+    def test_missing_env_id_rejected(self):
+        # current_host="" simulates BOA_IDB_BENCH_HOST_ID unset: run_bench
+        # must never start.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_doc(tmp, labelled_doc())
+            with self.assertRaises(BaselineError):
+                load_baseline(path, current_host="")
+
+    def test_missing_baseline_id_rejected(self):
+        doc = labelled_doc()
+        doc.pop("host_id")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_doc(tmp, doc)
+            with self.assertRaises(BaselineError):
+                load_baseline(path, current_host=HOST)
+
+    def test_mismatched_id_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_doc(tmp, labelled_doc(host="other-host"))
+            with self.assertRaises(BaselineError):
+                load_baseline(path, current_host=HOST)
+
+    def test_host_id_reads_protected_env(self):
+        os.environ["BOA_IDB_BENCH_HOST_ID"] = HOST
+        try:
+            self.assertEqual(host_id(), HOST)
+        finally:
+            del os.environ["BOA_IDB_BENCH_HOST_ID"]
+        self.assertEqual(host_id(), "")
 
     def test_interim_rejected(self):
         doc = labelled_doc()

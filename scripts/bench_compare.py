@@ -39,9 +39,21 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # or hand-edited file without them is rejected before any bench runs.
 REQUIRED_PROVENANCE = ("git_sha", "os", "cpu", "arch", "rustc", "profile")
 
+# Environment variable carrying the pinned benchmark-host identity. Set by
+# the CI runner owner in the runner's protected configuration (NOT in the
+# workflow file or PR-controlled files); the workflow only forwards it.
+# `write` refuses to stamp a labelled baseline without it; `compare`
+# refuses to run benches when it is missing or mismatched.
+HOST_ID_ENV = "BOA_IDB_BENCH_HOST_ID"
+
 
 class BaselineError(Exception):
     """Raised when a baseline file cannot serve as a release reference."""
+
+
+def host_id() -> str:
+    """Pinned-host identity from the protected runner configuration."""
+    return os.environ.get(HOST_ID_ENV, "").strip()
 
 
 def run_bench() -> None:
@@ -55,8 +67,16 @@ def cmd_write(path: str, no_run: bool) -> None:
         run_bench()
     means = collect_means()
     prov = provenance()
+    role = prov.get("host_role", "interim")
+    if role == "labelled" and not prov.get("host_id"):
+        raise BaselineError(
+            f"refusing to stamp a labelled baseline without {HOST_ID_ENV}: "
+            "the pinned-host identity must come from the protected runner "
+            "configuration, not from this shell"
+        )
     doc = {
-        "host_role": prov.get("host_role", "interim"),
+        "host_role": role,
+        "host_id": prov.get("host_id"),
         "provenance": prov,
         "scenarios": {},
     }
@@ -107,6 +127,16 @@ def provenance() -> dict:
         # captured elsewhere MUST carry host_role "interim" and must be
         # replaced (same command, --write) once the labelled host exists.
         "host_role": os.environ.get("BOA_IDB_BASELINE_ROLE", "interim"),
+        # Pinned-host identity: only the protected runner configuration
+        # provides it (see HOST_ID_ENV). Labelled baselines without a host
+        # id are rejected at compare time.
+        "host_id": host_id() or None,
+        # Diagnostic fingerprint for investigations. Informational only:
+        # admission is decided by host_id, not by these fields.
+        "fingerprint": {
+            "os_release": platform.release(),
+            "cpu": platform.processor(),
+        },
     }
     try:
         rustc = subprocess.run(
@@ -125,13 +155,16 @@ def provenance() -> dict:
     return out
 
 
-def load_baseline(path: str) -> dict:
+def load_baseline(path: str, current_host: str = None) -> dict:
     """Load and validate a release baseline, fail-closed.
 
     Raises BaselineError (no bench is started) when the file is missing,
-    not labelled, lacks mandatory provenance, or has no scenarios. The
-    interim diagnostic baseline (`m7b-label-ref.json`) is rejected here by
-    construction: only `host_role == "labelled"` is accepted.
+    not labelled, lacks mandatory provenance or host identity, or has no
+    scenarios. `current_host` defaults to the protected `BOA_IDB_BENCH_HOST_ID`
+    of THIS machine; a mismatch means the baseline belongs to a different
+    pinned host and comparison would be meaningless. The interim diagnostic
+    baseline (`m7b-label-ref.json`) is rejected here by construction: only
+    `host_role == "labelled"` is accepted.
     """
     if not os.path.isfile(path):
         raise BaselineError(
@@ -154,6 +187,24 @@ def load_baseline(path: str) -> dict:
     if missing:
         raise BaselineError(
             f"baseline {path} lacks mandatory provenance: {', '.join(missing)}"
+        )
+    baseline_host = doc.get("host_id", prov.get("host_id")) or ""
+    if not baseline_host:
+        raise BaselineError(
+            f"baseline {path} carries no pinned host identity "
+            "(provenance.host_id); re-capture it on the labelled host"
+        )
+    current = current_host if current_host is not None else host_id()
+    if not current:
+        raise BaselineError(
+            f"{HOST_ID_ENV} is not set on this machine: refusing to compare "
+            "against a pinned-host baseline from an unidentified host"
+        )
+    if current != baseline_host:
+        raise BaselineError(
+            f"host mismatch: this machine is '{current}' but baseline {path} "
+            f"belongs to pinned host '{baseline_host}'; comparison would be "
+            "meaningless"
         )
     scenarios = doc.get("scenarios", {})
     if not scenarios:
@@ -211,6 +262,9 @@ def cmd_compare(path: str) -> int:
         print(f"::error::{exc}")
         return 2
     print(f"labelled baseline: {path} ({len(doc['scenarios'])} scenarios)")
+    current = host_id()
+    base_host = doc.get("host_id", doc.get("provenance", {}).get("host_id"))
+    print(f"pinned host: {base_host} (this machine: {current or '<unset>'})")
     run_bench()
     means = collect_means()
     failed, lines = evaluate(doc, means)
@@ -230,7 +284,11 @@ def main() -> int:
     )
     args = ap.parse_args()
     if args.mode == "write":
-        cmd_write(args.baseline, args.no_run)
+        try:
+            cmd_write(args.baseline, args.no_run)
+        except BaselineError as exc:
+            print(f"::error::{exc}")
+            return 2
         return 0
     return cmd_compare(args.baseline)
 
