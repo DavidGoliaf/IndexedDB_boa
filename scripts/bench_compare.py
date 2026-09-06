@@ -35,6 +35,14 @@ import sys
 REGRESSION_THRESHOLD = 1.10
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# Provenance fields a release baseline must carry (non-empty). An interim
+# or hand-edited file without them is rejected before any bench runs.
+REQUIRED_PROVENANCE = ("git_sha", "os", "cpu", "arch", "rustc", "profile")
+
+
+class BaselineError(Exception):
+    """Raised when a baseline file cannot serve as a release reference."""
+
 
 def run_bench() -> None:
     cmd = ["cargo", "bench", "-p", "boa_idb", "--bench", "backends"]
@@ -42,8 +50,26 @@ def run_bench() -> None:
     subprocess.run(cmd, cwd=REPO, check=True)
 
 
-def collect_means() -> dict:
-    crit = os.path.join(REPO, "target", "criterion")
+def cmd_write(path: str, no_run: bool) -> None:
+    if not no_run:
+        run_bench()
+    means = collect_means()
+    prov = provenance()
+    doc = {
+        "host_role": prov.get("host_role", "interim"),
+        "provenance": prov,
+        "scenarios": {},
+    }
+    for name in sorted(means):
+        doc["scenarios"][name] = {"mean_ns": means[name]}
+    with open(path, "w") as fh:
+        json.dump(doc, fh, indent=2)
+        fh.write("\n")
+    print(f"wrote {len(means)} scenarios to {path}")
+
+
+def collect_means(crit_dir=None) -> dict:
+    crit = crit_dir or os.path.join(REPO, "target", "criterion")
     means = {}
     for group in sorted(os.listdir(crit)):
         gdir = os.path.join(crit, group)
@@ -99,46 +125,98 @@ def provenance() -> dict:
     return out
 
 
-def cmd_write(path: str, no_run: bool) -> None:
-    if not no_run:
-        run_bench()
-    means = collect_means()
-    doc = {"provenance": provenance(), "scenarios": {}}
-    for name in sorted(means):
-        doc["scenarios"][name] = {"mean_ns": means[name]}
-    with open(path, "w") as fh:
-        json.dump(doc, fh, indent=2)
-        fh.write("\n")
-    print(f"wrote {len(means)} scenarios to {path}")
+def load_baseline(path: str) -> dict:
+    """Load and validate a release baseline, fail-closed.
 
-
-def cmd_compare(path: str) -> int:
+    Raises BaselineError (no bench is started) when the file is missing,
+    not labelled, lacks mandatory provenance, or has no scenarios. The
+    interim diagnostic baseline (`m7b-label-ref.json`) is rejected here by
+    construction: only `host_role == "labelled"` is accepted.
+    """
+    if not os.path.isfile(path):
+        raise BaselineError(
+            f"baseline file not found: {path} (capture it on the pinned "
+            "labelled host with `write`; see baselines/README.md)"
+        )
     with open(path) as fh:
-        doc = json.load(fh)
-    base = {k: v["mean_ns"] for k, v in doc["scenarios"].items()}
-    print(f"baseline: {path} ({len(base)} scenarios)")
-    run_bench()
-    means = collect_means()
+        try:
+            doc = json.load(fh)
+        except ValueError as exc:
+            raise BaselineError(f"baseline {path} is not valid JSON: {exc}")
+    if doc.get("host_role", doc.get("provenance", {}).get("host_role")) != "labelled":
+        raise BaselineError(
+            f"baseline {path} is not a labelled release reference "
+            "(host_role != 'labelled'); interim baselines are diagnostic "
+            "only and must never gate releases"
+        )
+    prov = doc.get("provenance", {})
+    missing = [k for k in REQUIRED_PROVENANCE if not prov.get(k)]
+    if missing:
+        raise BaselineError(
+            f"baseline {path} lacks mandatory provenance: {', '.join(missing)}"
+        )
+    scenarios = doc.get("scenarios", {})
+    if not scenarios:
+        raise BaselineError(f"baseline {path} carries no scenarios")
+    return doc
+
+
+def evaluate(base_doc: dict, means: dict):
+    """Compare measured means against a validated baseline (pure).
+
+    Returns (failed: bool, lines: [str]). Fails closed on scenario-set
+    mismatch: a new or dropped harness scenario must be re-baselined
+    explicitly, never silently skipped.
+    """
+    base = {k: v["mean_ns"] for k, v in base_doc["scenarios"].items()}
+    lines = [
+        f"{'scenario':44s} {'base_ns':>14s} {'new_ns':>14s} {'ratio':>8s}  verdict"
+    ]
     failed = False
-    print(f"{'scenario':44s} {'base_ns':>14s} {'new_ns':>14s} {'ratio':>8s}  verdict")
-    for name in sorted(set(base) | set(means)):
-        if name not in base:
-            print(f"{name:44s} {'—':>14s} {means[name]:14.1f} {'new':>8s}  NEW (no baseline)")
-            continue
-        if name not in means:
-            print(f"{name:44s} {base[name]:14.1f} {'—':>14s} {'missing':>8s}  MISSING")
-            failed = True
-            continue
+    base_set, new_set = set(base), set(means)
+    if base_set != new_set:
+        if new_set - base_set:
+            lines.append(
+                "NEW scenarios without baseline (re-baseline explicitly): "
+                + ", ".join(sorted(new_set - base_set))
+            )
+        if base_set - new_set:
+            lines.append(
+                "MISSING scenarios vs baseline (re-baseline explicitly): "
+                + ", ".join(sorted(base_set - new_set))
+            )
+        lines.append("::error::scenario set mismatch vs labelled baseline")
+        return True, lines
+    for name in sorted(base):
         ratio = means[name] / base[name] if base[name] else float("inf")
         verdict = "ok" if ratio <= REGRESSION_THRESHOLD else "REGRESSION"
         if verdict != "ok":
             failed = True
-        print(f"{name:44s} {base[name]:14.1f} {means[name]:14.1f} {ratio:8.3f}  {verdict}")
+        lines.append(
+            f"{name:44s} {base[name]:14.1f} {means[name]:14.1f} {ratio:8.3f}  {verdict}"
+        )
     if failed:
-        print("::error::performance regression >10% vs labelled baseline")
-        return 1
-    print("all scenarios within 10% of the labelled baseline")
-    return 0
+        lines.append("::error::performance regression >10% vs labelled baseline")
+    else:
+        lines.append("all scenarios within 10% of the labelled baseline")
+    return failed, lines
+
+
+def cmd_compare(path: str) -> int:
+    # Fail closed BEFORE spending ~10 min on benches: an interim, hand-made
+    # or incomplete baseline must never gate a release.
+    try:
+        doc = load_baseline(path)
+    except BaselineError as exc:
+        print(f"::error::{exc}")
+        return 2
+    print(f"labelled baseline: {path} ({len(doc['scenarios'])} scenarios)")
+    run_bench()
+    means = collect_means()
+    failed, lines = evaluate(doc, means)
+    for line in lines:
+        print(line)
+    return 1 if failed else 0
 
 
 def main() -> int:

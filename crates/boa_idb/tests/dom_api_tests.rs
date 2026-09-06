@@ -928,6 +928,63 @@ fn version_change_init_edges() {
     );
 }
 
+#[test]
+fn factory_brand_and_listener_shape_edges() {
+    let mut context = create_context();
+    setup_open(&mut context);
+    eval_drained(
+        &mut context,
+        r"
+        globalThis.__out = {};
+        const probe = (fn) => {
+            try { fn(); return 'no-throw'; }
+            catch (e) { return e instanceof TypeError ? 'TypeError' : String(e && e.name || e); }
+        };
+        // Factory methods reject foreign `this`.
+        globalThis.__out.openBrand = probe(() => indexedDB.open.call({}, 'x'));
+        globalThis.__out.cmpBrand = probe(() => indexedDB.cmp.call({}, 1, 2));
+        globalThis.__out.delBrand = probe(() => indexedDB.deleteDatabase.call({}, 'x'));
+        const db = openReq.result;
+        const tx = db.transaction('s', 'readwrite');
+        tx.objectStore('s').put({ id: 60 });
+        globalThis.__order = [];
+        // Non-callable listeners are stored but invoke to undefined.
+        tx.addEventListener('shapes', {});
+        tx.addEventListener('shapes', 42);
+        tx.addEventListener('shapes', () => globalThis.__order.push('fn'));
+        tx.addEventListener('shapes', { handleEvent() { globalThis.__order.push('he'); } });
+        tx.addEventListener('shapes', { handleEvent: 7 });
+        tx.dispatchEvent(new Event('shapes'));
+        globalThis.__out.order = globalThis.__order.join(',');
+        // Symbol init values fail numeric conversion in the constructor.
+        try { new IDBVersionChangeEvent('x', { oldVersion: Symbol('s') }); globalThis.__out.symInit = 'no'; }
+        catch (e) { globalThis.__out.symInit = 'threw'; }
+        ",
+    );
+    assert_eq!(
+        read_str(&mut context, "globalThis.__out.openBrand"),
+        "TypeError"
+    );
+    assert_eq!(
+        read_str(&mut context, "globalThis.__out.cmpBrand"),
+        "TypeError"
+    );
+    assert_eq!(
+        read_str(&mut context, "globalThis.__out.delBrand"),
+        "TypeError"
+    );
+    assert_eq!(read_str(&mut context, "globalThis.__out.order"), "fn,he");
+    assert_eq!(read_str(&mut context, "globalThis.__out.symInit"), "threw");
+}
+
+#[test]
+fn extension_builder_requires_storage_key() {
+    let result = IndexedDbExtension::builder()
+        .backend_factory(Arc::new(MemoryBackendFactory::new()))
+        .build();
+    assert!(result.is_err(), "storage_key is required");
+}
+
 /// Pure-Rust units for the tiny runtime helpers (no JS needed).
 #[test]
 fn extension_double_register_rejected() {
