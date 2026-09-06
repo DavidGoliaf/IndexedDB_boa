@@ -23,16 +23,23 @@ pub struct SqliteDatabase {
 
 impl SqliteDatabase {
     /// Opens or creates a database from the given pool.
+    ///
+    /// `sweep_orphans` runs the crash-recovery blob sweep; callers pass it
+    /// only for the first open per storage lifetime (M7-B H-F4) — orphans
+    /// arise solely from process crashes, so repeat sweeps only rescan.
     pub fn open(
         pool: ConnectionPool,
         storage_root: std::path::PathBuf,
         db_hash: String,
+        sweep_orphans: bool,
     ) -> Result<Self, BackendError> {
         let meta = {
             let checkout = pool.checkout_reader()?;
             let conn = checkout.conn()?;
             let meta = Self::load_metadata(conn)?;
-            BlobManager::new(&storage_root, &db_hash).sweep_orphans(conn)?;
+            if sweep_orphans {
+                BlobManager::new(&storage_root, &db_hash).sweep_orphans(conn)?;
+            }
             meta
         };
 

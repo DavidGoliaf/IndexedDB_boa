@@ -244,29 +244,48 @@ pub fn encode_txn_frames_limited(
         return Ok(Vec::new());
     }
 
+    // Single-pass packing with exact running lengths (M7-B H-F1): the
+    // previous version cloned the accumulated group and re-serialized it to
+    // measure every op — O(n²) encodes per commit (~10 GB for 10k × 200 B).
+    // Grouping decisions and error values are identical: an op joins iff the
+    // exact total with it (op bytes plus the count prefix for the joined
+    // size, which is final for the last join) fits, and a lone op that
+    // cannot fit errors with its exact length.
+    let max = max_payload as usize;
     let mut groups: Vec<Vec<WalOp>> = Vec::new();
     let mut current: Vec<WalOp> = Vec::new();
+    // Encoded op bytes accumulated so far, excluding the count prefix.
+    let mut current_len: usize = 0;
     for op in ops {
-        let mut candidate = current.clone();
-        candidate.push(op.clone());
-        match payload_len(&candidate) {
-            Ok(len) if len <= max_payload as usize => {
-                current = candidate;
+        let op_len = op_encoded_len(op);
+        if current.is_empty() {
+            // A lone op carries a one-byte count prefix.
+            if op_len + 1 > max {
+                return Err(CodecError::PayloadTooLarge(op_len + 1));
             }
-            Ok(_) | Err(CodecError::PayloadTooLarge(_)) => {
-                if current.is_empty() {
-                    // Lone operation exceeds the limit.
-                    let alone = payload_len(std::slice::from_ref(op))?;
-                    return Err(CodecError::PayloadTooLarge(alone));
-                }
-                groups.push(std::mem::take(&mut current));
-                current.push(op.clone());
-                let alone = payload_len(&current)?;
-                if alone > max_payload as usize {
-                    return Err(CodecError::PayloadTooLarge(alone));
-                }
+            current.push(op.clone());
+            current_len = op_len;
+        } else if current_len + op_len + varint_len(current.len() as u64 + 1) <= max {
+            current.push(op.clone());
+            current_len += op_len;
+        } else {
+            groups.push(std::mem::take(&mut current));
+            if op_len + 1 > max {
+                return Err(CodecError::PayloadTooLarge(op_len + 1));
             }
-            Err(err) => return Err(err),
+            current.push(op.clone());
+            current_len = op_len;
+        }
+        // Self-check against the serializing oracle in debug builds only:
+        // the oracle call itself re-serializes (O(group)), so it must not
+        // run in release — it once cost the very quadratic it guards.
+        #[cfg(debug_assertions)]
+        if let Ok(oracle) = payload_len(&current) {
+            debug_assert_eq!(
+                oracle,
+                current_len + varint_len(current.len() as u64),
+                "running length must match re-serialization"
+            );
         }
     }
     if !current.is_empty() {
@@ -291,6 +310,48 @@ pub fn encode_txn_frames_limited(
         )?);
     }
     Ok(out)
+}
+
+/// LEB128 length of `write_varint(v)` without serializing.
+fn varint_len(mut v: u64) -> usize {
+    let mut len = 1;
+    while v >= 0x80 {
+        len += 1;
+        v >>= 7;
+    }
+    len
+}
+
+/// Length of `write_bytes` output without serializing.
+fn bytes_len(bytes: &[u8]) -> usize {
+    varint_len(bytes.len() as u64) + bytes.len()
+}
+
+/// Exact encoded length of one op (excluding the frame count prefix).
+///
+/// Must stay byte-exact with [`encode_op`]: the single-pass packer above
+/// relies on it, and the unit tests below assert equality against
+/// [`payload_len`] for every variant across varint boundaries.
+fn op_encoded_len(op: &WalOp) -> usize {
+    match op {
+        WalOp::Put { store, key, value } => {
+            1 + varint_len(*store) + bytes_len(key) + bytes_len(value)
+        }
+        WalOp::Delete { store, key } => 1 + varint_len(*store) + bytes_len(key),
+        WalOp::Clear { store } => 1 + varint_len(*store),
+        WalOp::IndexPut {
+            index,
+            idx_key,
+            primary_key,
+        }
+        | WalOp::IndexDelete {
+            index,
+            idx_key,
+            primary_key,
+        } => 1 + varint_len(*index) + bytes_len(idx_key) + bytes_len(primary_key),
+        WalOp::KeyGenSet { store, .. } => 1 + varint_len(*store) + 8,
+        WalOp::MetaReplace { bytes } => 1 + bytes_len(bytes),
+    }
 }
 
 fn payload_len(ops: &[WalOp]) -> Result<usize, CodecError> {
@@ -760,6 +821,86 @@ mod tests {
         };
         let err = encode_txn_frames_limited(1, &[op], 8).unwrap_err();
         assert!(matches!(err, CodecError::PayloadTooLarge(_)));
+    }
+
+    /// `op_encoded_len` must stay byte-exact with serialization for every
+    /// variant across varint boundaries (0/1/127/128/300 lengths, ids
+    /// 0/1/127/128/16384): the single-pass packer relies on it.
+    #[test]
+    fn op_encoded_len_matches_serialization() {
+        let blob = |n: usize| vec![0xabu8; n];
+        let mut ops = Vec::new();
+        for len in [0, 1, 127, 128, 300] {
+            for id in [0u64, 1, 127, 128, 16384] {
+                ops.push(WalOp::Put {
+                    store: id,
+                    key: blob(len),
+                    value: blob(len),
+                });
+                ops.push(WalOp::Delete {
+                    store: id,
+                    key: blob(len),
+                });
+                ops.push(WalOp::Clear { store: id });
+                ops.push(WalOp::IndexPut {
+                    index: id,
+                    idx_key: blob(len),
+                    primary_key: blob(len),
+                });
+                ops.push(WalOp::IndexDelete {
+                    index: id,
+                    idx_key: blob(len),
+                    primary_key: blob(len),
+                });
+                ops.push(WalOp::KeyGenSet {
+                    store: id,
+                    value_bits: u64::MAX,
+                });
+                ops.push(WalOp::MetaReplace { bytes: blob(len) });
+            }
+        }
+        assert_eq!(ops.len(), 5 * 5 * 7);
+        for op in &ops {
+            // Single-op payload = one-byte count prefix + op bytes.
+            assert_eq!(
+                payload_len(std::slice::from_ref(op)).unwrap(),
+                op_encoded_len(op) + 1,
+                "length mismatch for {op:?}"
+            );
+        }
+    }
+
+    /// Packing invariants under a forcing limit: every frame fits, flags
+    /// chain correctly, and decoded ops preserve input order exactly.
+    #[test]
+    fn packing_respects_limit_and_preserves_order() {
+        let ops: Vec<WalOp> = (0..500u64)
+            .map(|i| WalOp::Put {
+                store: 1,
+                key: i.to_le_bytes().to_vec(),
+                value: vec![i as u8; 200],
+            })
+            .collect();
+        let max = 4096u32;
+        let frames = encode_txn_frames_limited(7, &ops, max).unwrap();
+        assert!(frames.len() > 1, "limit must force several frames");
+        let mut decoded = Vec::new();
+        for (i, bytes) in frames.iter().enumerate() {
+            let (frame, n) = decode_frame(bytes).unwrap().unwrap();
+            assert_eq!(n, bytes.len());
+            assert_eq!(frame.txn_seq, 7);
+            if i + 1 == frames.len() {
+                assert_eq!(frame.flags, FLAG_COMMIT);
+            } else {
+                assert_eq!(frame.flags, FLAG_CONTINUES);
+            }
+            assert!(
+                payload_len(&frame.ops).unwrap() <= max as usize,
+                "frame payload exceeds the limit"
+            );
+            decoded.extend(frame.ops);
+        }
+        assert_eq!(decoded, ops, "op order and content preserved");
     }
 
     proptest! {

@@ -35,7 +35,12 @@ impl Database for MemoryDatabase {
 
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities {
-            snapshot_isolation: true,
+            // Cursors re-read committed state per step (lazy, O(1) memory),
+            // so a concurrent commit mid-walk is visible. The L1 driver
+            // never branches on this flag and walks backend cursors
+            // synchronously, so no in-tree flow can observe a torn walk;
+            // same-transaction writes stay visible via the pending overlay.
+            snapshot_isolation: false,
             durable: false,
             concurrent: true,
             max_key_size: None,

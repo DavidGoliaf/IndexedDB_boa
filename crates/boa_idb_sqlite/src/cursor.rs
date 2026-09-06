@@ -69,12 +69,12 @@ enum CursorKind {
     },
 }
 
-/// SQLite-backed cursor with lazy paged fetching.
+/// SQLite-backed cursor with lazy keyset-paged fetching.
 pub struct SqliteCursor<'a> {
     conn: Option<&'a Connection>,
     kind: CursorKind,
     range: EncodedRange,
-    /// Active seek target (adds predicates on re-query).
+    /// Active seek target (adds predicates on the first page only).
     seek_key: Option<Vec<u8>>,
     seek_pkey: Option<Vec<u8>>,
     order_desc: bool,
@@ -86,6 +86,21 @@ pub struct SqliteCursor<'a> {
     /// Absolute position.
     pos: u64,
     exhausted: bool,
+    /// Keyset anchor: value of the last represented row (buffered or
+    /// drained) for resume. `None` until the first page is fetched.
+    ///
+    /// Replaces `OFFSET` (M7-B H-F2): SQLite re-walks absolute offsets on
+    /// every page, making full scans quadratic. Resuming inclusively at the
+    /// anchor costs one bounded index range scan per page.
+    anchor_key: Option<Vec<u8>>,
+    anchor_pkey: Option<Vec<u8>>,
+    /// Rows equal to the anchor already represented (buffered or consumed).
+    ///
+    /// The inclusive resume predicate re-reads the anchor group from its
+    /// first occurrence, so exactly this many leading rows are already known
+    /// and must be skipped. Bounded by the duplicate-group size, not by the
+    /// scan position: memory stays O(1) in the range size.
+    anchor_eq: usize,
 }
 
 /// Cursor shape selector for [`SqliteCursor::debug_sql_with_literals`].
@@ -116,6 +131,9 @@ impl<'a> SqliteCursor<'a> {
             buf_start: 0,
             pos: 0,
             exhausted: true,
+            anchor_key: None,
+            anchor_pkey: None,
+            anchor_eq: 0,
         }
     }
 
@@ -141,6 +159,9 @@ impl<'a> SqliteCursor<'a> {
             buf_start: 0,
             pos: 0,
             exhausted: false,
+            anchor_key: None,
+            anchor_pkey: None,
+            anchor_eq: 0,
         }
     }
 
@@ -171,6 +192,9 @@ impl<'a> SqliteCursor<'a> {
             buf_start: 0,
             pos: 0,
             exhausted: false,
+            anchor_key: None,
+            anchor_pkey: None,
+            anchor_eq: 0,
         }
     }
 
@@ -178,7 +202,8 @@ impl<'a> SqliteCursor<'a> {
     ///
     /// Test hook (`#[doc(hidden)]`): lets EXPLAIN tests run the *exact*
     /// query shape the cursor executes, with bound values inlined as `X'..'`
-    /// literals and a fixed `LIMIT/OFFSET`. Shares [`Self::build_query`].
+    /// literals. Shares [`Self::build_query`]; `anchor` selects the paged
+    /// resume shape so the planner is checked for follow-up pages too.
     #[doc(hidden)]
     pub fn debug_sql_with_literals(
         kind: CursorKindRepr,
@@ -186,6 +211,7 @@ impl<'a> SqliteCursor<'a> {
         dir: Direction,
         key_only: bool,
         seek: Option<(Vec<u8>, Option<Vec<u8>>)>,
+        anchor: Option<(&[u8], &[u8])>,
     ) -> String {
         let cursor = SqliteCursor {
             conn: None,
@@ -212,12 +238,75 @@ impl<'a> SqliteCursor<'a> {
             buf_start: 0,
             pos: 0,
             exhausted: false,
+            anchor_key: None,
+            anchor_pkey: None,
+            anchor_eq: 0,
         };
-        let (sql, params) = cursor.build_query(0);
+        let (sql, params) = cursor.build_query(anchor);
         inline_literals(sql, &params)
     }
 
-    fn build_query(&self, offset: i64) -> (String, Vec<BoundParam>) {
+    /// Builds the paged resume SQL with `?` placeholders intact.
+    ///
+    /// Test hook (`#[doc(hidden)]`): literal inlining shows the
+    /// constant-folded plan, but production prepares placeholders — and an
+    /// `OR` resume that seeks with literals plans a bare `store_id` search
+    /// with bound parameters (M7-B H-F2). Tests prepare `EXPLAIN QUERY PLAN`
+    /// over this exact string with dummy bindings to check the generic plan
+    /// seeks.
+    #[doc(hidden)]
+    pub fn debug_paged_sql(
+        kind: CursorKindRepr,
+        range: &EncodedRange,
+        dir: Direction,
+        key_only: bool,
+        anchor: (&[u8], &[u8]),
+    ) -> String {
+        let cursor = SqliteCursor {
+            conn: None,
+            kind: match kind {
+                CursorKindRepr::Store => CursorKind::Store { store_id: 1 },
+                CursorKindRepr::IndexUnique => CursorKind::Index {
+                    store_id: 1,
+                    index_id: 1,
+                    unique: true,
+                },
+                CursorKindRepr::IndexPlain => CursorKind::Index {
+                    store_id: 1,
+                    index_id: 1,
+                    unique: false,
+                },
+            },
+            range: range.clone(),
+            seek_key: None,
+            seek_pkey: None,
+            order_desc: dir.is_prev(),
+            key_only,
+            blob_manager: None,
+            buffer: Vec::new(),
+            buf_start: 0,
+            pos: 0,
+            exhausted: false,
+            anchor_key: None,
+            anchor_pkey: None,
+            anchor_eq: 0,
+        };
+        let (sql, _) = cursor.build_query(Some(anchor));
+        sql
+    }
+
+    /// Builds the paged cursor query.
+    ///
+    /// `anchor` resumes after the last represented row (keyset pagination).
+    /// The resume predicate is deliberately `OR`-free: with bound parameters
+    /// SQLite cannot turn an `OR` into a range seek (it plans a bare
+    /// `store_id` search and filters from the start — quadratic again).
+    /// Stores use a single-column range (keys are unique), plain indexes a
+    /// row-value range, grouped-unique shapes resume strictly after the
+    /// group key. Inclusive resumes re-read the anchor; the caller skips the
+    /// already-represented prefix. With no anchor the seek predicates select
+    /// the first page. Pages always end at `LIMIT`; there is no `OFFSET`.
+    fn build_query(&self, anchor: Option<(&[u8], &[u8])>) -> (String, Vec<BoundParam>) {
         let order = if self.order_desc { "DESC" } else { "ASC" };
         let mut params: Vec<BoundParam> = Vec::new();
         let sql = match self.kind {
@@ -230,17 +319,15 @@ impl<'a> SqliteCursor<'a> {
                 let mut sql = format!("SELECT {cols} FROM records WHERE store_id = ?");
                 params.push(BoundParam::Int(store_id as i64));
                 append_range(&mut sql, "key", &self.range, &mut params);
-                append_seek(
+                append_resume_store(
                     &mut sql,
-                    "key",
-                    "key",
                     self.order_desc,
                     self.seek_key.as_ref().map(|k| (k, self.seek_pkey.as_ref())),
+                    anchor.map(|(k, _)| k),
                     &mut params,
                 );
-                sql.push_str(&format!(" ORDER BY key {order} LIMIT ? OFFSET ?"));
+                sql.push_str(&format!(" ORDER BY key {order} LIMIT ?"));
                 params.push(BoundParam::Int(PAGE_SIZE));
-                params.push(BoundParam::Int(offset));
                 sql
             }
             CursorKind::Index {
@@ -260,18 +347,18 @@ impl<'a> SqliteCursor<'a> {
                     );
                     params.push(BoundParam::Int(index_id as i64));
                     append_range(&mut sql, "ir.key", &self.range, &mut params);
-                    append_seek_grouped(
+                    append_resume_grouped(
                         &mut sql,
                         self.order_desc,
                         self.seek_key.as_ref(),
+                        anchor.map(|(k, _)| k),
                         &mut params,
                     );
                     sql.push_str(" GROUP BY ir.key) g");
                     sql.push_str(" JOIN records r ON r.store_id = ? AND r.key = g.pkey");
                     params.push(BoundParam::Int(store_id as i64));
-                    sql.push_str(&format!(" ORDER BY g.key {order} LIMIT ? OFFSET ?"));
+                    sql.push_str(&format!(" ORDER BY g.key {order} LIMIT ?"));
                     params.push(BoundParam::Int(PAGE_SIZE));
-                    params.push(BoundParam::Int(offset));
                     sql
                 } else {
                     let cols = if self.key_only {
@@ -289,19 +376,17 @@ impl<'a> SqliteCursor<'a> {
                     params.push(BoundParam::Int(store_id as i64));
                     params.push(BoundParam::Int(index_id as i64));
                     append_range(&mut sql, "ir.key", &self.range, &mut params);
-                    append_seek(
+                    append_resume_index(
                         &mut sql,
-                        "ir.key",
-                        "ir.pkey",
                         self.order_desc,
                         self.seek_key.as_ref().map(|k| (k, self.seek_pkey.as_ref())),
+                        anchor,
                         &mut params,
                     );
                     sql.push_str(&format!(
-                        " ORDER BY ir.key {order}, ir.pkey {order} LIMIT ? OFFSET ?"
+                        " ORDER BY ir.key {order}, ir.pkey {order} LIMIT ?"
                     ));
                     params.push(BoundParam::Int(PAGE_SIZE));
-                    params.push(BoundParam::Int(offset));
                     sql
                 }
             }
@@ -309,16 +394,50 @@ impl<'a> SqliteCursor<'a> {
         (sql, params)
     }
 
+    /// Records a newly buffered row for keyset resume.
+    ///
+    /// The anchor is always the last represented row and `anchor_eq` counts
+    /// its already-represented duplicates (buffered or drained): drops only
+    /// trim the head, so the tail statistics never need recomputation.
+    fn note_appended(&mut self, key: &[u8], pkey: &[u8]) {
+        let same = self
+            .anchor_key
+            .as_ref()
+            .is_some_and(|k| k.as_slice() == key)
+            && self
+                .anchor_pkey
+                .as_ref()
+                .is_some_and(|p| p.as_slice() == pkey);
+        if same {
+            self.anchor_eq += 1;
+        } else {
+            self.anchor_key = Some(key.to_vec());
+            self.anchor_pkey = Some(pkey.to_vec());
+            self.anchor_eq = 1;
+        }
+    }
+
     /// Fetches the next page at the current buffer end.
     ///
     /// Returns `true` when rows were added. Never fetches past the end
-    /// (empty page sets `exhausted`).
+    /// (empty page sets `exhausted`). Pages resume at the anchor with a
+    /// bounded skip of already-represented duplicates — no `OFFSET`.
     fn fetch_next_page(&mut self) -> Result<bool, BackendError> {
         let Some(conn) = self.conn else {
             return Ok(false);
         };
-        let offset = self.buf_start.saturating_add(self.buffer.len() as u64);
-        let (sql, params) = self.build_query(offset.min(i64::MAX as u64) as i64);
+        let grouped = matches!(self.kind, CursorKind::Index { unique: true, .. });
+        // Owned clone: the fetch loop mutates the anchor via `note_appended`
+        // while still comparing against it (two key-sized vectors per page).
+        let anchor: Option<(Vec<u8>, Vec<u8>)> = match (&self.anchor_key, &self.anchor_pkey) {
+            (Some(k), Some(p)) => Some((k.clone(), p.clone())),
+            _ => None,
+        };
+        let anchor_ref = anchor.as_ref().map(|(k, p)| (k.as_slice(), p.as_slice()));
+        // Grouped shapes resume strictly (no duplicates possible); plain
+        // shapes resume inclusively and skip the represented prefix.
+        let skip = if grouped { 0 } else { self.anchor_eq };
+        let (sql, params) = self.build_query(anchor_ref);
         let boxes: Vec<Box<dyn rusqlite::types::ToSql>> =
             params.iter().map(BoundParam::to_sql).collect();
         let refs: Vec<&dyn rusqlite::types::ToSql> = boxes.iter().map(|b| b.as_ref()).collect();
@@ -336,9 +455,14 @@ impl<'a> SqliteCursor<'a> {
             })
             .map_err(|e| BackendError::Internal(format!("Cursor query failed: {e}")))?;
         let mut added = false;
+        let mut skipped = 0;
         for row in rows {
             let (key, pkey, value, ext) =
                 row.map_err(|e| BackendError::Internal(format!("Cursor row error: {e}")))?;
+            if skipped < skip && anchor_is_equal(anchor_ref, grouped, &key, &pkey) {
+                skipped += 1;
+                continue;
+            }
             // Blob files are NOT read here: external values stay references
             // until the cursor visits their row (see `materialize_current`).
             let value = match (value, ext) {
@@ -346,6 +470,7 @@ impl<'a> SqliteCursor<'a> {
                 (None, Some(rel)) => EntryValue::External(rel, None),
                 (None, None) => EntryValue::None,
             };
+            self.note_appended(&key, &pkey);
             self.buffer.push((key, pkey, value));
             added = true;
         }
@@ -441,11 +566,15 @@ impl<'a> BackendCursor for SqliteCursor<'a> {
             }
         }
         // Re-query from the start: predicates are direction-aware, so the
-        // first page already holds the seek position.
+        // first page already holds the seek position. The keyset anchor is
+        // reset: the narrowed query re-establishes it from its first page.
         self.buffer.clear();
         self.buf_start = 0;
         self.pos = 0;
         self.exhausted = false;
+        self.anchor_key = None;
+        self.anchor_pkey = None;
+        self.anchor_eq = 0;
         if !self.fetch_next_page()? {
             return Ok(false);
         }
@@ -555,6 +684,91 @@ fn append_seek_grouped(
         let cmp = if desc { "<=" } else { ">=" };
         sql.push_str(&format!(" AND ir.key {cmp} ?"));
         params.push(BoundParam::Blob(target.clone()));
+    }
+}
+
+/// Appends the resume predicate for store shapes: the keyset anchor when
+/// paging, the seek predicates for the first page. Exactly one of the two
+/// applies: the anchor always dominates the seek position (pages advance
+/// monotonically from it), so emitting both would only duplicate parameters.
+///
+/// Single-column range: store keys are unique, so inclusivity plus the
+/// caller-side skip is exact. Crucially there is no `OR`: an `OR` resume
+/// plans a bare `store_id` search with bound parameters (verified by
+/// experiment) and reintroduces the quadratic cliff.
+#[allow(clippy::too_many_arguments)]
+fn append_resume_store(
+    sql: &mut String,
+    desc: bool,
+    seek: Option<(&Vec<u8>, Option<&Vec<u8>>)>,
+    anchor_key: Option<&[u8]>,
+    params: &mut Vec<BoundParam>,
+) {
+    if let Some(key) = anchor_key {
+        let cmp = if desc { "<=" } else { ">=" };
+        sql.push_str(&format!(" AND key {cmp} ?"));
+        params.push(BoundParam::Blob(key.to_vec()));
+        return;
+    }
+    append_seek(sql, "key", "key", desc, seek, params);
+}
+
+/// Appends the resume predicate for plain index shapes: the keyset anchor
+/// as a row-value range when paging, the seek predicates for the first page.
+///
+/// Row values `(ir.key, ir.pkey) >= (?, ?)` keep the multi-column range seek
+/// with bound parameters, where an `OR` pair predicate would not (same
+/// cliff as stores). The caller skips the re-read anchor prefix.
+#[allow(clippy::too_many_arguments)]
+fn append_resume_index(
+    sql: &mut String,
+    desc: bool,
+    seek: Option<(&Vec<u8>, Option<&Vec<u8>>)>,
+    anchor: Option<(&[u8], &[u8])>,
+    params: &mut Vec<BoundParam>,
+) {
+    if let Some((anchor_key, anchor_pkey)) = anchor {
+        let cmp = if desc { "<=" } else { ">=" };
+        sql.push_str(&format!(" AND (ir.key, ir.pkey) {cmp} (?, ?)"));
+        params.push(BoundParam::Blob(anchor_key.to_vec()));
+        params.push(BoundParam::Blob(anchor_pkey.to_vec()));
+        return;
+    }
+    append_seek(sql, "ir.key", "ir.pkey", desc, seek, params);
+}
+
+/// Appends the resume predicate for grouped unique queries (group key only).
+fn append_resume_grouped(
+    sql: &mut String,
+    desc: bool,
+    seek_key: Option<&Vec<u8>>,
+    anchor_key: Option<&[u8]>,
+    params: &mut Vec<BoundParam>,
+) {
+    if let Some(key) = anchor_key {
+        // Groups are distinct: resume strictly after the anchor group.
+        let cmp = if desc { "<" } else { ">" };
+        sql.push_str(&format!(" AND ir.key {cmp} ?"));
+        params.push(BoundParam::Blob(key.to_vec()));
+        return;
+    }
+    append_seek_grouped(sql, desc, seek_key, params);
+}
+
+/// Tests whether a fetched row equals the resume anchor (skip check).
+///
+/// Grouped shapes resume strictly, so anchor rows cannot reappear; the check
+/// is belt-and-braces there.
+fn anchor_is_equal(anchor: Option<(&[u8], &[u8])>, grouped: bool, key: &[u8], pkey: &[u8]) -> bool {
+    match anchor {
+        None => false,
+        Some((ak, ap)) => {
+            if grouped {
+                key == ak
+            } else {
+                key == ak && pkey == ap
+            }
+        }
     }
 }
 
