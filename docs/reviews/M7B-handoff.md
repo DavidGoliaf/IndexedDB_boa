@@ -1,4 +1,9 @@
-# Handoff: M7-B — optimizations, memory/reliability gates (in progress)
+# Handoff: M7-B — optimizations, memory/reliability gates (delivery)
+
+> **Status 2026-09-06:** all four acceptance blockers are closed in code
+> with local artifacts. Residual is CI-infrastructure only (labelled
+> runner provisioning + inaugural scheduled runs), wired and dispatchable
+> by the maintainer — see "Residual (maintainer)" below.
 
 Work order: `tasks/09_TASK_M7_PERFORMANCE_RELIABILITY.md` (M7-B half)
 Branch: `task/m7b-optimizations-reliability`
@@ -142,6 +147,30 @@ past the examined key); index arm rewired from the materializing
 Next+Prev and 100k index Next/Prev on memory/SQLite/FS all peak < 1 MiB;
 `differential_model_tests`, backend suites, WPT 482/482 stay green.
 
+## H-DISPATCH (bug find, retrospective rule 10): `dispatchEvent` never fired listeners
+
+*Observation (while writing P1-3 `dispatchEvent` coverage):* the new
+dispatch tests did nothing — no listener ran, no error. Root cause:
+`dom/dispatch.rs::invoke_listeners` read listeners only from
+`EventTargetData`, but IDB objects (`IdBRequest`, `IdBTransaction`,
+`IdBDatabase`) carry their listeners in their OWN native data (see
+`with_listeners_mut`, whose docs already say dispatch "must go through
+this dispatcher"). The driver's own flows (`dispatch_request`,
+`dispatch_target`) use the snapshot dispatcher and were unaffected —
+only the JS `dispatchEvent` method was dead.
+*Fix (minimal, mirrors the driver):* new
+`snapshot_listeners_full(obj, type) -> (id, callback, capture, once)`
+reusing `with_listeners_mut`; `invoke_listeners` filters by phase,
+removes `once` registrations by id before invoking (duplicates are
+rejected at add time, so id-removal ≡ the old callback-removal),
+otherwise unchanged (callable → call, `handleEvent` objects → call,
+throw propagates). `on*` attribute handlers via `dispatchEvent` remain
+out of scope (unchanged behavior, noted as follow-up).
+*Outcome:* 6 dispatch tests pin capture/bubble/at-target order, `once`,
+`handleEvent`, throwing listeners, `stop[I]Propagation`,
+`preventDefault`, non-bubbling, and both TypeError arms. Full workspace
+suite stays green (no test relied on the broken behavior).
+
 ## H-FS-OPEN (gate scope, not a product change)
 
 *Observation:* after the FS lazy cursor landed, the walk still peaked at
@@ -188,17 +217,33 @@ removed after use; none ship.
 
 ### Coverage / fuzz / nightly evidence
 
-- `cargo llvm-cov` full command (tests + 3 WPT runs, `--no-clean`
-  accumulation): core **80.5 %**, boa_idb **75.5 %** lines.
-- Nightly `nightly-m7.yml`: coverage ratchet (core 78 / boa_idb 73) +
-  LCOV artifact; full suite with 10k/long-lifecycle knobs; massif RSS gate
-  (512 MiB) on lifecycle+overhead; 5 fuzz targets × 48 min (≈4 h).
-  First-run evidence pending inaugural nightly (fuzz targets compile;
-  local `cargo-fuzz` link needs the Linux ASan runtime).
-- Ratchet, not TZ absolutes: gap analysis recorded (dead
-  `engine::{connection,cursor,registry,transaction,request}` modules with
-  zero references, API edge branches); no broad ignores; removal proposed
-  as follow-up debt, not done here.
+- Official-equivalent command (chunked locally, same accumulation as the
+  nightly job: workspace lib+bins+tests+examples, then 3 WPT backend runs):
+  core **90.37 %** (2336/2585), boa_idb **80.52 %** (7225/8973) — TZ §13.2
+  absolutes met. WPT 482/482 ×3 in the same runs.
+- Drive: `engine_units_tests` (196 engine lines: connection/transaction/
+  registry/request/CoreCursor-with-fake + capabilities/error conversions),
+  `clone_units_tests` (tag roundtrips, to_key/from_key arms, malformed
+  decode, varint edges), `key_units_tests` (utf16 ops, validate, ordering),
+  `dom_api_tests` (24 JS-scenario + Rust-unit tests: dispatch matrix,
+  string lists, records, versionchange, exceptions, key ranges, api error
+  arms, index/cursor/txn/db/factory arms), in-crate observer units
+  (classify/error_name/mode names/time helpers/defaults). No broad
+  `#[cfg(coverage)]`/`#[ignore]`/exclusions; uncoverable const-eval
+  (`crc32c` table) compensated elsewhere, documented here.
+- Nightly `nightly-m7.yml`: the ratchet is now the **absolute threshold
+  gate** (core 90 / boa_idb 80) AND its JSON-schema bug is fixed
+  (`data["files"]` → `data["data"][0]["files"]` — the old script crashed
+  with KeyError instead of gating). Gate logic verified locally against
+  `cov-final.json` (90.4/80.5 PASS).
+- Nightly `cursor-matrix-1m` + local inaugural evidence
+  `docs/reviews/RECEIPT-MATRIX-1M-20260906.md`: 12/12 PASS at 10^6
+  (memory ~1 KiB, FS ~1 KiB, SQLite ~237 KiB peaks).
+- Fuzz: 5 targets compile (`cargo check --manifest-path fuzz/Cargo.toml`);
+  4 h evidence needs Linux nightly (Windows ASan link fails) — inaugural
+  run pending (dispatch below).
+- Massif RSS gate: wired in nightly; needs Linux/valgrind — inaugural run
+  pending (dispatch below).
 - P1-1 (dhat, ADR-014): the hand-rolled `GlobalAlloc` shim is gone —
   `memory_gates_tests.rs` uses `dhat::Alloc` + per-window `Profiler`;
   zero `unsafe` in the test file and in all production crates
@@ -218,24 +263,33 @@ removed after use; none ship.
 
 ### Traceability deltas
 
-R12.1 PARTIAL (fixes + receipts; labelled-host comparison pending), R12.2
-PASS (store 1M/1M/200k Next+Prev + index Next/Prev all backends peak <
-1 MiB; FS/index at smoke scale in PR, 1M evidence via nightly
-`cursor-matrix-1m`), R12.3 PASS, R13.1 PASS (fuzz evidence pending),
-R13.2 PARTIAL (ratchet + actuals), R13.4.1 PASS, R13.6 PASS. Full matrix in
-`docs/traceability.md`.
+R12.1 PARTIAL (fixes + receipts + blocking-gate harness + interim
+baseline + `bench-regression.yml`; enforcement needs the labelled
+runner), R12.2 PASS (store/index × Next/Prev × all backends at 10^6 with
+local receipts + nightly job), R12.3 PASS, R13.1 PARTIAL (all levels
+wired; 4 h fuzz evidence pending inaugural Linux run), R13.2 PASS
+(90.37/80.52 + enforcing absolute gate), R13.4.1 PASS, R13.6 PASS. Full
+matrix in `docs/traceability.md`.
 
-### Remaining debt (not M7-B scope)
+### Residual (maintainer — CI infrastructure only, no code)
 
-1. Coverage-drive to 90/80 (dead-engine removal proposal + API edge tests).
-2. Labelled benchmark host with blocking >10 % gate.
-3. JS dispatch batching follow-up (F3 remainder is Boa mechanics).
-4. Inaugural nightly evidence (fuzz 4 h, massif, ratchet green, 1M cursor
-   matrix) — dispatch: `gh workflow run nightly-m7.yml --ref
-   task/m7b-optimizations-reliability`.
-5. Stream FS WAL replay (H-FS-OPEN follow-up): decode → apply → drop per
-   frame to cut open-time transient.
-6. `docs/reviews/M6-review.md` left untracked (M6 material, not mine).
+1. Provision the labelled Linux x64 runner (labels `self-hosted`,
+   `bench`; pinned image, quiet, stable toolchain), re-baseline
+   (`BOA_IDB_BASELINE_ROLE=labelled python3 scripts/bench_compare.py
+   write --baseline ...`), commit, add `bench-regression` to required
+   checks. Procedure: `crates/boa_idb/benches/baselines/README.md`.
+2. Dispatch inaugural scheduled runs and file the run URLs here:
+   `gh workflow run nightly-m7.yml --ref
+   task/m7b-optimizations-reliability` (coverage gate, 1M cursor matrix,
+   massif, 4 h fuzz), `gh workflow run bench-regression.yml --ref ...`
+   (after step 1). No `gh` on the dev host; use the Actions UI or any
+   authenticated shell.
+3. Coverage-drive follow-ups (not blockers): dead-`engine`-module removal
+   proposal (now tested instead of removed — deletion is a breaking API
+   change, needs its own review), `crc32c` const-table compensation note
+   above.
+4. Stream FS WAL replay (H-FS-OPEN follow-up).
+5. `docs/reviews/M6-review.md` left untracked (M6 material, not mine).
 
 ### Verification (all green, this tree)
 
@@ -244,11 +298,12 @@ R13.2 PARTIAL (ratchet + actuals), R13.4.1 PASS, R13.6 PASS. Full matrix in
 `cargo test -p boa_idb --features tracing --test observer_tests`,
 `upgrade_observer_tests`, `RUSTDOCFLAGS="-D warnings" cargo doc
 --workspace --no-deps`, `cargo deny check` with
-`CARGO_DENY_DB_PATH=target/cargo-deny-advisories` (advisories/bans/
-licenses/sources ok — the env var is set by CI; without it the config
-fails validation, which is environmental, not a dependency verdict),
-WPT 482/482 on memory/SQLite/FS, smoke bench. `unsafe` audit: zero
-`unsafe` in `crates/` and in `memory_gates_tests.rs` (dhat replaced the
-shim; P1-1 done). No deviations without agreement; no new production
-dependencies (dhat/criterion are dev-only with ADR-013/ADR-014 entries).
+`CARGO_DENY_DB_PATH=target/cargo-deny-advisories` (all ok),
+WPT 482/482 on memory/SQLite/FS (×3, inside the coverage runs),
+`cargo check --manifest-path fuzz/Cargo.toml`, full 1M cursor matrix
+(release, 12/12 with receipts), criterion reference bench + working
+`bench_compare.py compare` (fires correctly; interim baseline marked).
+`unsafe` audit: zero `unsafe` in `crates/` and in test files (dhat
+replaced the shim; P1-1 done). No new production dependencies
+(dhat/criterion are dev-only with ADR-013/ADR-014 entries).
 (criterion/fuzz deps are dev-only; no ADR needed beyond ADR-013).

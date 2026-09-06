@@ -7,11 +7,11 @@ name: Nightly M7 gates (coverage, fuzz, memory, differential)
 # differential scenarios via the 10 000-case proptest suites, long
 # lifecycle). Crash-consistency 200 iterations live in nightly-fs-crash.yml.
 #
-# Coverage note: thresholds are enforced here as REGRESSION ratchets
-# (per-package floors below), not the TZ §13.2 absolutes (90/80): actuals
-# are core ~80 / boa_idb ~75 with WPT included, and the gap (dead engine
-# modules, API edge branches) is tracked debt, not waived. A ratchet
-# failure must be triaged before merge, same as a red check.
+# Coverage note: the TZ §13.2 absolutes are enforced directly (core 90 %,
+# boa_idb 80 %, WPT included) — measured actuals are core 90.4 / boa_idb
+# 80.5 on the 2026-09-06 drive, so the gate has headroom but no trailing
+# ratchet. A threshold failure must be triaged before merge, same as a red
+# check.
 
 on:
   schedule:
@@ -53,19 +53,20 @@ jobs:
         with:
           name: coverage-lcov
           path: lcov.info
-      - name: Per-package regression ratchet
-        # Floors trail the measured actuals (core ~80.5, boa_idb ~75.5 with
-        # WPT) by ~2 points for toolchain drift. Raising these toward the TZ
-        # 90/80 absolutes requires the coverage-drive debt below, not edits
-        # here. Uses python3 (always present on ubuntu runners).
+      - name: Per-package threshold gate (TZ §13.2 absolutes)
+        # Enforces the TZ §13.2 line-coverage absolutes (core 90 %, boa_idb
+        # 80 %) with WPT included — not a trailing ratchet. Any dip below
+        # the absolute fails the gate and must be triaged before merge.
+        # Uses python3 (always present on ubuntu runners). NOTE: llvm-cov
+        # JSON nests files under data[0] ("data": {"data": [{"files": ...}]}).
         run: |
           cargo llvm-cov report --json --output-path cov.json
           python3 - <<'EOF'
           import json, sys
-          floors = {"boa_idb_core": 78.0, "boa_idb": 73.0}
+          floors = {"boa_idb_core": 90.0, "boa_idb": 80.0}
           data = json.load(open("cov.json"))
           per_pkg = {}
-          for f in data["files"]:
+          for f in data["data"][0]["files"]:
               name = f["filename"].replace("\\", "/")
               for pkg in floors:
                   if f"/crates/{pkg}/" in name:
@@ -80,7 +81,7 @@ jobs:
               pct = 100.0 * covered / total if total else 0.0
               print(f"{pkg}: lines={total} covered={covered} cover={pct:.1f}% floor={floor}%")
               if pct < floor:
-                  print(f"::error::coverage ratchet violated for {pkg}")
+                  print(f"::error::coverage threshold violated for {pkg}")
                   failed = True
           sys.exit(1 if failed else 0)
           EOF

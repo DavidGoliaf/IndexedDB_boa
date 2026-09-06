@@ -1,0 +1,44 @@
+name: Bench regression gate (>10% vs labelled baseline)
+
+# BLOCKING performance gate (M7-B P1-5): fails the check when any criterion
+# scenario regresses more than 10% against the checked-in labelled-host
+# baseline. Runs ONLY on the pinned self-hosted runner (labels:
+# self-hosted, bench) — heterogeneous runners must never enforce or quote
+# these numbers (see crates/boa_idb/benches/baselines/README.md).
+#
+# Until the labelled runner is provisioned this workflow runs on schedule /
+# manually and reports; once the runner exists, repo admins add
+# `bench-regression` to the required-checks list so it blocks merges.
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench-regression:
+    runs-on: [self-hosted, bench]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-benchreg-${{ hashFiles('**/Cargo.lock') }}
+      - name: Compare against labelled baseline (blocking)
+        run: >
+          python3 scripts/bench_compare.py compare
+          --baseline crates/boa_idb/benches/baselines/m7b-label-ref.json
+          2>&1 | tee bench-compare.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-compare-log
+          path: bench-compare.log
