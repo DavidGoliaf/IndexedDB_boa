@@ -16,7 +16,7 @@ name: Nightly M7 gates (coverage, fuzz, memory, differential)
 on:
   schedule:
     - cron: "37 4 * * *"
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 env:
   CARGO_TERM_COLOR: always
