@@ -38,9 +38,11 @@ M7 документально, либо честно зафиксировать 
 1. Provision выделенного Linux x64 self-hosted runner с labels
    `self-hosted`, `bench`: стабильная OS image, CPU governor, storage,
    toolchain, без co-tenants, с разумным benchmark timeout.
-2. В защищённой runner/repository/environment configuration задать
-   `BOA_IDB_BENCH_HOST_ID`. Его не добавлять в workflow YAML, baseline из PR
-   или обычный repo file. Это inventory ID, не runner registration token.
+2. В защищённой runner/repository/environment configuration задать значение
+   `BOA_IDB_BENCH_HOST_ID`. Его нельзя вручную задавать в workflow YAML,
+   PR или обычном repo file. Generated на защищённом runner labelled
+   baseline хранит этот не-секретный `host_id` только для сверки identity.
+   Это inventory ID, не runner registration token.
 3. Добавить GitHub required check `bench-regression` для PR в `main` после
    успешного первого run. Сохранить URL настройки/check и PR run URL.
 4. Обеспечить GitHub Actions права на artifacts и cache. Runner token,
