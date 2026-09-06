@@ -92,8 +92,10 @@ comes from the runner's protected configuration, never from workflow YAML.
 
 ## 5. Inaugural nightly evidence (§4)
 
-**Not available — EXTERNAL BLOCKER.** No `gh` CLI on the dev host; no
-workflow was dispatched from here. Workflows are wired and reviewed:
+**Partially available.** `nightly-fs-crash` inaugural run is green
+(see table: run `34050249898`); `nightly-m7.yml` inaugural run still
+pending. No `gh` CLI on the dev host; dispatch was done by the owner.
+Workflows are wired and reviewed:
 
 | Job (`nightly-m7.yml` / `nightly-fs-crash.yml`) | Required evidence | Status |
 |---|---|---|
@@ -102,7 +104,7 @@ workflow was dispatched from here. Workflows are wired and reviewed:
 | `cursor-matrix-1m` | `matrix-1m.log`, `receipt-matrix-1m.txt`, 12 combos at 1M | BLOCKED (local inaugural: `RECEIPT-MATRIX-1M-20260906.md`, 12/12) |
 | `memory-massif` | `massif.out`, Valgrind version, peak + gate result | BLOCKED (needs Linux/valgrind) |
 | `fuzz` (5 targets × 48 min, ≥4 h total) | final stats, corpus/cache identity, crash artifacts + replay | BLOCKED (targets compile: `cargo check --manifest-path fuzz/Cargo.toml` exit 0; ASan link needs Linux) |
-| `nightly-fs-crash` (`BOA_IDB_FS_CRASH_ITERS=200`) | run URL/ID, seed/replay, green M6 fault matrix | BLOCKED |
+| `nightly-fs-crash` (`BOA_IDB_FS_CRASH_ITERS=200`) | run URL/ID, seed/replay, green M6 fault matrix | **PASS (CI)** — run `34050249898` 2026-09-06, `workflow_dispatch` on `task/m7c-ci-evidence-final` @ `5f21831`: `crash-consistency (ubuntu-latest)` success (43 s step) + `crash-consistency (windows-latest)` success; seed `0xC0FFEE`, command `BOA_IDB_FS_CRASH_ITERS=200 BOA_IDB_FS_CRASH_SEED=0xC0FFEE cargo test -p boa_idb_fs --test m6b3_crash_tests -- --nocapture` per `.github/workflows/nightly-fs-crash.yml`. Run: https://github.com/DavidGoliaf/IndexedDB_boa/actions/runs/34050249898 |
 
 Dispatch (owner with Actions access):
 
