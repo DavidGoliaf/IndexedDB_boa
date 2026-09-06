@@ -482,7 +482,14 @@ fn encode_op(out: &mut Vec<u8>, op: &WalOp) -> Result<(), CodecError> {
 fn decode_ops(mut payload: &[u8]) -> Result<Vec<WalOp>, CodecError> {
     let (count, rest) = read_varint(payload)?;
     payload = rest;
-    let mut ops = Vec::with_capacity(count as usize);
+    // Never pre-allocate from the untrusted count: a one-byte varint can
+    // claim up to u64::MAX ops and `Vec::with_capacity` would abort (OOM)
+    // before the loop proves the payload too short. Grow incrementally
+    // instead (amortized, bounded by the actual payload length).
+    //
+    // M7-C: found by the inaugural `fuzz_wal_recovery` CI run (2026-09-06),
+    // which produced a crashing input within ~90 s.
+    let mut ops = Vec::new();
     for _ in 0..count {
         if payload.is_empty() {
             return Err(CodecError::Malformed("truncated ops"));
@@ -909,5 +916,41 @@ mod tests {
             let _ = recover_committed_frames(&bytes);
             let _ = decode_frame(&bytes);
         }
+    }
+
+    /// A huge op count must not pre-allocate: the frame below claims
+    /// u64::MAX ops in a valid-CRC 10-byte payload (one OP_CLEAR + trailing
+    /// junk). Decode must return `Malformed`, not abort on OOM.
+    ///
+    /// Regression for the inaugural `fuzz_wal_recovery` CI crash
+    /// (2026-09-06): `decode_ops` did `Vec::with_capacity(count)`.
+    #[test]
+    fn huge_op_count_does_not_preallocate() {
+        let mut payload = Vec::new();
+        write_varint(&mut payload, u64::MAX);
+        payload.push(OP_CLEAR);
+        payload.push(1);
+        let frame = WalFrame {
+            txn_seq: 1,
+            flags: FLAG_COMMIT,
+            ops: vec![WalOp::Clear { store: 1 }],
+        };
+        let mut bytes = Vec::with_capacity(4 + 4 + 8 + 1 + payload.len() + 4);
+        bytes.extend_from_slice(&WAL_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&frame.txn_seq.to_le_bytes());
+        bytes.push(frame.flags);
+        bytes.extend_from_slice(&payload);
+        let crc = crc32c(&bytes);
+        bytes.extend_from_slice(&crc.to_le_bytes());
+        let err = decode_frame(&bytes).expect_err("u64::MAX ops cannot decode");
+        assert!(
+            matches!(err, CodecError::Malformed(_)),
+            "must be Malformed, got {err:?}"
+        );
+        let recovered = recover_committed_frames(&bytes);
+        assert!(recovered.frames.is_empty());
+        assert_eq!(recovered.valid_prefix_len, 0);
+        let _ = frame;
     }
 }
