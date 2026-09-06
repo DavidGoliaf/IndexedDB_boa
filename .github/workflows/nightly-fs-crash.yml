@@ -3,7 +3,7 @@ name: Nightly FS crash consistency
 on:
   schedule:
     - cron: "17 3 * * *"
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 jobs:
   crash-consistency:
