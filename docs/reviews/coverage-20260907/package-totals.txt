@@ -1,0 +1,2 @@
+boa_idb_core: lines=2585 covered=2329 cover=90.1% floor=90.0%
+boa_idb: lines=8938 covered=7232 cover=80.9% floor=80.0%

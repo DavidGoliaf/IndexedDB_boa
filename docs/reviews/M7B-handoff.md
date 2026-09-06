@@ -1,9 +1,9 @@
-# Handoff: M7-B — optimizations, memory/reliability gates (delivery)
+# Handoff: M7-B — optimizations, memory/reliability gates (REWORK REQUIRED)
 
-> **Status 2026-09-06:** all four acceptance blockers are closed in code
-> with local artifacts. Residual is CI-infrastructure only (labelled
-> runner provisioning + inaugural scheduled runs), wired and dispatchable
-> by the maintainer — see "Residual (maintainer)" below.
+> **Status 2026-09-07 (rework №2):** `REWORK REQUIRED` — all code that can
+> execute on the dev host is green with local artifacts (see evidence
+> table). Two external operations remain and are marked `EXTERNAL
+> BLOCKER` with owner and recheck date; no `PASS` is claimed for them.
 
 Work order: `tasks/09_TASK_M7_PERFORMANCE_RELIABILITY.md` (M7-B half)
 Branch: `task/m7b-optimizations-reliability`
@@ -274,10 +274,14 @@ matrix in `docs/traceability.md`.
 ### Residual (maintainer — CI infrastructure only, no code)
 
 1. Provision the labelled Linux x64 runner (labels `self-hosted`,
-   `bench`; pinned image, quiet, stable toolchain), re-baseline
-   (`BOA_IDB_BASELINE_ROLE=labelled python3 scripts/bench_compare.py
-   write --baseline ...`), commit, add `bench-regression` to required
-   checks. Procedure: `crates/boa_idb/benches/baselines/README.md`.
+   `bench`; pinned image, quiet, stable toolchain), capture the
+   **separate** labelled baseline (never rename/hand-edit the interim
+   file):
+   `BOA_IDB_BASELINE_ROLE=labelled python3 scripts/bench_compare.py write
+   --baseline crates/boa_idb/benches/baselines/m7b-label-baseline.json`,
+   commit, add `bench-regression` to required checks. Procedure:
+   `crates/boa_idb/benches/baselines/README.md`. Until then the PR gate
+   job queues without a runner — `EXTERNAL BLOCKER`, not `PASS`.
 2. Dispatch inaugural scheduled runs and file the run URLs here:
    `gh workflow run nightly-m7.yml --ref
    task/m7b-optimizations-reliability` (coverage gate, 1M cursor matrix,
@@ -306,4 +310,34 @@ WPT 482/482 on memory/SQLite/FS (×3, inside the coverage runs),
 `unsafe` audit: zero `unsafe` in `crates/` and in test files (dhat
 replaced the shim; P1-1 done). No new production dependencies
 (dhat/criterion are dev-only with ADR-013/ADR-014 entries).
-(criterion/fuzz deps are dev-only; no ADR needed beyond ADR-013).
+
+### Evidence table (rework №2 — requirement, commit, command, host, artifact, date, result)
+
+| Requirement | Commit | Command | Host / runner | Artifact / run URL | Date | Result |
+|---|---|---|---|---|---|---|
+| fmt | `ac3284f`+ | `cargo fmt --all -- --check` | Win11/i7-14700K (dev) | local log (exit 0) | 2026-09-07 | PASS |
+| clippy | `ac3284f`+ | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | dev | local log (exit 0) | 2026-09-07 | PASS |
+| unit/integration tests | `ac3284f`+ | `cargo test --workspace` | dev | local log (zero failures) | 2026-09-07 | PASS |
+| WPT ×3 | `ac3284f`+ | `cargo run -p boa_idb_wpt --bin boa-idb-wpt -- --backend <memory\|sqlite\|fs> --summary` | dev | 482/482 ×3 | 2026-09-06/07 | PASS |
+| coverage 90/80 | `ac3284f`+ | chunked-equivalent of nightly `llvm-cov` (suite + 3 WPT), same fail-closed threshold script | dev | `docs/reviews/coverage-20260907/` (cov.json + lcov.info + package-totals: core 90.1, boa_idb 80.9, gate exit 0) | 2026-09-07 | PASS (local) |
+| deny | `ac3284f`+ | `cargo deny check` with `CARGO_DENY_DB_PATH` | dev | `docs/reviews/coverage-20260907/deny-check.log` (all ok; advisory DB `5a0ebed` 2026-09-02, fetch no-op offline) | 2026-09-07 | PASS (cached DB; fresh-fetch note recorded) |
+| 1M cursor matrix | `a184e48` | `BOA_IDB_FULL_MATRIX=1 cargo test --release ...` (store+index) | dev | `docs/reviews/RECEIPT-MATRIX-1M-20260906.md` (12/12) | 2026-09-06 | PASS (local) |
+| bench comparator | HEAD | `python3 scripts/test_bench_compare.py` | dev | 11/11 + CI step in `ci.yml` | 2026-09-07 | PASS |
+| bench interim baseline | HEAD | `bench_compare.py write/compare` | dev | `m7b-label-ref.json` (interim, diagnostic only) | 2026-09-06 | harness validated |
+| labelled PR gate run | — | `bench-regression.yml` on `pull_request` | labelled runner | **no run URL — EXTERNAL BLOCKER** | — | BLOCKED |
+| nightly inaugural (coverage/matrix/massif/fuzz) | — | `nightly-m7.yml` schedule/dispatch | ubuntu-latest | **no run URL — EXTERNAL BLOCKER** | — | BLOCKED |
+
+### External blockers (owner: CI maintainer, recheck: next scheduled nightly + on runner provisioning)
+
+1. **Labelled runner + required PR gate.** The `bench-regression`
+   workflow has a `pull_request` trigger (branches: `main`), publishes
+   the check on the PR SHA by construction, and fail-closes without a
+   labelled baseline — but no self-hosted `bench` runner exists, so the
+   job queues and no PR is actually gated. Owner: CI maintainer.
+   Recheck: after runner provisioning + `m7b-label-baseline.json`
+   capture + required-checks setup.
+2. **Inaugural nightly evidence** (coverage artifact with command/SHA/
+   percentages, 1M cursor-matrix log, massif output, 4 h fuzz stats).
+   Owner: CI maintainer (dispatch `nightly-m7.yml`). Recheck: first
+   scheduled run after merge. Local equivalents are attached (coverage
+   dir, matrix receipt); they do not replace CI artifacts.

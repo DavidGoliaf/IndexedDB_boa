@@ -35,6 +35,8 @@ jobs:
           cargo test -p boa_idb --features tracing --test observer_tests
       - name: Strict documentation (no warnings)
         run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+      - name: Comparator unit tests (bench gate)
+        run: python3 scripts/test_bench_compare.py
   bench-smoke:
     # Diagnostic only: heterogeneous runners must never be quoted as release
     # evidence. The authoritative baseline comparison (blocking >10 %
