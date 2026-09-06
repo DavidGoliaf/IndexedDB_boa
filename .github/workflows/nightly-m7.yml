@@ -41,7 +41,12 @@ jobs:
       - name: Tests under coverage (lib+bins+tests+examples)
         # NOTE: `--doc` is deliberately excluded (unstable in cargo-llvm-cov,
         # issue #2); doctests still run in CI's test job, just unmeasured.
+        # `--examples` is required (not just for coverage of example code):
+        # `cli_tests` shells out to the built `boa-idb-cli` example binary,
+        # which plain `--tests` never builds (M7-C CI failure 2026-09-06).
         run: cargo llvm-cov --workspace --lib --bins --tests --examples --no-report
+      - name: Pre-build example binaries (cli_tests needs boa-idb-cli)
+        run: cargo build --workspace --examples
       - name: WPT under coverage (memory, sqlite, fs)
         run: |
           cargo llvm-cov run --no-clean -p boa_idb_wpt --bin boa-idb-wpt -- --backend memory --summary
@@ -101,7 +106,11 @@ jobs:
       - name: Full suite, nightly knobs (10k proptest scenarios, long lifecycle)
         env:
           BOA_IDB_LONG_LIFECYCLE: 1
-        run: cargo test --workspace
+        run: |
+          # `cli_tests` shells out to the built `boa-idb-cli` example
+          # binary (see the `coverage` job): build examples first.
+          cargo build --workspace --examples
+          cargo test --workspace
 
   cursor-matrix-1m:
     # Normative 1M cursor evidence (M7-B P1-2): store+index x Next/Prev x
