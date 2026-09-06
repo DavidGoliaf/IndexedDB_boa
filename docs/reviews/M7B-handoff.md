@@ -6,6 +6,10 @@
 > single status), P3 (diff hygiene) are closed on this tree with commands
 > below. Two external operations remain and are marked `EXTERNAL
 > BLOCKER` with owner and recheck date; no `PASS` is claimed for them.
+>
+> Final M7 acceptance moved to M7-C: `docs/reviews/M7-handoff.md`
+> (work order `tasks/10_TASK_M7C_CI_EVIDENCE_AND_FINAL_ACCEPTANCE.md`,
+> branch `task/m7c-ci-evidence-final`).
 
 Work order: `tasks/09_TASK_M7_PERFORMANCE_RELIABILITY.md` (M7-B half)
 Branch: `task/m7b-optimizations-reliability`
