@@ -103,7 +103,7 @@ Workflows are wired and reviewed:
 | `differential-and-lifecycle` | 10 000 seeded scenarios + `BOA_IDB_LONG_LIFECYCLE=1` success log | BLOCKED (suites green locally via `cargo test --workspace`) |
 | `cursor-matrix-1m` | `matrix-1m.log`, `receipt-matrix-1m.txt`, 12 combos at 1M | BLOCKED (local inaugural: `RECEIPT-MATRIX-1M-20260906.md`, 12/12) |
 | `memory-massif` | `massif.out`, Valgrind version, peak + gate result | BLOCKED (needs Linux/valgrind) |
-| `fuzz` (5 targets × 48 min, ≥4 h total) | final stats, corpus/cache identity, crash artifacts + replay | BLOCKED (targets compile: `cargo check --manifest-path fuzz/Cargo.toml` exit 0; ASan link needs Linux) |
+| `fuzz` (5 targets × 48 min, ≥4 h total) | final stats, corpus/cache identity, crash artifacts + replay | **MIXED** — inaugural run `34050610807` (`workflow_dispatch` on `task/m7c-ci-evidence-final` @ `c950302`, 2026-09-06): 1 real crash found and fixed (see §5.1); `memory-massif` success, `differential-and-lifecycle` success, `coverage` failed on missing `boa-idb-cli` example build (workflow+test fixed, see §5.2); remaining fuzz jobs were still running at the time of writing — final stats pending rerun. Run: https://github.com/DavidGoliaf/IndexedDB_boa/actions/runs/34050610807 |
 | `nightly-fs-crash` (`BOA_IDB_FS_CRASH_ITERS=200`) | run URL/ID, seed/replay, green M6 fault matrix | **PASS (CI)** — run `34050249898` 2026-09-06, `workflow_dispatch` on `task/m7c-ci-evidence-final` @ `5f21831`: `crash-consistency (ubuntu-latest)` success (43 s step) + `crash-consistency (windows-latest)` success; seed `0xC0FFEE`, command `BOA_IDB_FS_CRASH_ITERS=200 BOA_IDB_FS_CRASH_SEED=0xC0FFEE cargo test -p boa_idb_fs --test m6b3_crash_tests -- --nocapture` per `.github/workflows/nightly-fs-crash.yml`. Run: https://github.com/DavidGoliaf/IndexedDB_boa/actions/runs/34050249898 |
 
 Dispatch (owner with Actions access):
@@ -118,6 +118,76 @@ File the top-level run URL/ID, per-job URLs/IDs, exact commands, and
 artifact names here before flipping any status to PASS. On failure:
 seed + replay command + corpus/artifact. No workflow scope was weakened
 to fit hosted CI.
+
+### 5.1 Fuzz crash finding: WAL `decode_ops` OOM (`fuzz_wal_recovery`)
+
+Inaugural run `34050610807`, job `fuzz (fuzz_wal_recovery)`
+(https://github.com/DavidGoliaf/IndexedDB_boa/actions/runs/34050610807/job/101533428244):
+after ~20.7M execs (~90 s) libFuzzer aborted with
+
+```text
+==4356== ERROR: libFuzzer: out-of-memory (malloc(9863417728))
+SUMMARY: libFuzzer: out-of-memory
+```
+
+Root cause (`crates/boa_idb_fs/src/wal.rs::decode_ops`): the op vector
+was pre-allocated from the untrusted varint count,
+`Vec::with_capacity(count as usize)`. The crashing input (111 bytes,
+valid `IWAL` magic, `len=49`, valid CRC over the frame body) claims
+`count = 154115902` ops. Proof by arithmetic: `154115902 × 64`
+(`size_of::<WalOp>()`) = `9863417728` = the exact `malloc` size in the
+log. No other allocation of that size exists on this path. The fuzzer
+verdict is therefore attributed to this line, not to allocator noise.
+
+Fix (commits `60c3321` on `task/m7c-ci-evidence-final`, cherry-pick
+`66be8f0` on `task/m7b-optimizations-reliability`; production change is
+one line): grow the vector incrementally (`Vec::new()`) — the loop
+already returns `Malformed` on truncated payloads, so peak allocation
+is bounded by the real input length. Regression test
+`wal::tests::huge_op_count_does_not_preallocate` pins a valid-CRC frame
+with `count = u64::MAX` to `Malformed` (no abort). `boa_idb_fs` suite
+green, workspace fmt/clippy/diff-check clean.
+
+Crash evidence: artifact `fuzz-crashes-fuzz_wal_recovery`
+(ID `9994447714`, 315 bytes, expires 2026-12-05) on run `34050610807`;
+file `fuzz_wal_recovery-oom-9f99fc61c67578bb64eff6d8475e23c6d2017813`
+(byte-identical to the base64 input printed in the job log). Local copy:
+`artefacts/fuzz-crashes-fuzz_wal_recovery.zip` (untracked, dev-host
+agreements only — not committed to keep the repo free of fuzzer blobs).
+
+Replay (Linux, fixed code — must exit 0 with `Malformed`; on pre-fix
+code the same input triggers the OOM path under ASan/rss-limit):
+
+```sh
+cd fuzz
+cargo +nightly fuzz run fuzz_wal_recovery ../crash-wal/fuzz_wal_recovery-oom-9f99fc61c67578bb64eff6d8475e23c6d2017813
+```
+
+Limitation, stated explicitly: direct OOM replay on the Windows dev
+host is architecturally impossible — the Windows allocator commits
+lazily (virtual reserve without physical backing, 32+ GB RAM here), so
+both pre- and post-fix code return `Err(unknown op kind)` with exit 0;
+libFuzzer itself cannot link on Windows (no ASan runtime — limitation
+3 in §10). The attribution therefore rests on the malloc-size
+arithmetic above plus the regression test, not on a local abort.
+Rerun after fix: `gh run rerun 34050610807 --failed`.
+
+### 5.2 Coverage job failure: missing `boa-idb-cli` example build
+
+Same run `34050610807`, job `coverage`: `cli_tests` (3/3) failed with
+`boa-idb-cli example binary must exist` — `cargo llvm-cov --...--no-report`
+instruments but never links `--examples`, and the retarget dir
+`target/llvm-cov-target/debug/examples/` stays empty (locally green
+only because `target/debug/examples/boa-idb-cli.exe` was built earlier).
+
+Fix (commits `1c17eb3` / cherry-pick `ba43a6f`, sync `6f6ccd9`/`4d211ac`;
+workflow + test only, no production change): `nightly-m7.yml`
+(`coverage`, `differential-and-lifecycle`) now runs
+`cargo build --workspace --examples` first; `cli_tests.rs` resolution
+extracted into `resolve_cli_exe()` (plain → hashed-sorted → workspace
+fallback; no `read_dir` panic on a missing `examples/` dir) with 4
+unit tests (`cli_tests` 7/7 locally). Rerun after fix: same
+`gh run rerun 34050610807 --failed` (picks up both §§5.1–5.2 fixes).
 
 ## 6. Local quality suite (§6, this tree, 2026-09-07)
 
@@ -148,8 +218,8 @@ CI-dependent item stays PARTIAL.
 | R12.1 | PARTIAL | fixes + receipts + fail-closed comparator shipped; blocking enforcement needs labelled runner + baseline (§4 blocker) |
 | R12.2 | PASS on local evidence | 1M matrix 12/12 with local receipts `RECEIPT-MATRIX-1M-20260906.md`; nightly run URL pending (not claimed) |
 | R12.3 | PASS | tracing spans + observer + CLI covered by tests, CI tracing job present |
-| R13.1 | PARTIAL | all levels wired, locally green; 4 h Linux fuzz evidence pending |
-| R13.1-fuzz | PARTIAL | 5 targets compile; first 4 h evidence pending inaugural nightly run |
+| R13.1 | PARTIAL | all levels wired; first fuzz crash found+fixed with CI evidence (§5.1); full 4 h green pending rerun |
+| R13.1-fuzz | PARTIAL | 5 targets wired; inaugural run produced 1 real OOM crash (fixed, §5.1); 4 h all-green pending rerun |
 | R13.2 | PARTIAL | local 90.1/80.9 + enforcing absolute gate; CI coverage artifact pending |
 | R13.4.1 | PASS | 10k differential suites green locally; nightly re-runs with long-lifecycle env |
 | R13.6 | PASS | lifecycle + massif wiring + local lifecycle gates green |
@@ -176,8 +246,11 @@ scope; dead-`engine`-module removal proposal needs its own review.
   on the baseline; comparator fail-closed cases tested — **code done
   (15/15), enforcement BLOCKED** (§4)
 - [ ] Successful nightly evidence: coverage, 1M matrix, massif,
-  differential/lifecycle, ≥4 h fuzz — **BLOCKED** (§5)
-- [ ] Successful `nightly-fs-crash` evidence at 200 iterations — **BLOCKED** (§5)
+  differential/lifecycle, ≥4 h fuzz — **IN PROGRESS** (§5):
+  massif + differential/lifecycle green; fs-crash green; fuzz crash
+  found+fixed (§5.1); coverage workflow+test fixed (§5.2); rerun pending
+- [x] Successful `nightly-fs-crash` evidence at 200 iterations — **done**
+  (run `34050249898`, §5)
 - [x] Targets/misses have receipts/profiles/follow-ups without requirement
   substitution — **done** (§8)
 - [x] `M7-handoff.md`, M7B handoff pointer, traceability in sync; every
