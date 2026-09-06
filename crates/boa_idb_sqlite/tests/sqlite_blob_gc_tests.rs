@@ -300,3 +300,70 @@ fn test_open_sweeps_crash_orphan_blob() {
 
     assert!(!orphan.exists(), "open must collect unreachable blob files");
 }
+
+/// Crash orphans are swept on first open after restart; repeat opens in the
+/// same process skip the rescan (M7-B H-F4). In-process blob files are
+/// lifecycle-managed, so only a restart can introduce orphans.
+#[test]
+fn test_repeat_open_skips_rescan_but_restart_sweeps() {
+    let tmp = tempfile::tempdir().unwrap();
+    let factory = SqliteBackendFactory::new(tmp.path());
+    let key = boa_idb_core::proto::StorageKey::new("test");
+
+    // Database with one referenced (externalized) blob.
+    let storage = factory.open_storage(&key).unwrap();
+    let mut db = storage.open_database("resweep_db").unwrap();
+    let mut txn = db
+        .begin(TxnMode::VersionChange, &[], Durability::Default)
+        .unwrap();
+    txn.set_version(1).unwrap();
+    let store_id = txn
+        .create_store(&StoreSpec {
+            name: Utf16String::from_str("items"),
+            key_path: KeyPath::Empty,
+            auto_increment: false,
+        })
+        .unwrap();
+    txn.commit().unwrap();
+    let mut txn = db
+        .begin(TxnMode::ReadWrite, &[store_id], Durability::Default)
+        .unwrap();
+    txn.begin_request().unwrap();
+    txn.put(store_id, b"k", &big_value(9), false).unwrap();
+    txn.commit_request().unwrap();
+    txn.commit().unwrap();
+    drop(db);
+    assert_eq!(blob_file_count(tmp.path()), 1);
+
+    // Plant a crash orphan under this database's blob dir.
+    let db_file = db_name_to_filename(&"resweep_db".encode_utf16().collect::<Vec<_>>());
+    let db_hash = db_hash_from_filename(&db_file).unwrap();
+    let orphan = factory
+        .storage_dir(&key)
+        .join("blobs")
+        .join(db_hash)
+        .join("ab/orphan-b.bin");
+    std::fs::create_dir_all(orphan.parent().unwrap()).unwrap();
+    std::fs::write(&orphan, b"simulated crash leftover").unwrap();
+
+    // Same storage: the sweep already ran, the rescan is skipped.
+    let mut db = storage.open_database("resweep_db").unwrap();
+    assert!(orphan.exists(), "same-process reopen must skip the rescan");
+    let mut txn = db
+        .begin(TxnMode::ReadOnly, &[store_id], Durability::Relaxed)
+        .unwrap();
+    assert_eq!(txn.get(store_id, b"k").unwrap(), Some(big_value(9)));
+    txn.commit().unwrap();
+    drop(db);
+
+    // Fresh storage (restart): first open sweeps again, keeping the referent.
+    drop(storage);
+    let storage = factory.open_storage(&key).unwrap();
+    let _db = storage.open_database("resweep_db").unwrap();
+    assert!(!orphan.exists(), "restart open must sweep crash orphans");
+    assert_eq!(
+        blob_file_count(tmp.path()),
+        1,
+        "referenced blob must survive the sweep"
+    );
+}

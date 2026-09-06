@@ -397,8 +397,17 @@ fn bench_open(
     });
 }
 
-/// One JS `get` round trip without IO (memory backend): eval + job drains.
-fn bench_js_request(c: &mut Criterion) {
+/// One JS `get` round trip without IO (memory backend).
+///
+/// The measured section calls a stored JS function (no per-iteration
+/// parsing) plus two job-queue drains, then reads back a completion counter
+/// through one tiny eval so uncompleted requests can never silently pollute
+/// the measurement. Setup (open, store fill, function definition) is
+/// excluded. An eval-per-iteration variant would add script-parse overhead
+/// on top; this is the pure JS↔core cost the §12.1 scenario means.
+/// Builds the JS-request fixture: open database, one stored record, and a
+/// stored `__benchGet` function value issued per measured iteration.
+fn js_fixture() -> (Context, boa_engine::JsValue) {
     let mut context = Context::default();
     let extension = IndexedDbExtension::builder()
         .storage_key(StorageKey::new("bench-js"))
@@ -421,21 +430,27 @@ fn bench_js_request(c: &mut Criterion) {
                 const tx = globalThis.__benchDb.transaction('s', 'readwrite');
                 tx.objectStore('s').put({ id: 1, v: 'x'.repeat(200) });
             };
+            globalThis.__benchGet = () => {
+                const tx = globalThis.__benchDb.transaction('s', 'readonly');
+                const rq = tx.objectStore('s').get(1);
+                rq.onsuccess = () => { globalThis.__benchN += 1; };
+            };
             ",
         ))
         .expect("setup eval");
     context.run_jobs().expect("setup jobs");
     context.run_jobs().expect("setup jobs");
-    // Validate the fixture before measuring.
-    context
-        .eval(Source::from_bytes(
-            r"
-            const tx = globalThis.__benchDb.transaction('s', 'readonly');
-            const rq = tx.objectStore('s').get(1);
-            rq.onsuccess = () => { globalThis.__benchN += 1; };
-            ",
-        ))
-        .expect("validation eval");
+    // Fetch the stored function once (outside the measured section) and
+    // validate the fixture before measuring.
+    let get_fn_value: boa_engine::JsValue = context
+        .eval(Source::from_bytes("globalThis.__benchGet"))
+        .expect("fetch function");
+    let callable = get_fn_value
+        .as_callable()
+        .expect("stored value must be callable");
+    callable
+        .call(&boa_engine::JsValue::undefined(), &[], &mut context)
+        .expect("validation call");
     context.run_jobs().expect("validation jobs");
     context.run_jobs().expect("validation jobs");
     let n: String = context
@@ -445,25 +460,87 @@ fn bench_js_request(c: &mut Criterion) {
         .expect("to_string")
         .to_std_string_escaped();
     assert!(n.contains('1'), "fixture get must complete, n={n}");
+    (context, get_fn_value)
+}
 
+/// One JS `get` round trip: stored-function call plus two job-queue drains,
+/// with a completion-counter readback so uncompleted requests can never
+/// silently pollute the measurement.
+fn bench_js_request(c: &mut Criterion) {
+    use boa_engine::JsValue;
+
+    let (mut context, get_fn_value) = js_fixture();
+    let callable = get_fn_value
+        .as_callable()
+        .expect("stored value must be callable");
     let mut group = c.benchmark_group("core");
     group.bench_function("js_request", |b| {
+        // Per-routine baseline from the LIVE counter: criterion may execute
+        // the routine more than once (calibration probe + measurement share
+        // this Context), so enclosing-scope counters must recalibrate here,
+        // not in the outer function.
+        let baseline: u64 = readback_counter(&mut context)
+            .parse()
+            .expect("counter parses");
+        // Drain-until-done: results arrive in later tasks by design, and
+        // completion latency varies under load (a fixed drain count either
+        // lags or wastes). Each iteration measures a true round trip —
+        // enqueue through observed completion — with a hang guard. The
+        // counter equality keeps uncompleted requests from silently
+        // inflating throughput.
+        let mut expected: u64 = baseline;
         b.iter(|| {
-            // Block-scoped so repeated evals never redeclare globals.
-            context
-                .eval(Source::from_bytes(
-                    r"{
-                    const tx = globalThis.__benchDb.transaction('s', 'readonly');
-                    const rq = tx.objectStore('s').get(1);
-                    rq.onsuccess = () => { globalThis.__benchN += 1; };
-                    }",
-                ))
-                .expect("iter eval");
+            expected += 1;
+            callable
+                .call(&JsValue::undefined(), &[], &mut context)
+                .expect("iter call");
             context.run_jobs().expect("iter jobs");
             context.run_jobs().expect("iter jobs");
+            let mut n = readback_counter(&mut context);
+            if n != expected.to_string() {
+                // Rare lag under load: drain until done (bounded) rather
+                // than measure an uncompleted round trip.
+                for _ in 0..8 {
+                    context.run_jobs().expect("lag jobs");
+                    n = readback_counter(&mut context);
+                    if n == expected.to_string() {
+                        break;
+                    }
+                }
+            }
+            assert_eq!(
+                n,
+                expected.to_string(),
+                "every request must complete (hang guard tripped)"
+            );
+            black_box(n);
+        });
+    });
+    group.finish();
+}
+
+/// Reads the completion counter through one tiny eval.
+fn readback_counter(context: &mut Context) -> String {
+    context
+        .eval(Source::from_bytes("String(globalThis.__benchN)"))
+        .expect("readback eval")
+        .to_string(context)
+        .expect("to_string")
+        .to_std_string_escaped()
+}
+
+/// Cost of the completion-counter readback alone (parse + eval + convert).
+///
+/// Reported so the receipt can decompose `js_request` into true request
+/// cost vs measurement overhead with both numbers measured, not modeled.
+fn bench_js_readback(c: &mut Criterion) {
+    let (mut context, _) = js_fixture();
+    let mut group = c.benchmark_group("core");
+    group.bench_function("eval_readback", |b| {
+        b.iter(|| {
             let n: String = context
                 .eval(Source::from_bytes("String(globalThis.__benchN)"))
-                .expect("iter readback")
+                .expect("readback")
                 .to_string(&mut context)
                 .expect("to_string")
                 .to_std_string_escaped();
@@ -517,6 +594,7 @@ fn backend_benches(c: &mut Criterion) {
         }
     }
     bench_js_request(c);
+    bench_js_readback(c);
 }
 
 criterion_group!(

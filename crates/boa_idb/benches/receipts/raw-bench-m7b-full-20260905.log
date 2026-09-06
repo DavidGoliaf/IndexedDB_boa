@@ -1,0 +1,165 @@
+    Finished `bench` profile [optimized] target(s) in 0.19s
+     Running benches\backends.rs (target\release\deps\backends-146e99a9c111741e.exe)
+Gnuplot not found, using plotters backend
+Benchmarking memory/put_batch
+Benchmarking memory/put_batch: Warming up for 1.0000 s
+Benchmarking memory/put_batch: Collecting 20 samples in estimated 3.1537 s (420 iterations)
+Benchmarking memory/put_batch: Analyzing
+memory/put_batch        time:   [7.4369 ms 7.4916 ms 7.5556 ms]
+                        thrpt:  [1.3235 Melem/s 1.3348 Melem/s 1.3447 Melem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking memory/pk_get
+Benchmarking memory/pk_get: Warming up for 1.0000 s
+Benchmarking memory/pk_get: Collecting 20 samples in estimated 3.0116 s (28k iterations)
+Benchmarking memory/pk_get: Analyzing
+memory/pk_get           time:   [106.38 ┬╡s 106.64 ┬╡s 106.95 ┬╡s]
+                        thrpt:  [9.3504 Melem/s 9.3770 Melem/s 9.3998 Melem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking memory/empty_txn
+Benchmarking memory/empty_txn: Warming up for 1.0000 s
+Benchmarking memory/empty_txn: Collecting 20 samples in estimated 3.0017 s (266k iterations)
+Benchmarking memory/empty_txn: Analyzing
+memory/empty_txn        time:   [11.292 ┬╡s 11.442 ┬╡s 11.693 ┬╡s]
+                        thrpt:  [4.2760 Melem/s 4.3699 Melem/s 4.4281 Melem/s]
+Found 3 outliers among 20 measurements (15.00%)
+  1 (5.00%) high mild
+  2 (10.00%) high severe
+Benchmarking memory/strict_commit
+Benchmarking memory/strict_commit: Warming up for 1.0000 s
+Benchmarking memory/strict_commit: Collecting 20 samples in estimated 3.0008 s (581k iterations)
+Benchmarking memory/strict_commit: Analyzing
+memory/strict_commit    time:   [5.1774 ┬╡s 5.2129 ┬╡s 5.2445 ┬╡s]
+                        thrpt:  [953.39 Kelem/s 959.15 Kelem/s 965.74 Kelem/s]
+
+Benchmarking memory/cursor_scan_20000
+Benchmarking memory/cursor_scan_20000: Warming up for 1.0000 s
+Benchmarking memory/cursor_scan_20000: Collecting 20 samples in estimated 3.7056 s (1050 iterations)
+Benchmarking memory/cursor_scan_20000: Analyzing
+memory/cursor_scan_20000
+                        time:   [3.5325 ms 3.5448 ms 3.5568 ms]
+                        thrpt:  [5.6231 Melem/s 5.6421 Melem/s 5.6617 Melem/s]
+
+Benchmarking sqlite/put_batch
+Benchmarking sqlite/put_batch: Warming up for 1.0000 s
+Benchmarking sqlite/put_batch: Collecting 20 samples in estimated 3.8097 s (60 iterations)
+Benchmarking sqlite/put_batch: Analyzing
+sqlite/put_batch        time:   [59.115 ms 59.358 ms 59.606 ms]
+                        thrpt:  [167.77 Kelem/s 168.47 Kelem/s 169.16 Kelem/s]
+Benchmarking sqlite/pk_get
+Benchmarking sqlite/pk_get: Warming up for 1.0000 s
+Benchmarking sqlite/pk_get: Collecting 20 samples in estimated 3.1082 s (5460 iterations)
+Benchmarking sqlite/pk_get: Analyzing
+sqlite/pk_get           time:   [556.98 ┬╡s 560.99 ┬╡s 567.30 ┬╡s]
+                        thrpt:  [1.7627 Melem/s 1.7826 Melem/s 1.7954 Melem/s]
+Found 3 outliers among 20 measurements (15.00%)
+  2 (10.00%) high mild
+  1 (5.00%) high severe
+Benchmarking sqlite/empty_txn
+Benchmarking sqlite/empty_txn: Warming up for 1.0000 s
+Benchmarking sqlite/empty_txn: Collecting 20 samples in estimated 3.1243 s (3780 iterations)
+Benchmarking sqlite/empty_txn: Analyzing
+sqlite/empty_txn        time:   [819.31 ┬╡s 826.74 ┬╡s 832.96 ┬╡s]
+                        thrpt:  [60.027 Kelem/s 60.479 Kelem/s 61.027 Kelem/s]
+Benchmarking sqlite/strict_commit
+Benchmarking sqlite/strict_commit: Warming up for 1.0000 s
+Benchmarking sqlite/strict_commit: Collecting 20 samples in estimated 3.2271 s (420 iterations)
+Benchmarking sqlite/strict_commit: Analyzing
+sqlite/strict_commit    time:   [7.5046 ms 7.7155 ms 8.0092 ms]
+                        thrpt:  [624.28  elem/s 648.04  elem/s 666.25  elem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+
+Benchmarking sqlite/cursor_scan_20000
+Benchmarking sqlite/cursor_scan_20000: Warming up for 1.0000 s
+Benchmarking sqlite/cursor_scan_20000: Collecting 20 samples in estimated 3.4612 s (630 iterations)
+Benchmarking sqlite/cursor_scan_20000: Analyzing
+sqlite/cursor_scan_20000
+                        time:   [5.3721 ms 5.3977 ms 5.4345 ms]
+                        thrpt:  [3.6802 Melem/s 3.7053 Melem/s 3.7230 Melem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+
+Benchmarking sqlite/open
+Benchmarking sqlite/open: Warming up for 1.0000 s
+Benchmarking sqlite/open: Collecting 10 samples in estimated 5.0001 s (207k iterations)
+Benchmarking sqlite/open: Analyzing
+sqlite/open             time:   [23.692 ┬╡s 23.754 ┬╡s 23.823 ┬╡s]
+Found 3 outliers among 10 measurements (30.00%)
+  1 (10.00%) low severe
+  2 (20.00%) high severe
+
+Benchmarking fs/put_batch
+Benchmarking fs/put_batch: Warming up for 1.0000 s
+
+Warning: Unable to complete 20 samples in 3.0s. You may wish to increase target time to 3.8s, enable flat sampling, or reduce sample count to 10.
+Benchmarking fs/put_batch: Collecting 20 samples in estimated 3.8070 s (210 iterations)
+Benchmarking fs/put_batch: Analyzing
+fs/put_batch            time:   [17.573 ms 18.027 ms 18.517 ms]
+                        thrpt:  [540.04 Kelem/s 554.74 Kelem/s 569.05 Kelem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking fs/pk_get
+Benchmarking fs/pk_get: Warming up for 1.0000 s
+Benchmarking fs/pk_get: Collecting 20 samples in estimated 3.0138 s (24k iterations)
+Benchmarking fs/pk_get: Analyzing
+fs/pk_get               time:   [125.06 ┬╡s 128.21 ┬╡s 131.65 ┬╡s]
+                        thrpt:  [7.5959 Melem/s 7.7997 Melem/s 7.9960 Melem/s]
+Found 3 outliers among 20 measurements (15.00%)
+  1 (5.00%) high mild
+  2 (10.00%) high severe
+Benchmarking fs/empty_txn
+Benchmarking fs/empty_txn: Warming up for 1.0000 s
+Benchmarking fs/empty_txn: Collecting 20 samples in estimated 3.1177 s (5460 iterations)
+Benchmarking fs/empty_txn: Analyzing
+fs/empty_txn            time:   [574.64 ┬╡s 582.24 ┬╡s 594.41 ┬╡s]
+                        thrpt:  [84.117 Kelem/s 85.876 Kelem/s 87.010 Kelem/s]
+Found 4 outliers among 20 measurements (20.00%)
+  1 (5.00%) low mild
+  1 (5.00%) high mild
+  2 (10.00%) high severe
+Benchmarking fs/strict_commit
+Benchmarking fs/strict_commit: Warming up for 1.0000 s
+
+Warning: Unable to complete 20 samples in 3.0s. You may wish to increase target time to 5.4s, enable flat sampling, or reduce sample count to 10.
+Benchmarking fs/strict_commit: Collecting 20 samples in estimated 5.3532 s (210 iterations)
+Benchmarking fs/strict_commit: Analyzing
+fs/strict_commit        time:   [20.206 ms 21.145 ms 21.896 ms]
+                        thrpt:  [228.36  elem/s 236.46  elem/s 247.45  elem/s]
+
+Benchmarking fs/cursor_scan_20000
+Benchmarking fs/cursor_scan_20000: Warming up for 1.0000 s
+Benchmarking fs/cursor_scan_20000: Collecting 20 samples in estimated 3.4358 s (840 iterations)
+Benchmarking fs/cursor_scan_20000: Analyzing
+fs/cursor_scan_20000    time:   [4.1455 ms 4.2558 ms 4.4122 ms]
+                        thrpt:  [4.5328 Melem/s 4.6994 Melem/s 4.8245 Melem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+
+Benchmarking fs/open
+Benchmarking fs/open: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 12.1s.
+Benchmarking fs/open: Collecting 10 samples in estimated 12.110 s (10 iterations)
+Benchmarking fs/open: Analyzing
+fs/open                 time:   [1.1331 s 1.1473 s 1.1627 s]
+
+Benchmarking core/js_request
+Benchmarking core/js_request: Warming up for 1.0000 s
+Benchmarking core/js_request: Collecting 20 samples in estimated 3.0027 s (153k iterations)
+Benchmarking core/js_request: Analyzing
+core/js_request         time:   [18.077 ┬╡s 20.669 ┬╡s 23.873 ┬╡s]
+Found 5 outliers among 20 measurements (25.00%)
+  4 (20.00%) high mild
+  1 (5.00%) high severe
+
+Benchmarking core/eval_readback
+Benchmarking core/eval_readback: Warming up for 1.0000 s
+Benchmarking core/eval_readback: Collecting 20 samples in estimated 3.0008 s (294k iterations)
+Benchmarking core/eval_readback: Analyzing
+core/eval_readback      time:   [6.7724 ┬╡s 6.8736 ┬╡s 7.0362 ┬╡s]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) high mild
+  1 (5.00%) high severe
+

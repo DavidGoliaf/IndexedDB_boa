@@ -21,20 +21,70 @@ const SECRET_VALUE: &[u8] = b"TOP-SECRET-VALUE-12345";
 const SECRET_HEX_PREFIX: &str = "544f502d53454352";
 /// Hex of the first seeded key (`cli-key-1`).
 const KEY_HEX: &str = "636c692d6b65792d31";
-
 /// Locates the built `boa-idb-cli` example executable.
+///
+/// Cargo usually emits `examples/boa-idb-cli[.exe]`, but coverage runners
+/// (e.g. `cargo llvm-cov`, which retargets and fingerprints builds) may
+/// leave only hashed names (`boa-idb-cli-<hash>[.exe]`): fall back to the
+/// sorted first match so the suite works in both layouts.
 fn cli_exe() -> PathBuf {
     let test_exe = std::env::current_exe().expect("current test executable path must be known");
     let profile_dir = test_exe
         .parent() // deps/
         .and_then(|p| p.parent()) // debug/ or release/
         .expect("profile directory must exist");
-    let exe_name = if cfg!(windows) {
+    let examples = profile_dir.join("examples");
+    let plain = examples.join(if cfg!(windows) {
         "boa-idb-cli.exe"
     } else {
         "boa-idb-cli"
-    };
-    profile_dir.join("examples").join(exe_name)
+    });
+    if plain.is_file() {
+        return plain;
+    }
+    let mut hashed: Vec<PathBuf> = std::fs::read_dir(&examples)
+        .expect("examples directory must exist")
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.file_name().is_some_and(|n| {
+                    n.to_string_lossy().starts_with("boa-idb-cli")
+                        && p.extension().is_none_or(|e| e == "exe")
+                })
+        })
+        .collect();
+    hashed.sort();
+    if let Some(exe) = hashed.into_iter().next() {
+        return exe;
+    }
+    // Last resort: the workspace's normal target dir (plain names). Covers
+    // invocations that never build examples into the current target dir
+    // (e.g. `cargo llvm-cov --test cli_tests` without `--examples`).
+    let profile = profile_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("debug");
+    let fallback = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join(profile)
+        .join("examples")
+        .join(if cfg!(windows) {
+            "boa-idb-cli.exe"
+        } else {
+            "boa-idb-cli"
+        });
+    if fallback.is_file() {
+        return fallback;
+    }
+    panic!(
+        "boa-idb-cli example binary must exist (checked {} and {}); \
+         run `cargo build -p boa_idb --example boa-idb-cli` first",
+        examples.display(),
+        fallback.display()
+    )
 }
 
 /// Runs the CLI with `args`, asserting success and returning stdout.

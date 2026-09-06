@@ -72,6 +72,7 @@ fn test_store_cursor_all_directions_no_scan() {
                 dir,
                 key_only,
                 None,
+                None,
             );
             let plan = explain_plan(&conn, &sql);
             assert_no_table_scan(&plan, &format!("store {dir:?} key_only={key_only}"));
@@ -88,6 +89,7 @@ fn test_store_cursor_open_bounds_and_unbounded_no_scan() {
             &range,
             Direction::Next,
             false,
+            None,
             None,
         );
         let plan = explain_plan(&conn, &sql);
@@ -109,8 +111,14 @@ fn test_index_cursor_all_directions_no_scan() {
             Direction::PrevUnique,
         ] {
             for key_only in [false, true] {
-                let sql =
-                    SqliteCursor::debug_sql_with_literals(kind, &ranged(), dir, key_only, None);
+                let sql = SqliteCursor::debug_sql_with_literals(
+                    kind,
+                    &ranged(),
+                    dir,
+                    key_only,
+                    None,
+                    None,
+                );
                 let plan = explain_plan(&conn, &sql);
                 assert_no_table_scan(&plan, &format!("index {name} {dir:?} key_only={key_only}"));
             }
@@ -128,6 +136,7 @@ fn test_index_cursor_with_seek_no_scan() {
         Direction::Next,
         false,
         Some((b"k00020".to_vec(), Some(b"p00001".to_vec()))),
+        None,
     );
     let plan = explain_plan(&conn, &sql);
     assert_no_table_scan(&plan, "index seek next");
@@ -138,6 +147,7 @@ fn test_index_cursor_with_seek_no_scan() {
         Direction::Prev,
         false,
         Some((b"k00020".to_vec(), None)),
+        None,
     );
     let plan = explain_plan(&conn, &sql);
     assert_no_table_scan(&plan, "index seek prev");
@@ -148,9 +158,122 @@ fn test_index_cursor_with_seek_no_scan() {
         Direction::NextUnique,
         false,
         Some((b"k00020".to_vec(), None)),
+        None,
     );
     let plan = explain_plan(&conn, &sql);
     assert_no_table_scan(&plan, "unique seek");
+}
+
+/// Keyset-resume (paged) shapes must stay index-served too: the anchor
+/// predicates (`(key > ? OR ...)` / strict group-key) replace `OFFSET` on
+/// follow-up pages, and a table scan here would reintroduce the quadratic
+/// cliff (M7-B H-F2) through the planner.
+#[test]
+fn test_paged_resume_shapes_no_scan() {
+    let conn = schema_conn();
+    let anchor = Some((b"k00020".to_vec(), b"p00001".to_vec()));
+    for (kind, name) in [
+        (CursorKindRepr::Store, "store"),
+        (CursorKindRepr::IndexPlain, "plain"),
+        (CursorKindRepr::IndexUnique, "unique"),
+    ] {
+        for dir in [Direction::Next, Direction::Prev] {
+            for key_only in [false, true] {
+                let sql = SqliteCursor::debug_sql_with_literals(
+                    kind,
+                    &EncodedRange::all(),
+                    dir,
+                    key_only,
+                    None,
+                    anchor.as_ref().map(|(k, p)| (k.as_slice(), p.as_slice())),
+                );
+                assert!(
+                    !sql.contains("OFFSET"),
+                    "paged shape must not page by offset ({name} {dir:?}): {sql}"
+                );
+                let plan = explain_plan(&conn, &sql);
+                assert_no_table_scan(&plan, &format!("paged {name} {dir:?} key_only={key_only}"));
+            }
+        }
+    }
+}
+
+/// Paged resume shapes must SEEK with bound parameters, not just literals.
+///
+/// Literal inlining constant-folds the plan: an `OR` resume seeks with
+/// literals yet plans a bare `store_id` search once prepared with `?`
+/// placeholders (M7-B H-F2 quadratic cliff). This test prepares the exact
+/// production SQL and checks the generic plan carries the range constraint.
+#[test]
+fn test_paged_resume_plan_seeks_with_bound_params() {
+    let conn = schema_conn();
+    // (shape, expected range marker in the generic plan).
+    for (kind, dir, marker) in [
+        (
+            CursorKindRepr::Store,
+            Direction::Next,
+            "PRIMARY KEY (store_id=? AND key>?)",
+        ),
+        (
+            CursorKindRepr::Store,
+            Direction::Prev,
+            "PRIMARY KEY (store_id=? AND key<?)",
+        ),
+        (
+            CursorKindRepr::IndexPlain,
+            Direction::Next,
+            "(key,pkey)>(?,?)",
+        ),
+        (
+            CursorKindRepr::IndexPlain,
+            Direction::Prev,
+            "(key,pkey)<(?,?)",
+        ),
+        (
+            CursorKindRepr::IndexUnique,
+            Direction::Next,
+            "index_id=? AND key>?",
+        ),
+        (
+            CursorKindRepr::IndexUnique,
+            Direction::Prev,
+            "index_id=? AND key<?",
+        ),
+    ] {
+        let sql = SqliteCursor::debug_paged_sql(
+            kind,
+            &EncodedRange::all(),
+            dir,
+            false,
+            (b"k00020", b"p00001"),
+        );
+        assert!(
+            !sql.contains("OFFSET"),
+            "paged shape must not page by offset ({dir:?}): {sql}"
+        );
+        // Bind NULLs: values are irrelevant, constraint usability is not.
+        let placeholders = sql.bytes().filter(|&b| b == b'?').count();
+        let nulls: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Null; placeholders];
+        let null_refs: Vec<&dyn rusqlite::types::ToSql> = nulls
+            .iter()
+            .map(|v| v as &dyn rusqlite::types::ToSql)
+            .collect();
+        let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        let plan: Vec<String> = stmt
+            .query_map(null_refs.as_slice(), |row| row.get(3))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        let joined = plan.join("\n");
+        assert!(
+            !joined.contains("SCAN TABLE"),
+            "generic plan for paged {dir:?} must not scan: {joined}\n{sql}"
+        );
+        assert!(
+            joined.contains(marker),
+            "generic plan for paged {dir:?} must carry the range ({marker}): {joined}\n{sql}"
+        );
+    }
 }
 
 /// Count queries (`SqliteTxn::count`) share the cursor's range predicate
