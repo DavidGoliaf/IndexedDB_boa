@@ -111,6 +111,30 @@ def collect_means(crit_dir=None) -> dict:
     return means
 
 
+def cpu_string() -> str:
+    """Best-effort CPU identity for provenance (informational only).
+
+    `platform.processor()` is empty on many Linux installs (it reads
+    uname -p, which is often "unknown"); fall back to the first
+    `/proc/cpuinfo` model name so labelled baselines always carry a
+    non-empty `cpu` for the mandatory-provenance check. Admission is
+    decided by `host_id`, never by this field.
+    """
+    cpu = platform.processor().strip()
+    if cpu and cpu.lower() != "unknown":
+        return cpu
+    try:
+        with open("/proc/cpuinfo") as fh:
+            for line in fh:
+                if line.startswith("model name"):
+                    name = line.split(":", 1)[1].strip()
+                    if name:
+                        return name
+    except OSError:
+        pass
+    return platform.machine().strip() or "unknown"
+
+
 def provenance() -> dict:
     out = {
         "date_utc": datetime.datetime.now(datetime.timezone.utc)
@@ -119,7 +143,7 @@ def provenance() -> dict:
         "os": platform.system(),
         "os_release": platform.release(),
         "arch": platform.machine(),
-        "cpu": platform.processor(),
+        "cpu": cpu_string(),
         "profile": "bench (inherits release, lto=thin)",
         "command": "cargo bench -p boa_idb --bench backends",
         "threshold": REGRESSION_THRESHOLD,
@@ -135,7 +159,7 @@ def provenance() -> dict:
         # admission is decided by host_id, not by these fields.
         "fingerprint": {
             "os_release": platform.release(),
-            "cpu": platform.processor(),
+            "cpu": cpu_string(),
         },
     }
     try:

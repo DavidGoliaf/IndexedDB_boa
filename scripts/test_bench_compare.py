@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from bench_compare import (
     BaselineError,
+    cpu_string,
     evaluate,
     host_id,
     load_baseline,
@@ -123,6 +124,14 @@ class LoadBaselineTests(unittest.TestCase):
             path = write_doc(tmp, labelled_doc(scenarios={}))
             with self.assertRaises(BaselineError):
                 load_baseline(path)
+
+
+class CpuStringTests(unittest.TestCase):
+    def test_returns_nonempty_string(self):
+        # platform.processor() is "" on many Linux installs; the
+        # provenance gate requires a non-empty cpu, so cpu_string()
+        # must never return ""/whitespace (M7-C labelled capture).
+        self.assertTrue(cpu_string().strip())
 
 
 class EvaluateTests(unittest.TestCase):
