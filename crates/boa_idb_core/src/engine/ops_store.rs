@@ -22,6 +22,10 @@ pub struct PutResult {
     pub key: Key,
     /// Whether the record was newly inserted (false if updated).
     pub inserted: bool,
+    /// SCF-encoded value payload bytes handed to the backend (M7-A
+    /// observability: feeds the `bytes_written` counters without
+    /// re-encoding on the hot path).
+    pub value_bytes: usize,
 }
 
 /// Executes a put/add operation on a store (§6.1).
@@ -74,6 +78,7 @@ pub fn put(
     let encoded_value = encode_scf(value, limits)
         .map_err(|e| IdbError::DataClone(format!("Failed to encode value: {e}")))?;
 
+    let value_bytes = encoded_value.len();
     txn.put(store_id, &encoded_key, &encoded_value, no_overwrite)
         .map_err(backend_err)?;
 
@@ -87,7 +92,11 @@ pub fn put(
     txn.key_gen_set(store_id, keygen.current())
         .map_err(backend_err)?;
 
-    Ok(PutResult { key, inserted })
+    Ok(PutResult {
+        key,
+        inserted,
+        value_bytes,
+    })
 }
 
 /// Executes a delete operation on a store (§6.4).

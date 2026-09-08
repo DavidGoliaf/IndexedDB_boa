@@ -188,6 +188,76 @@ fn test_old_schema_version_is_migrated() {
     );
 }
 
+/// Cached-pool reopen must migrate a rewound file without losing data.
+///
+/// Regression test for the root cause of `test_old_schema_version_is_migrated`:
+/// migrations used to run only at pool creation, so reopening through the
+/// cached pool served the stale schema version. The record written before the
+/// rewind must survive the migration.
+#[test]
+fn test_cached_reopen_migrates_and_preserves_data() {
+    use boa_idb_sqlite::schema;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let factory = SqliteBackendFactory::new(tmp.path());
+    let storage = factory
+        .open_storage(&boa_idb_core::proto::StorageKey::new("test"))
+        .unwrap();
+
+    // Create a store and a record through the backend traits.
+    let mut db = storage.open_database("keep_me").unwrap();
+    let store_ids = db
+        .metadata()
+        .stores
+        .iter()
+        .map(|s| s.id)
+        .collect::<Vec<_>>();
+    let mut txn = db
+        .begin(TxnMode::VersionChange, &store_ids, Durability::Default)
+        .unwrap();
+    txn.set_version(1).unwrap();
+    let store = txn
+        .create_store(&StoreSpec {
+            name: Utf16String::from("items"),
+            key_path: KeyPath::Empty,
+            auto_increment: false,
+        })
+        .unwrap();
+    txn.commit().unwrap();
+    let mut txn = db
+        .begin(TxnMode::ReadWrite, &[store], Durability::Default)
+        .unwrap();
+    txn.begin_request().unwrap();
+    txn.put(store, b"key-1", b"value-1", false).unwrap();
+    txn.commit_request().unwrap();
+    txn.commit().unwrap();
+    drop(db);
+
+    // Rewind the schema version behind the pool's back.
+    let files = db_files(&tmp);
+    assert!(!files.is_empty());
+    let conn = Connection::open(&files[0]).unwrap();
+    schema::set_schema_version(&conn, 0).unwrap();
+    drop(conn);
+
+    // Reopen through the SAME storage (cached pool): must migrate in place.
+    let mut db = storage.open_database("keep_me").unwrap();
+    let conn = Connection::open(&db_files(&tmp)[0]).unwrap();
+    assert_eq!(
+        schema::get_schema_version(&conn).unwrap(),
+        schema::SCHEMA_VERSION,
+        "cached-pool reopen must migrate the rewound file"
+    );
+    drop(conn);
+
+    // The pre-rewind record must still be there.
+    let mut txn = db
+        .begin(TxnMode::ReadOnly, &[store], Durability::Default)
+        .unwrap();
+    assert_eq!(txn.get(store, b"key-1").unwrap(), Some(b"value-1".to_vec()));
+    txn.commit().unwrap();
+}
+
 #[test]
 fn test_registry_schema_is_usable() {
     use boa_idb_sqlite::schema;

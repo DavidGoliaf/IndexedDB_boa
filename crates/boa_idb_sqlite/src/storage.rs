@@ -167,11 +167,6 @@ impl Storage for SqliteStorage {
         // predates this build (e.g. rewound out-of-band) without migrating.
         // A busy writer (`Locked`) keeps today's behavior — no blocking, and
         // the next contention-free open retries the migration.
-        //
-        // Backported to the M6-B merge into main: without it
-        // `test_old_schema_version_is_migrated` fails on a cached-pool
-        // reopen; the full fix lives on task/m7c-ci-evidence-final
-        // (`cbe6c16`).
         match pool.checkout_writer() {
             Ok(checkout) => {
                 schema::migrate_if_needed(checkout.conn()?)?;

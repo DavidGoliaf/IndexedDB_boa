@@ -1,0 +1,176 @@
+    Finished `bench` profile [optimized] target(s) in 0.19s
+     Running benches\backends.rs (target\release\deps\backends-146e99a9c111741e.exe)
+Gnuplot not found, using plotters backend
+Benchmarking memory/put_batch
+Benchmarking memory/put_batch: Warming up for 1.0000 s
+Benchmarking memory/put_batch: Collecting 20 samples in estimated 3.3486 s (420 iterations)
+Benchmarking memory/put_batch: Analyzing
+memory/put_batch        time:   [8.8413 ms 10.382 ms 11.482 ms]
+                        thrpt:  [870.93 Kelem/s 963.19 Kelem/s 1.1311 Melem/s]
+                 change:
+                        time:   [-17.036% -7.4540% +3.2586%] (p = 0.19 > 0.05)
+                        thrpt:  [-3.1558% +8.0544% +20.535%]
+                        No change in performance detected.
+Found 4 outliers among 20 measurements (20.00%)
+  3 (15.00%) high mild
+  1 (5.00%) high severe
+Benchmarking memory/pk_get
+Benchmarking memory/pk_get: Warming up for 1.0000 s
+Benchmarking memory/pk_get: Collecting 20 samples in estimated 3.0208 s (18k iterations)
+Benchmarking memory/pk_get: Analyzing
+memory/pk_get           time:   [164.06 ┬╡s 168.61 ┬╡s 172.95 ┬╡s]
+                        thrpt:  [5.7822 Melem/s 5.9310 Melem/s 6.0955 Melem/s]
+                 change:
+                        time:   [+22.675% +26.743% +31.146%] (p = 0.00 < 0.05)
+                        thrpt:  [-23.749% -21.100% -18.484%]
+                        Performance has regressed.
+Benchmarking memory/empty_txn
+Benchmarking memory/empty_txn: Warming up for 1.0000 s
+Benchmarking memory/empty_txn: Collecting 20 samples in estimated 3.0011 s (178k iterations)
+Benchmarking memory/empty_txn: Analyzing
+memory/empty_txn        time:   [14.887 ┬╡s 15.277 ┬╡s 15.690 ┬╡s]
+                        thrpt:  [3.1867 Melem/s 3.2729 Melem/s 3.3587 Melem/s]
+                 change:
+                        time:   [+31.445% +38.978% +45.936%] (p = 0.00 < 0.05)
+                        thrpt:  [-31.477% -28.046% -23.923%]
+                        Performance has regressed.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) low mild
+Benchmarking memory/strict_commit
+Benchmarking memory/strict_commit: Warming up for 1.0000 s
+Benchmarking memory/strict_commit: Collecting 20 samples in estimated 3.0007 s (530k iterations)
+Benchmarking memory/strict_commit: Analyzing
+memory/strict_commit    time:   [6.0233 ┬╡s 6.1200 ┬╡s 6.2044 ┬╡s]
+                        thrpt:  [805.88 Kelem/s 816.99 Kelem/s 830.11 Kelem/s]
+                 change:
+                        time:   [+10.647% +14.301% +18.525%] (p = 0.00 < 0.05)
+                        thrpt:  [-15.630% -12.512% -9.6229%]
+                        Performance has regressed.
+
+Benchmarking memory/cursor_scan
+Benchmarking memory/cursor_scan: Warming up for 1.0000 s
+Benchmarking memory/cursor_scan: Collecting 20 samples in estimated 3.3408 s (420 iterations)
+Benchmarking memory/cursor_scan: Analyzing
+memory/cursor_scan      time:   [7.1830 ms 7.8395 ms 8.4487 ms]
+                        thrpt:  [2.3672 Melem/s 2.5512 Melem/s 2.7844 Melem/s]
+                 change:
+                        time:   [-97.723% -97.568% -97.403%] (p = 0.00 < 0.05)
+                        thrpt:  [+3750.5% +4011.8% +4290.9%]
+                        Performance has improved.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+
+Benchmarking sqlite/put_batch
+Benchmarking sqlite/put_batch: Warming up for 1.0000 s
+Benchmarking sqlite/put_batch: Collecting 20 samples in estimated 4.9529 s (40 iterations)
+Benchmarking sqlite/put_batch: Analyzing
+sqlite/put_batch        time:   [117.95 ms 127.33 ms 135.13 ms]
+                        thrpt:  [74.003 Kelem/s 78.534 Kelem/s 84.780 Kelem/s]
+                 change:
+                        time:   [+31.195% +45.302% +59.054%] (p = 0.00 < 0.05)
+                        thrpt:  [-37.128% -31.178% -23.778%]
+                        Performance has regressed.
+Found 3 outliers among 20 measurements (15.00%)
+  1 (5.00%) low severe
+  2 (10.00%) low mild
+Benchmarking sqlite/pk_get
+Benchmarking sqlite/pk_get: Warming up for 1.0000 s
+Benchmarking sqlite/pk_get: Collecting 20 samples in estimated 3.1779 s (3570 iterations)
+Benchmarking sqlite/pk_get: Analyzing
+sqlite/pk_get           time:   [906.95 ┬╡s 941.78 ┬╡s 968.96 ┬╡s]
+                        thrpt:  [1.0320 Melem/s 1.0618 Melem/s 1.1026 Melem/s]
+                 change:
+                        time:   [+15.724% +22.434% +28.825%] (p = 0.00 < 0.05)
+                        thrpt:  [-22.376% -18.323% -13.588%]
+                        Performance has regressed.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) low mild
+Benchmarking sqlite/empty_txn
+Benchmarking sqlite/empty_txn: Warming up for 1.0000 s
+Benchmarking sqlite/empty_txn: Collecting 20 samples in estimated 3.0570 s (1680 iterations)
+Benchmarking sqlite/empty_txn: Analyzing
+sqlite/empty_txn        time:   [1.7210 ms 1.8320 ms 1.9340 ms]
+                        thrpt:  [25.853 Kelem/s 27.293 Kelem/s 29.053 Kelem/s]
+Benchmarking sqlite/strict_commit
+Benchmarking sqlite/strict_commit: Warming up for 1.0000 s
+Benchmarking sqlite/strict_commit: Collecting 20 samples in estimated 3.7364 s (420 iterations)
+Benchmarking sqlite/strict_commit: Analyzing
+sqlite/strict_commit    time:   [8.4560 ms 8.6814 ms 8.8714 ms]
+                        thrpt:  [563.61  elem/s 575.94  elem/s 591.30  elem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) low mild
+  1 (5.00%) high mild
+
+Benchmarking sqlite/cursor_scan
+Benchmarking sqlite/cursor_scan: Warming up for 1.0000 s
+Benchmarking sqlite/cursor_scan: Collecting 20 samples in estimated 3.8698 s (80 iterations)
+Benchmarking sqlite/cursor_scan: Analyzing
+sqlite/cursor_scan      time:   [48.691 ms 49.659 ms 50.690 ms]
+                        thrpt:  [394.56 Kelem/s 402.75 Kelem/s 410.75 Kelem/s]
+
+Benchmarking sqlite/open
+Benchmarking sqlite/open: Warming up for 1.0000 s
+Benchmarking sqlite/open: Collecting 10 samples in estimated 5.9275 s (20 iterations)
+Benchmarking sqlite/open: Analyzing
+sqlite/open             time:   [303.46 ms 310.28 ms 317.70 ms]
+
+Benchmarking fs/put_batch
+Benchmarking fs/put_batch: Warming up for 1.0000 s
+
+Warning: Unable to complete 20 samples in 3.0s. You may wish to increase target time to 213.8s, or reduce sample count to 10.
+Benchmarking fs/put_batch: Collecting 20 samples in estimated 213.83 s (20 iterations)
+Benchmarking fs/put_batch: Analyzing
+fs/put_batch            time:   [10.066 s 10.436 s 10.855 s]
+                        thrpt:  [921.27  elem/s 958.18  elem/s 993.44  elem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking fs/pk_get
+Benchmarking fs/pk_get: Warming up for 1.0000 s
+Benchmarking fs/pk_get: Collecting 20 samples in estimated 3.0214 s (17k iterations)
+Benchmarking fs/pk_get: Analyzing
+fs/pk_get               time:   [171.12 ┬╡s 174.55 ┬╡s 177.88 ┬╡s]
+                        thrpt:  [5.6218 Melem/s 5.7291 Melem/s 5.8438 Melem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking fs/empty_txn
+Benchmarking fs/empty_txn: Warming up for 1.0000 s
+Benchmarking fs/empty_txn: Collecting 20 samples in estimated 3.1750 s (2940 iterations)
+Benchmarking fs/empty_txn: Analyzing
+fs/empty_txn            time:   [989.14 ┬╡s 1.1167 ms 1.1981 ms]
+                        thrpt:  [41.732 Kelem/s 44.774 Kelem/s 50.549 Kelem/s]
+Benchmarking fs/strict_commit
+Benchmarking fs/strict_commit: Warming up for 1.0000 s
+
+Warning: Unable to complete 20 samples in 3.0s. You may wish to increase target time to 5.0s, enable flat sampling, or reduce sample count to 10.
+Benchmarking fs/strict_commit: Collecting 20 samples in estimated 4.9685 s (210 iterations)
+Benchmarking fs/strict_commit: Analyzing
+fs/strict_commit        time:   [22.763 ms 23.623 ms 24.240 ms]
+                        thrpt:  [206.27  elem/s 211.66  elem/s 219.65  elem/s]
+
+Benchmarking fs/cursor_scan
+Benchmarking fs/cursor_scan: Warming up for 1.0000 s
+Benchmarking fs/cursor_scan: Collecting 20 samples in estimated 3.2134 s (420 iterations)
+Benchmarking fs/cursor_scan: Analyzing
+fs/cursor_scan          time:   [8.1747 ms 8.8621 ms 9.3691 ms]
+                        thrpt:  [2.1347 Melem/s 2.2568 Melem/s 2.4466 Melem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) low mild
+  1 (5.00%) high mild
+
+Benchmarking fs/open
+Benchmarking fs/open: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 15.9s.
+Benchmarking fs/open: Collecting 10 samples in estimated 15.858 s (10 iterations)
+Benchmarking fs/open: Analyzing
+fs/open                 time:   [1.5048 s 1.5437 s 1.5848 s]
+
+Benchmarking core/js_request
+Benchmarking core/js_request: Warming up for 1.0000 s
+Benchmarking core/js_request: Collecting 20 samples in estimated 3.0103 s (34k iterations)
+Benchmarking core/js_request: Analyzing
+core/js_request         time:   [69.732 ┬╡s 80.143 ┬╡s 93.417 ┬╡s]
+Found 4 outliers among 20 measurements (20.00%)
+  2 (10.00%) high mild
+  2 (10.00%) high severe
+

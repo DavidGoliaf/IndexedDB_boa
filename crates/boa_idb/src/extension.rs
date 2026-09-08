@@ -7,6 +7,7 @@ use boa_idb_core::proto::StorageKey;
 use std::sync::Arc;
 
 use crate::api::factory::IdBFactory;
+use crate::observer::IdbObserver;
 use crate::runtime::IdbRuntime;
 
 /// Builder for `IndexedDbExtension`.
@@ -14,6 +15,7 @@ use crate::runtime::IdbRuntime;
 pub struct IndexedDbExtensionBuilder {
     storage_key: Option<StorageKey>,
     backend_factory: Option<Arc<dyn BackendFactory>>,
+    observer: Option<Arc<dyn IdbObserver>>,
 }
 
 impl IndexedDbExtensionBuilder {
@@ -27,6 +29,15 @@ impl IndexedDbExtensionBuilder {
         self
     }
 
+    /// Registers a host observer for lifecycle events (§4.3, §12.3).
+    ///
+    /// See [`IdbObserver`] for the observer discipline (fast, lock-free,
+    /// no `Context` access, no retained objects).
+    pub fn observer(mut self, observer: Arc<dyn IdbObserver>) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
     pub fn build(self) -> JsResult<IndexedDbExtension> {
         let storage_key = self
             .storage_key
@@ -37,6 +48,7 @@ impl IndexedDbExtensionBuilder {
         Ok(IndexedDbExtension {
             storage_key,
             backend_factory,
+            observer: self.observer,
         })
     }
 }
@@ -45,6 +57,7 @@ impl IndexedDbExtensionBuilder {
 pub struct IndexedDbExtension {
     storage_key: StorageKey,
     backend_factory: Arc<dyn BackendFactory>,
+    observer: Option<Arc<dyn IdbObserver>>,
 }
 
 impl IndexedDbExtension {
@@ -63,6 +76,9 @@ impl IndexedDbExtension {
 
         // 2. Initialize IdbRuntime and insert into HostDefined
         let runtime = IdbRuntime::new(self.storage_key.clone(), self.backend_factory.clone());
+        if let Some(observer) = &self.observer {
+            runtime.add_observer(Arc::clone(observer));
+        }
         context.insert_data(runtime);
 
         // 3. Register DOM shim classes

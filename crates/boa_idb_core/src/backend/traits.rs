@@ -41,12 +41,17 @@ pub trait Database: Send + 'static {
     /// (or share it via `Arc`) rather than borrow the `Database`. This lets
     /// the L1 driver own the backend transaction for the whole lifetime of
     /// the IDB transaction (AD-6) without self-referential structs.
+    ///
+    /// The transaction is additionally `Send`: backend transactions never
+    /// contain thread-bound state, and the bound lets host-side test probes
+    /// (M7-A observability) hold driver state across the `IdbObserver`
+    /// (`Send + Sync`) boundary for lock-discipline assertions.
     fn begin(
         &mut self,
         mode: TxnMode,
         scope: &[StoreId],
         durability: Durability,
-    ) -> Result<Box<dyn BackendTxn + 'static>, BackendError>;
+    ) -> Result<Box<dyn BackendTxn + Send + 'static>, BackendError>;
 
     /// Flushes pending changes to durable storage.
     fn flush(&mut self) -> Result<(), BackendError>;

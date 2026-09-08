@@ -219,6 +219,23 @@ after each publication-stage fault and safe handling of corrupt WAL /
 segment / manifest tails. R8.5.2 / R8.5.3 → PASS for in-process injection;
 R8.5.1 / R8.3.6 process-kill closed in M6-B3.
 
+## ADR-013: `criterion` 0.5 as the benchmark harness (M7-A)
+
+**Context.** TASK-09 / M7-A must measure the seven §12.1 scenarios for SQLite
+and FS (plus a memory control) with reproducible receipts and a regression
+gate. No benchmark infrastructure exists (`benches/` absent, no harness dep).
+
+**Decision.** Depend on crates.io `criterion` 0.5.x as a **dev-only**
+dependency of `boa_idb` (benches live in `boa_idb/benches/`, `harness = false`).
+It is maintained (bheisler + community), the de-facto Rust standard for
+statistics-driven microbenchmarks (outlier-resistant estimates, throughput
+reporting, `--save-baseline` comparison for the >10 % regression gate), and
+dual-licensed MIT/Apache-2.0 (both on the `deny.toml` allowlist). A hand-rolled
+`Instant`-loop harness was rejected: it would re-implement statistics,
+warmup, and baseline diffing for zero gain, and could not plug into the
+labelled-host comparison workflow. `criterion` never ships in production
+artifacts (dev-dependency only), so it adds no runtime attack surface.
+
 ## ADR-012: M6-B3 — crash worker and WPT `--backend fs`
 
 **Context.** TASK-08 / M6-B3 must close R8.3.6 / R8.5.1 with a real

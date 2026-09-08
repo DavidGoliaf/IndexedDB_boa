@@ -12,6 +12,7 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::time::Duration;
 
 use boa_engine::class::Class;
 use boa_engine::object::builtins::JsArray;
@@ -213,6 +214,10 @@ pub struct PendingOpen {
     pub blocked_fired: bool,
     /// Upgrade version pair once `StartUpgrade` fired.
     pub upgrade_versions: Option<(u64, u64)>,
+    /// Wall-clock `idb.open` trace (M7-A observability; `None` for deletes
+    /// and when the `tracing` feature is disabled).
+    #[cfg(feature = "tracing")]
+    pub(crate) open_trace: Option<crate::observer::OpenTrace>,
 }
 
 /// A driver-owned transaction handle.
@@ -238,7 +243,7 @@ pub struct TxnHandle {
     /// Schema snapshot (mutated by schema ops on upgrade transactions).
     pub meta: DatabaseMeta,
     /// Backend transaction (`None` until the scheduler starts it).
-    pub backend: Option<Box<dyn BackendTxn>>,
+    pub backend: Option<Box<dyn BackendTxn + Send>>,
     /// Finished (committed or aborted).
     pub finished: bool,
     /// Transaction is currently active (accepts new requests).
@@ -255,6 +260,15 @@ pub struct TxnHandle {
     pub deleted_store_ids: Vec<StoreId>,
     /// Key generators per store.
     pub keygens: HashMap<StoreId, KeyGenerator>,
+    /// Backend-begin wall time (M7-A observability; commit latency source).
+    pub started_at: Option<std::time::Instant>,
+    /// SCF payload bytes read inside this transaction.
+    pub bytes_read: u64,
+    /// SCF payload bytes written inside this transaction.
+    pub bytes_written: u64,
+    /// Open `idb.txn` span, closed at commit/abort (tracing feature only).
+    #[cfg(feature = "tracing")]
+    pub txn_span: Option<tracing::Span>,
 }
 
 /// A live cursor state (kept alive by the JS `IDBCursor`).
@@ -988,6 +1002,18 @@ fn process_opens(
                 }
                 set_open_db_result(context, &open, version)?;
                 complete_open_success(context, &open)?;
+                // M7-A observability: the open completed with this version.
+                crate::observer::emit(
+                    context,
+                    &crate::observer::IdbEvent::DatabaseOpened {
+                        database: open.name.clone(),
+                        version,
+                    },
+                );
+                #[cfg(feature = "tracing")]
+                if let Some(trace) = open.open_trace.clone() {
+                    trace.finish_success(version);
+                }
                 progressed = true;
             }
             OpenStep::FailOpen { open, error } => {
@@ -995,7 +1021,14 @@ fn process_opens(
                     let mut d = crate::runtime::lock_mutex(driver_handle);
                     d.opens.retain(|o| o.request_id != open.request_id);
                 }
+                let error_name = crate::observer::error_name(&error);
                 fail_open(context, &open, &error)?;
+                // M7-A observability: close the open trace with the failure.
+                // (Deletes carry no trace; `DatabaseOpened` is success-only.)
+                #[cfg(feature = "tracing")]
+                if let Some(trace) = open.open_trace.clone() {
+                    trace.finish_error(error_name);
+                }
                 progressed = true;
             }
             OpenStep::StartUpgrade {
@@ -1006,7 +1039,7 @@ fn process_opens(
                 // Backend work under scoped locks (pure); dispatch afterwards.
                 // The engine is always initialized by `drive_turn`.
                 enum StartOutcome {
-                    Started,
+                    Started { txn_id: u64 },
                     Failed(IdbError),
                 }
                 let outcome = {
@@ -1032,7 +1065,7 @@ fn process_opens(
                                 slot.upgrade_txn_id = Some(txn_id);
                                 slot.upgrade_versions = Some((old_version, new_version));
                             }
-                            StartOutcome::Started
+                            StartOutcome::Started { txn_id }
                         }
                         Err(e) => {
                             if let Some(queue) = d.open_queues.get_mut(&open.name) {
@@ -1044,7 +1077,7 @@ fn process_opens(
                     }
                 };
                 match outcome {
-                    StartOutcome::Started => {
+                    StartOutcome::Started { txn_id } => {
                         // Re-read the open (versions recorded) for the event.
                         let open = {
                             let d = crate::runtime::lock_mutex(driver_handle);
@@ -1054,6 +1087,18 @@ fn process_opens(
                                 .cloned()
                                 .unwrap_or(open)
                         };
+                        // Observability (no guards held anywhere above): the
+                        // upgrade backend is running. Emitted strictly before
+                        // `upgradeneeded` so observers see begin first.
+                        crate::observer::emit(
+                            context,
+                            &crate::observer::IdbEvent::TransactionBegun {
+                                txn: txn_id,
+                                database: open.name.clone(),
+                                mode: TxnMode::VersionChange,
+                                scope_len: 0,
+                            },
+                        );
                         // A throwing handler aborts the whole upgrade.
                         if fire_upgradeneeded(context, &open).is_err() {
                             if let Some(txn_id) = open.upgrade_txn_id {
@@ -1123,6 +1168,27 @@ fn process_opens(
                         }
                         let _ = backend.commit();
                     }
+                    // M7-A observability: the upgrade transaction commits
+                    // here (it bypasses `finish_txns`).
+                    let duration = handle
+                        .started_at
+                        .map_or(Duration::ZERO, |started| started.elapsed());
+                    #[cfg(feature = "tracing")]
+                    if let Some(span) = handle.txn_span.take() {
+                        span.record("duration_ms", crate::observer::millis(duration));
+                        span.record("bytes_read", handle.bytes_read);
+                        span.record("bytes_written", handle.bytes_written);
+                    }
+                    crate::observer::emit(
+                        context,
+                        &crate::observer::IdbEvent::TransactionCommitted {
+                            txn: txn_id,
+                            database: handle.db_name.clone(),
+                            duration,
+                            bytes_read: handle.bytes_read,
+                            bytes_written: handle.bytes_written,
+                        },
+                    );
                 }
                 {
                     let mut d = crate::runtime::lock_mutex(driver_handle);
@@ -1152,8 +1218,28 @@ fn process_opens(
                 if connection_closed {
                     clear_open_request_result(context, &open);
                     fail_open(context, &open, &IdbError::Abort)?;
+                    #[cfg(feature = "tracing")]
+                    if let Some(trace) = open.open_trace.clone() {
+                        trace.finish_error("AbortError");
+                    }
                 } else {
                     complete_open_success(context, &open)?;
+                    // The open completed with the upgraded version. This is
+                    // the first-open path: `OpenConnection` never runs for
+                    // it, so the opened event and the trace close live here.
+                    if let Some((_, new_version)) = open.upgrade_versions {
+                        crate::observer::emit(
+                            context,
+                            &crate::observer::IdbEvent::DatabaseOpened {
+                                database: open.name.clone(),
+                                version: new_version,
+                            },
+                        );
+                        #[cfg(feature = "tracing")]
+                        if let Some(trace) = open.open_trace.clone() {
+                            trace.finish_success(new_version);
+                        }
+                    }
                 }
                 progressed = true;
             }
@@ -1206,6 +1292,17 @@ fn start_upgrade_txn(
         explicit_commit: false,
         deleted_store_ids: Vec::new(),
         keygens: HashMap::new(),
+        // The upgrade backend begins synchronously above.
+        started_at: Some(std::time::Instant::now()),
+        bytes_read: 0,
+        bytes_written: 0,
+        #[cfg(feature = "tracing")]
+        txn_span: Some(crate::observer::txn_span(
+            &open.name,
+            TxnMode::VersionChange,
+            0,
+            txn_id,
+        )),
     };
     d.scheduler.enqueue(TxnQueueItem {
         id: txn_id,
@@ -1213,6 +1310,10 @@ fn start_upgrade_txn(
         scope: Vec::new(),
     });
     d.txns.insert(txn_id, handle);
+    // Observability contract (P1-1): no observer callbacks while engine or
+    // driver guards are held. The caller emits `TransactionBegun` after all
+    // guards are dropped, before `upgradeneeded` dispatch; `txn_id` plus the
+    // `open` record carry every field the event needs.
 
     let scope: Vec<u64> = d
         .txns
@@ -1466,6 +1567,11 @@ fn fail_queued_requests(
         d.txn_queues.remove(&txn_id);
         ids
     };
+    // M7-A observability: these requests never executed, so they carry no
+    // duration — but they did fail, and the failure counter must show it.
+    if let Some(state) = crate::observer::observer_state(context) {
+        crate::runtime::lock_mutex(&state).record_dropped_requests(ids.len());
+    }
     for request_id in ids {
         fail_op(driver_handle, context, txn_id, request_id, error.clone());
     }
@@ -1563,10 +1669,50 @@ fn process_txn_requests(
                 op,
             } => {
                 // B. Pure execution (locks held, no JS: backend never calls out).
-                let outcome = {
+                // M7-A observability: wall time, byte deltas and the
+                // `idb.request` span wrap the synchronous execution scope.
+                #[cfg(feature = "tracing")]
+                let request_span = crate::observer::request_span(txn_id, request_id);
+                #[cfg(feature = "tracing")]
+                let _request_guard = request_span.enter();
+                let exec_started = std::time::Instant::now();
+                let (outcome, exec_meta) = {
                     let mut d = crate::runtime::lock_mutex(driver_handle);
-                    execute_op(&mut d, txn_id, request_id, &op)
+                    let before = txn_bytes(&d, txn_id);
+                    let db_name = d
+                        .txns
+                        .get(&txn_id)
+                        .map(|t| t.db_name.clone())
+                        .unwrap_or_default();
+                    let outcome = execute_op(&mut d, txn_id, request_id, &op);
+                    let after = txn_bytes(&d, txn_id);
+                    (outcome, (before, after, db_name))
                 };
+                let elapsed = exec_started.elapsed();
+                let bytes_read = exec_meta.1.0.saturating_sub(exec_meta.0.0);
+                let bytes_written = exec_meta.1.1.saturating_sub(exec_meta.0.1);
+                let failed = outcome.is_err();
+                #[cfg(feature = "tracing")]
+                {
+                    request_span.record(
+                        "duration_us",
+                        u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX),
+                    );
+                    request_span.record("bytes_read", bytes_read);
+                    request_span.record("bytes_written", bytes_written);
+                    request_span.record("failed", failed);
+                }
+                crate::observer::emit(
+                    context,
+                    &crate::observer::IdbEvent::RequestCompleted {
+                        txn: txn_id,
+                        request: request_id,
+                        duration: elapsed,
+                        bytes_read,
+                        bytes_written,
+                        failed,
+                    },
+                );
                 // C. Completion + dispatch (no guards held).
                 match outcome {
                     Ok(OpExec::Outcome(outcome)) => {
@@ -1593,6 +1739,9 @@ fn process_txn_requests(
                         );
                     }
                     Err(e) => {
+                        // M7-A observability: quota/corruption surface as
+                        // dedicated events (error mapping itself unchanged).
+                        crate::observer::emit_error_class(context, &exec_meta.2, &e);
                         // A `preventDefault()`d request error does not abort (§2.8).
                         if !fail_op(driver_handle, context, txn_id, request_id, e) {
                             abort_transaction(driver_handle, txn_id, context, false);
@@ -1662,6 +1811,12 @@ pub fn create_txn(
             explicit_commit: false,
             deleted_store_ids: Vec::new(),
             keygens: HashMap::new(),
+            // Backend not started yet: `start_ready_txns` stamps the time.
+            started_at: None,
+            bytes_read: 0,
+            bytes_written: 0,
+            #[cfg(feature = "tracing")]
+            txn_span: None,
         },
     );
     Ok(txn_id)
@@ -1718,9 +1873,36 @@ fn start_ready_txns(
             // Install, retry, or fail (driver lock).
             match backend {
                 Ok(b) => {
-                    let mut d = crate::runtime::lock_mutex(driver_handle);
-                    if let Some(handle) = d.txns.get_mut(&txn_id) {
-                        handle.backend = Some(b);
+                    let begun = {
+                        let mut d = crate::runtime::lock_mutex(driver_handle);
+                        if let Some(handle) = d.txns.get_mut(&txn_id) {
+                            handle.backend = Some(b);
+                            handle.started_at = Some(std::time::Instant::now());
+                            #[cfg(feature = "tracing")]
+                            {
+                                handle.txn_span = Some(crate::observer::txn_span(
+                                    &handle.db_name,
+                                    handle.mode,
+                                    handle.scope.len(),
+                                    txn_id,
+                                ));
+                            }
+                            Some((handle.db_name.clone(), handle.mode, handle.scope.len()))
+                        } else {
+                            None
+                        }
+                    };
+                    // Observability (no locks held): backend now running.
+                    if let Some((db_name, mode, scope_len)) = begun {
+                        crate::observer::emit(
+                            context,
+                            &crate::observer::IdbEvent::TransactionBegun {
+                                txn: txn_id,
+                                database: db_name,
+                                mode,
+                                scope_len,
+                            },
+                        );
                     }
                     started_any = true;
                 }
@@ -1796,6 +1978,27 @@ fn finish_txns(
             }
             let _ = backend.commit();
         }
+        // M7-A observability: commit latency, byte totals, span close.
+        // The handle is owned here, so no locks are held.
+        let duration = handle
+            .started_at
+            .map_or(Duration::ZERO, |started| started.elapsed());
+        #[cfg(feature = "tracing")]
+        if let Some(span) = handle.txn_span.take() {
+            span.record("duration_ms", crate::observer::millis(duration));
+            span.record("bytes_read", handle.bytes_read);
+            span.record("bytes_written", handle.bytes_written);
+        }
+        crate::observer::emit(
+            context,
+            &crate::observer::IdbEvent::TransactionCommitted {
+                txn: txn_id,
+                database: handle.db_name.clone(),
+                duration,
+                bytes_read: handle.bytes_read,
+                bytes_written: handle.bytes_written,
+            },
+        );
         // Bookkeeping (locks held, pure).
         {
             let mut d = crate::runtime::lock_mutex(driver_handle);
@@ -1838,6 +2041,25 @@ pub(crate) fn abort_transaction(
     if let Some(backend) = handle.backend.take() {
         let _ = backend.abort();
     }
+    // M7-A observability: the span closes with begin-to-abort timing so
+    // every `idb.txn` span carries `duration_ms` (the event marks the
+    // outcome instead).
+    #[cfg(feature = "tracing")]
+    if let Some(span) = handle.txn_span.take() {
+        let duration = handle
+            .started_at
+            .map_or(Duration::ZERO, |started| started.elapsed());
+        span.record("duration_ms", crate::observer::millis(duration));
+        span.record("bytes_read", handle.bytes_read);
+        span.record("bytes_written", handle.bytes_written);
+    }
+    crate::observer::emit(
+        context,
+        &crate::observer::IdbEvent::TransactionAborted {
+            txn: txn_id,
+            database: handle.db_name.clone(),
+        },
+    );
     // Bookkeeping (locks held, pure).
     {
         let mut d = crate::runtime::lock_mutex(driver_handle);
@@ -1895,6 +2117,11 @@ fn abort_upgrade_open(
         }
         open
     };
+    // M7-A observability: an aborted upgrade fails its open (§2.9).
+    #[cfg(feature = "tracing")]
+    if let Some(trace) = open.open_trace.clone() {
+        trace.finish_error("AbortError");
+    }
     let db_obj = crate::runtime::request_object(context, open.request_id)
         .and_then(|request| {
             crate::api::request::with_request_ref(&request, |req| req.result.clone()).flatten()
@@ -2871,6 +3098,30 @@ fn backfill_index(
 // Operation execution
 // ---------------------------------------------------------------------------
 
+/// Snapshots a transaction's SCF byte counters for per-request deltas.
+///
+/// Missing handles (torn-down transactions) report zero, so the delta math
+/// in the pump never underflows.
+fn txn_bytes(d: &DriverState, txn_id: TxnId) -> (u64, u64) {
+    d.txns
+        .get(&txn_id)
+        .map_or((0, 0), |t| (t.bytes_read, t.bytes_written))
+}
+
+/// Adds SCF payload bytes read by one request to its transaction.
+fn add_bytes_read(d: &mut DriverState, txn_id: TxnId, n: u64) {
+    if let Some(handle) = d.txns.get_mut(&txn_id) {
+        handle.bytes_read = handle.bytes_read.saturating_add(n);
+    }
+}
+
+/// Adds SCF payload bytes written by one request to its transaction.
+fn add_bytes_written(d: &mut DriverState, txn_id: TxnId, n: u64) {
+    if let Some(handle) = d.txns.get_mut(&txn_id) {
+        handle.bytes_written = handle.bytes_written.saturating_add(n);
+    }
+}
+
 /// Executes one pending operation against a transaction.
 ///
 /// Each operation runs inside a backend savepoint (AD-7) together with the
@@ -2943,7 +3194,7 @@ fn execute_op_inner(
 
     match op {
         PendingOp::Get { source, range } => {
-            let value = {
+            let (value, read) = {
                 let handle = d
                     .txns
                     .get_mut(&txn_id)
@@ -2955,6 +3206,7 @@ fn execute_op_inner(
                     .ok_or(IdbError::TransactionInactive)?;
                 first_value(backend, *source, range, &lim)?
             };
+            add_bytes_read(d, txn_id, read);
             Ok(OpExec::Outcome(RawOutcome::Value(value)))
         }
         PendingOp::Count { source, range } => {
@@ -3010,7 +3262,7 @@ fn execute_op_inner(
                 };
                 Ok(OpExec::Outcome(RawOutcome::Keys(keys)))
             } else {
-                let values = {
+                let (values, read) = {
                     let handle = d
                         .txns
                         .get_mut(&txn_id)
@@ -3022,6 +3274,7 @@ fn execute_op_inner(
                         .ok_or(IdbError::TransactionInactive)?;
                     collect_values(backend, *source, range, *limit, &lim)?
                 };
+                add_bytes_read(d, txn_id, read);
                 Ok(OpExec::Outcome(RawOutcome::Values(values)))
             }
         }
@@ -3031,7 +3284,7 @@ fn execute_op_inner(
             limit,
             direction,
         } => {
-            let mut rows = {
+            let (mut rows, read) = {
                 let handle = d
                     .txns
                     .get_mut(&txn_id)
@@ -3043,6 +3296,7 @@ fn execute_op_inner(
                     .ok_or(IdbError::TransactionInactive)?;
                 materialize(backend, *source, range, *direction, false, &lim)?
             };
+            add_bytes_read(d, txn_id, read);
             if let Some(limit) = limit {
                 rows.truncate(*limit as usize);
             }
@@ -3098,6 +3352,7 @@ fn execute_op_inner(
                 *no_overwrite,
                 &lim,
             )?;
+            add_bytes_written(d, txn_id, byte_len(result.value_bytes));
             Ok(OpExec::Outcome(RawOutcome::Key(result.key)))
         }
         PendingOp::Delete { store_id, range } => {
@@ -3146,7 +3401,7 @@ fn execute_op_inner(
             key_only,
         } => {
             let cursor_id = d.alloc_cursor();
-            let rows = {
+            let (rows, read) = {
                 let handle = d
                     .txns
                     .get_mut(&txn_id)
@@ -3158,6 +3413,7 @@ fn execute_op_inner(
                     .ok_or(IdbError::TransactionInactive)?;
                 materialize(backend, *source, range, *direction, *key_only, &lim)?
             };
+            add_bytes_read(d, txn_id, read);
             let state = CursorState {
                 cursor_id,
                 txn_id,
@@ -3239,6 +3495,7 @@ fn execute_op_inner(
                     false,
                     &lim,
                 )?;
+                add_bytes_written(d, txn_id, byte_len(result.value_bytes));
                 Ok(OpExec::Outcome(RawOutcome::Key(result.key)))
             }
             CursorAction::Delete => {
@@ -3289,12 +3546,21 @@ fn execute_op_inner(
 }
 
 /// Reads the first matching record value.
+/// Lossless `usize` → `u64` for SCF byte accounting (saturates on 128-bit).
+fn byte_len(n: usize) -> u64 {
+    u64::try_from(n).unwrap_or(u64::MAX)
+}
+
+/// Reads the first value in a range, plus the SCF payload bytes fetched.
+///
+/// The byte count feeds the `bytes_read` observer counters: it measures the
+/// payload buffers the backend returned, not decoded values.
 fn first_value(
     backend: &mut dyn BackendTxn,
     source: SourceRef,
     range: &RangeData,
     lim: &LimitConfig,
-) -> Result<Option<ScValue>, IdbError> {
+) -> Result<(Option<ScValue>, u64), IdbError> {
     let encoded = range.to_encoded(lim)?;
     // Scope the cursor: it borrows `backend`, so it must be dropped before
     // the point lookup below.
@@ -3307,7 +3573,7 @@ fn first_value(
             .map_err(backend_err)
             .unwrap_or(false)
         {
-            return Ok(None);
+            return Ok((None, 0));
         }
         let pk = decode_key(cursor.current_primary_key())
             .map(|(k, _)| k)
@@ -3319,11 +3585,12 @@ fn first_value(
         .map_err(backend_err)?
     {
         Some(bytes) => {
+            let n = byte_len(bytes.len());
             let sc = decode_scf(&bytes, lim)
                 .map_err(|e| IdbError::Data(format!("SCF decode failed: {e}")))?;
-            Ok(Some(sc))
+            Ok((Some(sc), n))
         }
-        None => Ok(None),
+        None => Ok((None, 0)),
     }
 }
 
@@ -3379,14 +3646,16 @@ fn collect_keys(
     Ok(out)
 }
 
-/// Collects values matching a range.
+/// Collects values matching a range, plus the SCF payload bytes fetched.
+///
+/// See [`first_value`] for the byte-count contract.
 fn collect_values(
     backend: &mut dyn BackendTxn,
     source: SourceRef,
     range: &RangeData,
     limit: Option<u32>,
     lim: &LimitConfig,
-) -> Result<Vec<ScValue>, IdbError> {
+) -> Result<(Vec<ScValue>, u64), IdbError> {
     let encoded = range.to_encoded(lim)?;
     // Collect primary keys first (the cursor borrows `backend`), then fetch
     // each value with point lookups.
@@ -3411,11 +3680,13 @@ fn collect_values(
         out
     };
     let mut out = Vec::with_capacity(pks.len());
+    let mut read: u64 = 0;
     for pk_bytes in pks {
         if let Some(bytes) = backend
             .get(store_of(source), &pk_bytes)
             .map_err(backend_err)?
         {
+            read = read.saturating_add(byte_len(bytes.len()));
             let sc = decode_scf(&bytes, lim)
                 .map_err(|e| IdbError::Data(format!("SCF decode failed: {e}")))?;
             out.push(sc);
@@ -3426,10 +3697,13 @@ fn collect_values(
             break;
         }
     }
-    Ok(out)
+    Ok((out, read))
 }
 
-/// Materializes cursor rows (keys, primary keys and optionally values).
+/// Materializes cursor rows, plus the SCF payload bytes fetched.
+///
+/// See [`first_value`] for the byte-count contract. Key-only cursors report
+/// zero value bytes (their buffers are never materialized).
 fn materialize(
     backend: &mut dyn BackendTxn,
     source: SourceRef,
@@ -3437,12 +3711,13 @@ fn materialize(
     direction: Direction,
     key_only: bool,
     lim: &LimitConfig,
-) -> Result<Vec<CursorRow>, IdbError> {
+) -> Result<(Vec<CursorRow>, u64), IdbError> {
     let encoded = range.to_encoded(lim)?;
     let mut cursor = backend
         .scan(source, &encoded, direction, key_only)
         .map_err(backend_err)?;
     let mut rows = Vec::new();
+    let mut read: u64 = 0;
     let mut step = cursor.seek(CursorSeek::First).map_err(backend_err)?;
     while step {
         let key = decode_key(cursor.current_key())
@@ -3457,6 +3732,7 @@ fn materialize(
             cursor
                 .current_value()
                 .map(|v| {
+                    read = read.saturating_add(byte_len(v.len()));
                     decode_scf(v, lim)
                         .map_err(|e| IdbError::Data(format!("SCF decode failed: {e}")))
                 })
@@ -3469,5 +3745,5 @@ fn materialize(
         });
         step = cursor.step(1).map_err(backend_err)?;
     }
-    Ok(rows)
+    Ok((rows, read))
 }

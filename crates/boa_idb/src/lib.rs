@@ -32,4 +32,5 @@ pub mod engine;
 pub mod executor;
 pub mod extension;
 pub mod io;
+pub mod observer;
 pub mod runtime;
