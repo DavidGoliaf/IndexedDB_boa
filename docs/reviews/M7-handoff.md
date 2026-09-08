@@ -1,11 +1,9 @@
-# Handoff: M7 — performance, reliability, final acceptance (EXTERNAL BLOCKER)
+# Handoff: M7 — performance, reliability, final acceptance (COMPLETE)
 
-> **Status 2026-09-07 (M7-C):** `EXTERNAL BLOCKER` — nightly CI is
-> green (runs `34050249898` fs-crash + `34092345578` nightly-m7, 9/9 on
-> the fixed SHA — see §5). The single remaining blocker is §4: labelled
-> runner + baseline + actual required `bench-regression` check. No `PASS`
-> is claimed for §4. Owner: CI maintainer; recheck: after runner
-> provisioning + baseline capture.
+> **Status 2026-09-08 (M7-C):** `COMPLETE` — all §7 acceptance items
+> have CI evidence: labelled runner `boa-bench-01` provisioned, labelled
+> baseline committed, `bench-regression` is an actual required PR check
+> with a passing PR run (§4); nightly runs green (§5). No open blockers.
 
 Work order: `tasks/10_TASK_M7C_CI_EVIDENCE_AND_FINAL_ACCEPTANCE.md`
 (`TASK-10-M7C-CI-EVIDENCE-FINAL-ACCEPTANCE`)
@@ -66,41 +64,58 @@ x86_64, rustc 1.91.0 (`f8297e351 2025-10-28`), cargo 1.91.0.
 
 ## 4. Labelled baseline and blocking benchmark evidence (§3)
 
-**Not available — EXTERNAL BLOCKER.**
+**PASS (CI).** All §3 requirements closed 2026-09-07/08:
 
-- `crates/boa_idb/benches/baselines/` contains only `m7b-label-ref.json`
-  (`host_role: interim`, Windows dev box — diagnostic, must never gate
-  releases) and `README.md` (capture procedure). `m7b-label-baseline.json`
-  does not exist in the repo.
-- Comparator (`scripts/bench_compare.py`) is fail-closed and unit-tested
-  (15/15, incl. 4 host-id cases: matching PASS; missing-env /
-  missing-baseline / mismatch rejected before any bench runs).
-  `bench-regression.yml` has the `pull_request` trigger (branches: `main`),
-  runs only on `[self-hosted, bench]`, forwards protected
-  `vars.BOA_IDB_BENCH_HOST_ID`. Without a provisioned runner the job
-  queues and no PR is actually gated.
-- Negative proof without touching production code: comparator unit test
-  `test_10_01_percent_regression_fails` (10.01 % synthetic regression →
-  non-zero). Command/result: `python scripts/test_bench_compare.py` →
-  15/15 OK (this tree, 2026-09-07). No baseline/bench source was faked
-  for a red run, per §3.4.
-- Required-check setup (`bench-regression` in required checks + URL/
-  screenshot of the setting + PR run URL): pending runner provisioning.
-  Owner: CI maintainer.
+- **Runner:** `boa-bench-01` (agentId 21), self-hosted Linux x64,
+  labels `[self-hosted, bench]`. VM: Debian 13
+  (`6.12.107+deb13-amd64`), Intel i7-14700K passthrough, 4 vCPU / 7 GB
+  RAM, stable toolchain. `BOA_IDB_BENCH_HOST_ID=boa-bench-01` from the
+  runner's protected configuration (`.env` of the runner service, never
+  from workflow YAML). Limitation recorded: VirtualBox VM has no
+  cpufreq governor (frequency managed by the host); no co-tenants
+  during capture.
+- **Baseline:** `crates/boa_idb/benches/baselines/m7b-label-baseline.json`
+  (commit `72827e8` on `task/m7c-ci-evidence-final`, merged into `main`
+  as `a3fc22d`): 19 scenarios, `host_role: labelled`,
+  `host_id: boa-bench-01`, provenance `git_sha b9077f5`,
+  `os Linux`, `cpu Intel(R) Core(TM) i7-14700K`, `arch x86_64`,
+  `rustc 1.91.0 (f8297e351 2025-10-28)` (repo-pinned toolchain, same as
+  CI), `profile bench (inherits release, lto=thin)`. `m7b-label-ref.json`
+  stays `interim`/diagnostic, never renamed or hand-edited.
+- **Self-compare:** `compare` on the same host right after capture —
+  19/19 `ok`, `all scenarios within 10% of the labelled baseline`,
+  exit 0 (log `/tmp/baseline-compare.log` on the runner).
+- **PR check:** [PR #1](https://github.com/DavidGoliaf/IndexedDB_boa/pull/1)
+  (`task/bench-check-probe` → `main`, probe comment only) triggered the
+  `pull_request` path; run
+  [`34206701559`](https://github.com/DavidGoliaf/IndexedDB_boa/actions/runs/34206701559)
+  on `boa-bench-01`: **success** (~7 min), no regressions vs the
+  committed baseline. `bench-regression` is listed in the `main`
+  ruleset required status checks (owner-confirmed 2026-09-08), so a
+  missing/failed check blocks merge. Comparator fail-closed behavior
+  was additionally proven live: the earlier scheduled run `34110716543`
+  (no baseline committed yet) exited 2 before running benches with
+  `bench-compare.log` (artifact `10032726637`, 278 bytes).
+- **Comparator unit tests:** `python scripts/test_bench_compare.py` →
+  16/16 OK (15 gate cases + `cpu_string` non-empty), incl. 4 host-id
+  cases and the 10.01 % synthetic-regression failure (§3.4, no
+  production-code red run needed).
+- **By-catch fix:** `platform.processor()` is empty on Debian, so the
+  first labelled capture failed its own mandatory-provenance gate
+  (`lacks mandatory provenance: cpu`). Added `cpu_string()` with
+  `/proc/cpuinfo` fallback + unit test (commits `6b94d4c`/`c714f5b`).
+  Admission remains `host_id`-only; `cpu` stays informational.
 
-Replay for the owner (on the provisioned runner, clean tree):
+Capture commands (as run on the runner, clean tree @ `b9077f5`):
 
 ```sh
-BOA_IDB_BASELINE_ROLE=labelled \
+BOA_IDB_BASELINE_ROLE=labelled BOA_IDB_BENCH_HOST_ID=boa-bench-01 \
 python3 scripts/bench_compare.py write \
   --baseline crates/boa_idb/benches/baselines/m7b-label-baseline.json
+BOA_IDB_BENCH_HOST_ID=boa-bench-01 \
 python3 scripts/bench_compare.py compare \
   --baseline crates/boa_idb/benches/baselines/m7b-label-baseline.json
 ```
-
-Commit the new file separately (never rename/hand-edit `m7b-label-ref.json`),
-then add `bench-regression` to required checks. `BOA_IDB_BENCH_HOST_ID`
-comes from the runner's protected configuration, never from workflow YAML.
 
 ## 5. Inaugural nightly evidence (§4)
 
@@ -270,7 +285,7 @@ CI-dependent item stays PARTIAL.
 
 | R | Status | Ground |
 |---|---|---|
-| R12.1 | PARTIAL | fixes + receipts + fail-closed comparator shipped; blocking enforcement needs labelled runner + baseline (§4 blocker) |
+| R12.1 | PASS (CI) | harness + fixes + fail-closed comparator (16/16) + labelled runner/baseline + required `bench-regression` PR check green on PR #1 (§4) |
 | R12.2 | PASS (CI) | 1M matrix 12/12 on Linux run `34092345578` with CI receipts (§5.4) |
 | R12.3 | PASS | tracing spans + observer + CLI covered by tests, CI tracing job present |
 | R13.1 | PASS (CI) | all levels green on run `34092345578` (coverage 90.4/80.9, 4 h fuzz no new crashes, massif, differential, matrix); pre-fix crash found+fixed with evidence (§5.1) |
@@ -295,11 +310,11 @@ scope; dead-`engine`-module removal proposal needs its own review.
 
 ## 9. Acceptance checklist (§7)
 
-- [ ] Labelled runner + protected host ID provisioned; labelled baseline
-  created on it and committed — **BLOCKED** (§4)
-- [ ] `bench-regression` is an actual required PR check with a passing run
-  on the baseline; comparator fail-closed cases tested — **code done
-  (15/15), enforcement BLOCKED** (§4)
+- [x] Labelled runner + protected host ID provisioned; labelled baseline
+  created on it and committed — **done** (§4: `boa-bench-01`, commit `72827e8`)
+- [x] `bench-regression` is an actual required PR check with a passing run
+  on the baseline; comparator fail-closed cases tested — **done**
+  (§4: PR #1, run `34206701559`, 16/16 unit tests)
 - [x] Successful nightly evidence: coverage, 1M matrix, massif,
   differential/lifecycle, ≥4 h fuzz — **done** (run `34092345578`, §5):
   9/9 success on the fixed SHA; fuzz crash found+fixed (§5.1); coverage
@@ -312,8 +327,10 @@ scope; dead-`engine`-module removal proposal needs its own review.
   PASS has URL/artifact/command/SHA — **done** (§§5, 7)
 - [x] Full local quality suite + memory/SQLite/FS WPT green — **done** (§6)
 
-M7-C (and therefore M7) stays `EXTERNAL BLOCKER`; the next milestone
-must not be marked as depending on an accepted M7.
+M7-C (and therefore M7) is **COMPLETE**: every §7 item has CI evidence
+above. `main` carries the full M5→M7 integration (merges `06fea04` …
+`a3fc22d`); probe branch `task/bench-check-probe` may be deleted after
+PR #1 merge.
 
 ## 10. Known limitations
 
