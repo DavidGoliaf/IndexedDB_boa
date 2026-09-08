@@ -1,9 +1,13 @@
-# Handoff: M7 — performance, reliability, final acceptance (COMPLETE)
+# Handoff: M7 — performance, reliability, final acceptance (EXTERNAL BLOCKER)
 
-> **Status 2026-09-08 (M7-C):** `COMPLETE` — all §7 acceptance items
-> have CI evidence: labelled runner `boa-bench-01` provisioned, labelled
-> baseline committed, `bench-regression` is an actual required PR check
-> with a passing PR run (§4); nightly runs green (§5). No open blockers.
+> **Status 2026-09-08 (M7-C, P1 rework):** `EXTERNAL BLOCKER` — §4
+> (labelled runner + baseline + required PR check) is PASS with CI
+> evidence; §5 nightly evidence is **stale by ordering**: green run
+> `34092345578` executed on `cea6062`, which does NOT contain baseline
+> commit `72827e8` (TЗ §4 line 86 requires nightly on a SHA containing
+> the baseline). A fresh `workflow_dispatch nightly-m7.yml` on current
+> `main` is required; no `PASS` is claimed for §5 until its URL/artifacts
+> land here. Owner: CI maintainer.
 
 Work order: `tasks/10_TASK_M7C_CI_EVIDENCE_AND_FINAL_ACCEPTANCE.md`
 (`TASK-10-M7C-CI-EVIDENCE-FINAL-ACCEPTANCE`)
@@ -119,35 +123,56 @@ python3 scripts/bench_compare.py compare \
 
 ## 5. Inaugural nightly evidence (§4)
 
-**Mostly green on the fixed SHA.** Fresh `workflow_dispatch` run
+**STALE BY ORDERING (P1, 2026-09-08).** Green run
 [`34092345578`](https://github.com/DavidGoliaf/IndexedDB_boa/actions/runs/34092345578)
-on `task/m7c-ci-evidence-final` @ `cea6062` (2026-09-07, includes the
-§§5.1–5.2 fixes): **9/9 jobs success**. Obsolete run `34050610807`
-(pre-fix SHA) is superseded and kept below only as crash-finding
-evidence. Dispatch was done by the owner (no `gh` on the dev host).
+executed on `cea6062` (2026-09-07): **9/9 jobs success**. But `cea6062`
+does NOT contain baseline commit `72827e8` (committed 2026-09-08), and
+TЗ §4 line 86 requires nightly on a SHA containing the baseline commit.
+Its numbers are therefore diagnostic reference, not acceptance evidence.
+A fresh `workflow_dispatch nightly-m7.yml` on current `main`
+(containing `72827e8`) is required — see §5.5. Obsolete run
+`34050610807` (pre-fix SHA) is kept only as crash-finding evidence
+(§5.1). Dispatch was/is done by the owner (no `gh` on the dev host).
 
 | Job (`nightly-m7.yml` / `nightly-fs-crash.yml`) | Required evidence | Status |
 |---|---|---|
-| `coverage` | lcov.info, cov.json, core ≥90 % / boa_idb ≥80 %, tests+bins+examples + WPT ×3 | **PASS (CI)** — run `34092345578`, job `coverage` success 2026-09-07: `boa_idb_core: lines=2585 covered=2336 cover=90.4% floor=90.0%`, `boa_idb: lines=8938 covered=7233 cover=80.9% floor=80.0%` (threshold-gate step exit 0); artifact `coverage-lcov` (ID `10007729107`, 133 600 bytes, expires 2026-12-06); example pre-build step green (the §5.2 fix verified in CI) |
-| `differential-and-lifecycle` | 10 000 seeded scenarios + `BOA_IDB_LONG_LIFECYCLE=1` success log | **PASS (CI)** — run `34092345578`, job success 2026-09-07 (~10 min, full workspace suite with nightly knobs) |
-| `cursor-matrix-1m` | `matrix-1m.log`, `receipt-matrix-1m.txt`, 12 combos at 1M | **PASS (CI)** — run `34092345578`, job success 2026-09-07 (~38 min on Linux): 12/12 at 10⁶, all peaks < 1 MiB (memory ~1 KiB, FS ~1 KiB, SQLite ~237 KiB — same profile as the local inaugural); `test result: ok. 2 passed` (both matrix tests); artifact `cursor-matrix-1m-log` (ID `10008375111`, expires 2026-12-06). Full receipts: §5.4 |
-| `memory-massif` | `massif.out`, Valgrind version, peak + gate result | **PASS (CI)** — run `34092345578`, job success 2026-09-07: `massif peak heap bytes: 433022` (≪ 512 MiB gate); artifact `massif-out` (ID `10008152942`, 42 616 bytes, expires 2026-12-06) |
-| `fuzz` (5 targets × 48 min, ≥4 h total) | final stats, corpus/cache identity, crash artifacts + replay | **PASS (CI)** — run `34092345578`, all 5 jobs success 2026-09-07, 2881 s each (~4.0 h total), zero crashes on the fixed tree: `fuzz_scf_decode` 1 514 999 091 execs, `fuzz_key_decode` 175 947 737, `fuzz_keypath_parse` 277 836 212, `fuzz_wal_recovery` 564 420 743, `fuzz_stateful_txn` 2 808 180. The pre-fix crash (§5.1, run `34050610807`) is the required crash-artifact evidence; no new crashes on the fixed tree. |
-| `nightly-fs-crash` (`BOA_IDB_FS_CRASH_ITERS=200`) | run URL/ID, seed/replay, green M6 fault matrix | **PASS (CI)** — run `34050249898` 2026-09-06, `workflow_dispatch` on `task/m7c-ci-evidence-final` @ `5f21831`: `crash-consistency (ubuntu-latest)` success (43 s step) + `crash-consistency (windows-latest)` success; seed `0xC0FFEE`, command `BOA_IDB_FS_CRASH_ITERS=200 BOA_IDB_FS_CRASH_SEED=0xC0FFEE cargo test -p boa_idb_fs --test m6b3_crash_tests -- --nocapture` per `.github/workflows/nightly-fs-crash.yml`. Run: https://github.com/DavidGoliaf/IndexedDB_boa/actions/runs/34050249898 |
+| `coverage` | lcov.info, cov.json, core ≥90 % / boa_idb ≥80 %, tests+bins+examples + WPT ×3 | **STALE** — was green on run `34092345578` (`cea6062`): core 90.4 % (2336/2585), boa_idb 80.9 % (7233/8938), gate exit 0; artifact `coverage-lcov` (ID `10007729107`). Fresh run on baseline-containing SHA pending (§5.5) |
+| `differential-and-lifecycle` | 10 000 seeded scenarios + `BOA_IDB_LONG_LIFECYCLE=1` success log | **STALE** — was green on run `34092345578` (~10 min). Fresh run pending (§5.5) |
+| `cursor-matrix-1m` | `matrix-1m.log`, `receipt-matrix-1m.txt`, 12 combos at 1M | **STALE** — was green on run `34092345578` (~38 min, 12/12, peaks < 1 MiB; receipts §5.4). Fresh run pending (§5.5) |
+| `memory-massif` | `massif.out`, Valgrind version, peak + gate result | **STALE** — was green on run `34092345578`: peak 433 022 bytes; artifact `massif-out` (ID `10008152942`). Fresh run pending (§5.5) |
+| `fuzz` (5 targets × 48 min, ≥4 h total) | final stats, corpus/cache identity, crash artifacts + replay | **STALE** — was green on run `34092345578` (5 × 2881 s, zero crashes). Fresh run pending (§5.5). Pre-fix crash (§5.1, run `34050610807`) remains valid crash-artifact evidence regardless of SHA |
+| `nightly-fs-crash` (`BOA_IDB_FS_CRASH_ITERS=200`) | run URL/ID, seed/replay, green M6 fault matrix | **PASS (CI)** — run `34050249898` 2026-09-06, `workflow_dispatch` on `task/m7c-ci-evidence-final` @ `5f21831`: `crash-consistency (ubuntu-latest)` success (43 s step) + `crash-consistency (windows-latest)` success; seed `0xC0FFEE`, command `BOA_IDB_FS_CRASH_ITERS=200 BOA_IDB_FS_CRASH_SEED=0xC0FFEE cargo test -p boa_idb_fs --test m6b3_crash_tests -- --nocapture` per `.github/workflows/nightly-fs-crash.yml`. Run: https://github.com/DavidGoliaf/IndexedDB_boa/actions/runs/34050249898. Crash behavior is SHA-independent here: no FS-format change between `5f21831` and `main` (only docs/workflow/test-harness changed), so no re-dispatch is required for this job |
 
 Dispatch (owner with Actions access) — always fresh `workflow_dispatch`
 on the current tip (never `rerun --failed`, see §5.3):
 
 ```sh
-gh workflow run nightly-m7.yml --ref task/m7c-ci-evidence-final
-gh workflow run nightly-fs-crash.yml --ref task/m7c-ci-evidence-final  # green on 5f21831; re-dispatch only if the tree changed beneath it
-gh workflow run bench-regression.yml --ref task/m7c-ci-evidence-final  # after §4 baseline
+gh workflow run nightly-m7.yml --ref main
 ```
+
+(`nightly-fs-crash` stays green on `5f21831`, see table;
+`bench-regression` is done via PR #1, see §4.)
 
 File the top-level run URL/ID, per-job URLs/IDs, exact commands, and
 artifact names here before flipping any status to PASS. On failure:
 seed + replay command + corpus/artifact. No workflow scope was weakened
 to fit hosted CI.
+
+### 5.5 Required fresh run (P1, pending owner dispatch)
+
+TЗ §4 line 86: nightly must run on a SHA containing baseline commit
+`72827e8`. Current `main` qualifies (merges `06fea04` … `a3fc22d` +
+`a271e25`, all containing `72827e8`). Pending:
+
+```sh
+gh workflow run nightly-m7.yml --ref main
+```
+
+On green completion, replace the STALE rows above with the new run
+URL/ID, per-job evidence (coverage totals, matrix receipts, massif
+peak, fuzz final stats), and artifact IDs; flip R12.2/R13.1/R13.1-fuzz/
+R13.2 back to PASS (CI) in §7 and traceability; return the header to
+COMPLETE.
 
 ### 5.1 Fuzz crash finding: WAL `decode_ops` OOM (`fuzz_wal_recovery`)
 
@@ -286,11 +311,11 @@ CI-dependent item stays PARTIAL.
 | R | Status | Ground |
 |---|---|---|
 | R12.1 | PASS (CI) | harness + fixes + fail-closed comparator (16/16) + labelled runner/baseline + required `bench-regression` PR check green on PR #1 (§4) |
-| R12.2 | PASS (CI) | 1M matrix 12/12 on Linux run `34092345578` with CI receipts (§5.4) |
+| R12.2 | PARTIAL (P1) | was PASS on run `34092345578` (stale SHA `cea6062`, see §5); fresh run on baseline-containing SHA pending (§5.5) |
 | R12.3 | PASS | tracing spans + observer + CLI covered by tests, CI tracing job present |
-| R13.1 | PASS (CI) | all levels green on run `34092345578` (coverage 90.4/80.9, 4 h fuzz no new crashes, massif, differential, matrix); pre-fix crash found+fixed with evidence (§5.1) |
-| R13.1-fuzz | PASS (CI) | 5 targets × 2881 s, zero crashes on the fixed tree (run `34092345578`); pre-fix OOM crash fixed with artifact+replay (§5.1) |
-| R13.2 | PASS (CI) | CI coverage gate exit 0 on run `34092345578`: core 90.4 % (2336/2585) ≥90, boa_idb 80.9 % (7233/8938) ≥80; artifact `coverage-lcov` |
+| R13.1 | PARTIAL (P1) | was PASS on run `34092345578` (stale SHA); fresh run pending (§5.5); pre-fix crash found+fixed with evidence (§5.1) |
+| R13.1-fuzz | PARTIAL (P1) | was PASS on run `34092345578` (stale SHA); fresh run pending (§5.5); pre-fix OOM crash fixed with artifact+replay (§5.1) |
+| R13.2 | PARTIAL (P1) | was PASS on run `34092345578` (core 90.4/80.9, stale SHA); fresh run pending (§5.5) |
 | R13.4.1 | PASS | 10k differential suites green locally; nightly re-runs with long-lifecycle env |
 | R13.6 | PASS | lifecycle + massif wiring + local lifecycle gates green |
 
@@ -315,10 +340,10 @@ scope; dead-`engine`-module removal proposal needs its own review.
 - [x] `bench-regression` is an actual required PR check with a passing run
   on the baseline; comparator fail-closed cases tested — **done**
   (§4: PR #1, run `34206701559`, 16/16 unit tests)
-- [x] Successful nightly evidence: coverage, 1M matrix, massif,
-  differential/lifecycle, ≥4 h fuzz — **done** (run `34092345578`, §5):
-  9/9 success on the fixed SHA; fuzz crash found+fixed (§5.1); coverage
-  workflow+test fixed and green (§5.2)
+- [ ] Successful nightly evidence: coverage, 1M matrix, massif,
+  differential/lifecycle, ≥4 h fuzz — **STALE (P1)**: was green on run
+  `34092345578` (`cea6062`, pre-baseline SHA); fresh dispatch on `main`
+  pending (§5.5)
 - [x] Successful `nightly-fs-crash` evidence at 200 iterations — **done**
   (run `34050249898`, §5)
 - [x] Targets/misses have receipts/profiles/follow-ups without requirement
@@ -327,10 +352,10 @@ scope; dead-`engine`-module removal proposal needs its own review.
   PASS has URL/artifact/command/SHA — **done** (§§5, 7)
 - [x] Full local quality suite + memory/SQLite/FS WPT green — **done** (§6)
 
-M7-C (and therefore M7) is **COMPLETE**: every §7 item has CI evidence
-above. `main` carries the full M5→M7 integration (merges `06fea04` …
-`a3fc22d`); probe branch `task/bench-check-probe` may be deleted after
-PR #1 merge.
+M7-C (and therefore M7) is **`EXTERNAL BLOCKER` (P1)**: §4 is PASS,
+§5 nightly needs one fresh dispatch on `main` (§5.5). `main` carries the
+full M5→M7 integration (merges `06fea04` … `a3fc22d` + `a271e25`); probe
+branch `task/bench-check-probe` may be deleted after PR #1 merge.
 
 ## 10. Known limitations
 
