@@ -1,0 +1,81 @@
+{
+  "host_role": "labelled",
+  "host_id": "boa-bench-01",
+  "provenance": {
+    "date_utc": "2026-09-07",
+    "os": "Linux",
+    "os_release": "6.12.107+deb13-amd64",
+    "arch": "x86_64",
+    "cpu": "Intel(R) Core(TM) i7-14700K",
+    "profile": "bench (inherits release, lto=thin)",
+    "command": "cargo bench -p boa_idb --bench backends",
+    "threshold": 1.1,
+    "host_role": "labelled",
+    "host_id": "boa-bench-01",
+    "fingerprint": {
+      "os_release": "6.12.107+deb13-amd64",
+      "cpu": "Intel(R) Core(TM) i7-14700K"
+    },
+    "rustc": "rustc 1.91.0 (f8297e351 2025-10-28)",
+    "git_sha": "b9077f51dac88a026bb0f883848e3aedfc9c3243"
+  },
+  "scenarios": {
+    "core/eval_readback": {
+      "mean_ns": 6327.703727913316
+    },
+    "core/js_request": {
+      "mean_ns": 34666.30320163678
+    },
+    "fs/cursor_scan_20000": {
+      "mean_ns": 6514137.77678041
+    },
+    "fs/empty_txn": {
+      "mean_ns": 52783.15796797791
+    },
+    "fs/open": {
+      "mean_ns": 1403214830.2
+    },
+    "fs/pk_get": {
+      "mean_ns": 110648.93041929482
+    },
+    "fs/put_batch": {
+      "mean_ns": 22332826.374609947
+    },
+    "fs/strict_commit": {
+      "mean_ns": 107354.50918589141
+    },
+    "memory/cursor_scan_20000": {
+      "mean_ns": 6162893.060612997
+    },
+    "memory/empty_txn": {
+      "mean_ns": 8573.810081275453
+    },
+    "memory/pk_get": {
+      "mean_ns": 131471.45266528596
+    },
+    "memory/put_batch": {
+      "mean_ns": 8278518.26576945
+    },
+    "memory/strict_commit": {
+      "mean_ns": 4562.895031225157
+    },
+    "sqlite/cursor_scan_20000": {
+      "mean_ns": 9058811.845597642
+    },
+    "sqlite/empty_txn": {
+      "mean_ns": 1206869.7032486093
+    },
+    "sqlite/open": {
+      "mean_ns": 23961.705859767513
+    },
+    "sqlite/pk_get": {
+      "mean_ns": 646798.1325025565
+    },
+    "sqlite/put_batch": {
+      "mean_ns": 88801788.125
+    },
+    "sqlite/strict_commit": {
+      "mean_ns": 325798.74034818256
+    }
+  }
+}
