@@ -185,6 +185,27 @@ fn extract_array_key_path_partial_failure() {
     assert_eq!(result, None);
 }
 
+#[test]
+fn extract_multi_entry_skips_invalid_members() {
+    let key_path = KeyPath::parse_single("names").unwrap();
+    let value = ScValue::Object(IndexMap::from([(
+        "names".into(),
+        ScValue::Array {
+            elements: vec![
+                Some(ScValue::String("Rita".into())),
+                Some(ScValue::Object(IndexMap::new())),
+                Some(ScValue::String("Bobby".into())),
+            ],
+            extra_props: Vec::new(),
+        },
+    )]));
+
+    assert_eq!(
+        key_path.extract_multi_entry(&value).unwrap(),
+        vec![Key::String("Rita".into()), Key::String("Bobby".into())]
+    );
+}
+
 // ===== Injection tests =====
 
 #[test]

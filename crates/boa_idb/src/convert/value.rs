@@ -5,8 +5,9 @@
 //! See BOA_022_INCOMPATIBILITIES.md §1, §2, §7, §8, §9, §14.
 
 use boa_engine::object::builtins::{JsArray, JsArrayBuffer, JsDate, JsTypedArray};
-use boa_engine::{Context, JsNativeError, JsObject, JsResult, JsValue, js_string};
-use boa_idb_core::clone::scvalue::{ScErrorKind, ScErrorObject, ScValue};
+use boa_engine::property::PropertyKey;
+use boa_engine::{Context, JsNativeError, JsObject, JsResult, JsSymbol, JsValue, js_string};
+use boa_idb_core::clone::scvalue::{ScErrorKind, ScErrorObject, ScTypedArrayKind, ScValue};
 use boa_idb_core::key::utf16::Utf16String;
 use indexmap::IndexMap;
 
@@ -14,6 +15,59 @@ use super::boa_compat::{JsObjectExt, js_string_to_utf16, utf16_to_js_string};
 
 /// Maximum nesting depth for structured cloning.
 const MAX_CLONE_DEPTH: usize = 512;
+
+/// Internal property used to preserve the prototype of supported platform
+/// objects while they travel through the engine-independent `ScValue` form.
+/// It is removed again during deserialization and is never exposed to JS.
+const PLATFORM_CLONE_MARKER: &str = "\u{0}boa-platform-clone-type";
+
+/// Realm-local, non-forgeable brand used by the WPT platform-object shims.
+#[derive(Clone)]
+pub struct PlatformCloneBrand {
+    /// Private symbol installed on shim instances.
+    pub symbol: JsSymbol,
+}
+
+/// Installs the private structured-clone brand for the WPT realm.
+pub fn install_platform_clone_brand(context: &mut Context) -> JsResult<()> {
+    let symbol = JsSymbol::new(Some(js_string!("boa platform clone brand")))
+        .ok_or_else(|| JsNativeError::range().with_message("unable to allocate platform brand"))?;
+    context.insert_data(PlatformCloneBrand {
+        symbol: symbol.clone(),
+    });
+    context.global_object().set(
+        js_string!("__boa_platform_clone_brand"),
+        JsValue::from(symbol),
+        false,
+        context,
+    )?;
+    Ok(())
+}
+
+/// Constructs `new Global[name](...args)` via `Reflect.construct`.
+///
+/// Calling a constructor as a plain function (`ctor.call(...)`) throws for
+/// `Map`, `Set`, TypedArrays and `DataView` (they require `new`); reflection
+/// is the only public way to construct from Rust.
+fn construct_global(context: &mut Context, name: &str, args: &[JsValue]) -> JsResult<JsValue> {
+    let ctor = context.global_object().get(js_string!(name), context)?;
+    let reflect = context
+        .global_object()
+        .get(js_string!("Reflect"), context)?;
+    let reflect_obj = reflect
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("Reflect is not an object"))?;
+    let construct = reflect_obj.get(js_string!("construct"), context)?;
+    let construct_callable = construct
+        .as_callable()
+        .ok_or_else(|| JsNativeError::typ().with_message("Reflect.construct is not callable"))?;
+    let args_array = JsArray::from_iter(args.iter().cloned(), context);
+    construct_callable.call(
+        &JsValue::undefined(),
+        &[ctor, JsValue::from(args_array)],
+        context,
+    )
+}
 
 /// Counter for generating unique memo indices.
 struct MemoCounter {
@@ -69,13 +123,21 @@ fn serialize_depth(
         return Ok(ScValue::String(js_string_to_utf16(&s)));
     }
     if val.is_bigint() {
-        return Err(JsNativeError::typ()
-            .with_message("DataCloneError: BigInt is not supported")
-            .into());
+        // `BigInt.prototype.toString` yields the decimal digits (no `n`
+        // suffix); the SCF codec stores arbitrary-precision integers.
+        let text = val.to_string(context)?.to_std_string_escaped();
+        let parsed = num_bigint::BigInt::parse_bytes(text.as_bytes(), 10)
+            .ok_or_else(|| JsNativeError::typ().with_message("DataCloneError: invalid BigInt"))?;
+        return Ok(ScValue::BigInt(parsed));
     }
     if val.is_symbol() {
         return Err(JsNativeError::typ()
             .with_message("DataCloneError: Symbol cannot be cloned")
+            .into());
+    }
+    if val.as_callable().is_some() {
+        return Err(JsNativeError::typ()
+            .with_message("DataCloneError: function cannot be cloned")
             .into());
     }
 
@@ -95,6 +157,22 @@ fn serialize_object(
     depth: usize,
     memo: &mut MemoCounter,
 ) -> JsResult<ScValue> {
+    if non_serializable_platform_object(obj, context) {
+        return Err(JsNativeError::typ()
+            .with_message("DataCloneError: platform object cannot be cloned")
+            .into());
+    }
+    // Date first: `Date.prototype.valueOf` returns a number, so the boxed-
+    // number unbox below would hijack real Dates (storing time millis as a
+    // boxed number instead of a Date).
+    if let Ok(date) = JsDate::from_object(obj.clone()) {
+        if let Ok(time_val) = date.get_time(context) {
+            if let Some(d) = time_val.as_number() {
+                return Ok(ScValue::Date(d));
+            }
+        }
+    }
+
     // Check for boxed primitives (Boolean, Number, String objects)
     if let Some(b) = try_unbox_boolean(obj, context) {
         return Ok(ScValue::BoxedBoolean(b));
@@ -105,14 +183,8 @@ fn serialize_object(
     if let Some(s) = try_unbox_string(obj, context) {
         return Ok(ScValue::BoxedString(s));
     }
-
-    // Date — используем JsDate::from_object (BOA_022 §9)
-    if let Ok(date) = JsDate::from_object(obj.clone()) {
-        if let Ok(time_val) = date.get_time(context) {
-            if let Some(d) = time_val.as_number() {
-                return Ok(ScValue::Date(d));
-            }
-        }
+    if let Some(bi) = try_unbox_bigint(obj, context) {
+        return Ok(ScValue::BoxedBigInt(bi));
     }
 
     // RegExp
@@ -160,8 +232,76 @@ fn serialize_object(
         return Ok(dv);
     }
 
-    // Default: plain Object — используем get_enumerable_keys (BOA_022 §14)
-    serialize_plain_object(obj, context, depth, memo)
+    // The WPT environment supplies JS platform-object shims (for example
+    // DOMPoint and Blob). They are serializable data objects, but a plain
+    // `ScValue::Object` would lose their prototype on the round trip.
+    // Preserve the internal shim brand in an internal marker so
+    // deserialization can recreate the same platform prototype.
+    let mut value = serialize_plain_object(obj, context, depth, memo)?;
+    if let Some(name) = platform_clone_name(obj, context) {
+        if let ScValue::Object(map) = &mut value {
+            map.insert(
+                Utf16String::from(PLATFORM_CLONE_MARKER),
+                ScValue::String(Utf16String::from(name)),
+            );
+        }
+    }
+    Ok(value)
+}
+
+/// Identifies platform objects that structured clone explicitly rejects.
+fn non_serializable_platform_object(obj: &JsObject, context: &mut Context) -> bool {
+    ["Event", "MessageChannel"]
+        .iter()
+        .any(|name| is_instance_of_global(obj, name, context))
+        || (has_platform_brand(obj, context)
+            && obj
+                .get(js_string!("postMessage"), context)
+                .ok()
+                .is_some_and(|value| value.as_callable().is_some()))
+}
+
+/// Returns the constructor name for the platform shims supported by the WPT
+/// environment. Native ECMAScript objects deliberately remain plain values.
+fn platform_clone_name(obj: &JsObject, context: &mut Context) -> Option<&'static str> {
+    if !has_platform_brand(obj, context) {
+        return None;
+    }
+    [
+        "DOMMatrix",
+        "DOMMatrixReadOnly",
+        "DOMPoint",
+        "DOMPointReadOnly",
+        "DOMRect",
+        "DOMRectReadOnly",
+        "ImageData",
+        "Blob",
+        "File",
+    ]
+    .iter()
+    .find_map(|name| is_instance_of_global(obj, name, context).then_some(*name))
+}
+
+fn has_platform_brand(obj: &JsObject, context: &mut Context) -> bool {
+    let Some(symbol) = context
+        .get_data::<PlatformCloneBrand>()
+        .map(|brand| brand.symbol.clone())
+    else {
+        return false;
+    };
+    obj.get(PropertyKey::from(symbol), context)
+        .ok()
+        .and_then(|value| value.as_boolean())
+        == Some(true)
+}
+
+fn is_instance_of_global(obj: &JsObject, name: &str, context: &mut Context) -> bool {
+    let Ok(constructor) = context.global_object().get(js_string!(name), context) else {
+        return false;
+    };
+    JsValue::from(obj.clone())
+        .instance_of(&constructor, context)
+        .unwrap_or(false)
 }
 
 /// Serializes an Array with hole support.
@@ -186,10 +326,46 @@ fn serialize_array(
             elements.push(Some(serialize_depth(&elem, context, depth + 1, memo)?));
         }
     }
+    // Non-index own enumerable properties (e.g. `arr.foo = 1`) travel as
+    // extra props; canonical indices live in `elements`.
+    let mut extra_props = Vec::new();
+    for key in obj.get_enumerable_keys(context)? {
+        let key_utf16 = js_string_to_utf16(&key);
+        if is_canonical_array_index(key_utf16.as_slice(), length) {
+            continue;
+        }
+        let val = obj.get(key.clone(), context)?;
+        let serialized = serialize_depth(&val, context, depth + 1, memo)?;
+        extra_props.push((key_utf16, serialized));
+    }
     Ok(ScValue::Array {
         elements,
-        extra_props: Vec::new(),
+        extra_props,
     })
+}
+
+/// Reports whether `key` (UTF-16) is a canonical array index below `length.
+///
+/// Canonical numeric index per ECMA-262: ASCII digits, no leading zeros
+/// (unless the key is exactly `"0"`), numeric value < 2^32 - 1.
+fn is_canonical_array_index(units: &[u16], length: u32) -> bool {
+    if units.is_empty() || units.len() > 10 {
+        return false;
+    }
+    if units.len() > 1 && units[0] == u16::from(b'0') {
+        return false;
+    }
+    if !units
+        .iter()
+        .all(|u| (u16::from(b'0')..=u16::from(b'9')).contains(u))
+    {
+        return false;
+    }
+    let mut value: u64 = 0;
+    for u in units {
+        value = value * 10 + u64::from(*u - u16::from(b'0'));
+    }
+    value < 4_294_967_295 && value < u64::from(length)
 }
 
 /// Serializes a plain object using enumerable own properties (BOA_022 §14).
@@ -311,9 +487,9 @@ fn serialize_typed_array(
         .data()
         .ok_or_else(|| JsNativeError::typ().with_message("TypedArray buffer is detached"))?;
 
-    // Serialize the buffer as an ArrayBuffer entry and record its memo index
-    let buffer_memo_index = memo.next();
-    let _buf_sc = ScValue::ArrayBuffer {
+    // Serialize the buffer as an embedded ArrayBuffer entry.
+    let _ = memo.next();
+    let buf_sc = ScValue::ArrayBuffer {
         data: buf_data.to_vec(),
         max_byte_length: None,
     };
@@ -352,6 +528,9 @@ fn serialize_typed_array(
         Some(boa_engine::builtins::typed_array::TypedArrayKind::BigUint64) => {
             boa_idb_core::clone::scvalue::ScTypedArrayKind::BigUint64
         }
+        Some(boa_engine::builtins::typed_array::TypedArrayKind::Float16) => {
+            boa_idb_core::clone::scvalue::ScTypedArrayKind::Float16
+        }
         _ => {
             return Err(JsNativeError::typ()
                 .with_message("DataCloneError: Unsupported TypedArray kind")
@@ -363,7 +542,7 @@ fn serialize_typed_array(
         kind,
         byte_offset,
         length,
-        buffer_memo_index,
+        buffer: Box::new(buf_sc),
     })
 }
 
@@ -390,9 +569,9 @@ fn try_serialize_data_view(
         .ok()?
         .as_number()? as usize;
 
-    // Serialize the buffer and record its memo index
-    let buffer_memo_index = memo.next();
-    let _buf_sc = ScValue::ArrayBuffer {
+    // Serialize the buffer as an embedded ArrayBuffer entry.
+    let _ = memo.next();
+    let buf_sc = ScValue::ArrayBuffer {
         data: buf_data.to_vec(),
         max_byte_length: None,
     };
@@ -400,7 +579,7 @@ fn try_serialize_data_view(
     Some(ScValue::DataView {
         byte_offset,
         byte_length,
-        buffer_memo_index,
+        buffer: Box::new(buf_sc),
     })
 }
 
@@ -560,6 +739,21 @@ fn try_unbox_string(obj: &JsObject, context: &mut Context) -> Option<Utf16String
     primitive.as_string().as_ref().map(js_string_to_utf16)
 }
 
+/// Attempts to unbox a BigInt object.
+fn try_unbox_bigint(obj: &JsObject, context: &mut Context) -> Option<num_bigint::BigInt> {
+    let primitive = obj
+        .get(js_string!("valueOf"), context)
+        .ok()?
+        .as_callable()?
+        .call(&JsValue::from(obj.clone()), &[], context)
+        .ok()?;
+    if !primitive.is_bigint() {
+        return None;
+    }
+    let text = primitive.to_string(context).ok()?.to_std_string_escaped();
+    num_bigint::BigInt::parse_bytes(text.as_bytes(), 10)
+}
+
 fn parse_regexp_flags(flags: &str) -> boa_idb_core::clone::scvalue::RegExpFlags {
     let mut result = boa_idb_core::clone::scvalue::RegExpFlags::default();
     for ch in flags.chars() {
@@ -592,20 +786,61 @@ pub fn deserialize_from_storage(val: &ScValue, context: &mut Context) -> JsResul
             date.set_time(JsValue::from(*d), context)?;
             Ok(date.into())
         }
-        ScValue::Array { elements, .. } => {
-            let js_elements: Vec<JsValue> = elements
-                .iter()
-                .map(|elem| match elem {
-                    Some(v) => deserialize_from_storage(v, context),
-                    None => Ok(JsValue::undefined()),
-                })
-                .collect::<JsResult<Vec<_>>>()?;
-            let arr = JsArray::from_iter(js_elements, context);
+        ScValue::Array {
+            elements,
+            extra_props,
+        } => {
+            // Build a hole-preserving array: set the length first (extends
+            // with holes), then fill present elements and extra props.
+            let arr = JsArray::new(context)?;
+            arr.set(
+                js_string!("length"),
+                JsValue::from(elements.len() as f64),
+                false,
+                context,
+            )?;
+            for (index, elem) in elements.iter().enumerate() {
+                if let Some(v) = elem {
+                    let js_val = deserialize_from_storage(v, context)?;
+                    arr.set(index, js_val, false, context)?;
+                }
+            }
+            for (key, value) in extra_props {
+                let js_key = utf16_to_js_string(key);
+                let js_val = deserialize_from_storage(value, context)?;
+                arr.set(js_key, js_val, false, context)?;
+            }
             Ok(arr.into())
         }
         ScValue::Object(map) => {
-            let obj = JsObject::with_null_proto();
+            let platform_name =
+                map.get(&Utf16String::from(PLATFORM_CLONE_MARKER))
+                    .and_then(|value| match value {
+                        ScValue::String(name) => Some(name.to_string()),
+                        _ => None,
+                    });
+            let obj = if let Some(name) = platform_name {
+                construct_global(context, &name, &[])?
+                    .as_object()
+                    .ok_or_else(|| {
+                        JsNativeError::typ()
+                            .with_message("Platform clone constructor did not return an object")
+                    })?
+            } else {
+                // Plain objects get the standard prototype (structured-clone
+                // preserves `Object.getPrototypeOf`; a null prototype would fail
+                // prototype assertions).
+                JsObject::with_object_proto(context.intrinsics())
+            };
             for (key, value) in map {
+                if key.as_slice()
+                    == PLATFORM_CLONE_MARKER
+                        .encode_utf16()
+                        .collect::<Vec<_>>()
+                        .as_slice()
+                {
+                    continue;
+                }
                 let js_key = utf16_to_js_string(key);
                 let js_val = deserialize_from_storage(value, context)?;
                 obj.set(js_key, js_val, false, context)?;
@@ -616,19 +851,69 @@ pub fn deserialize_from_storage(val: &ScValue, context: &mut Context) -> JsResul
             let buf = super::boa_compat::create_array_buffer(data, context)?;
             Ok(buf.into())
         }
+        ScValue::TypedArray {
+            kind,
+            byte_offset,
+            length,
+            buffer,
+        } => {
+            let ScValue::ArrayBuffer { data, .. } = buffer.as_ref() else {
+                return Err(JsNativeError::typ()
+                    .with_message("DataCloneError: TypedArray without backing buffer")
+                    .into());
+            };
+            let buf = super::boa_compat::create_array_buffer(data, context)?;
+            let ctor_name = match kind {
+                ScTypedArrayKind::Int8 => "Int8Array",
+                ScTypedArrayKind::Uint8 => "Uint8Array",
+                ScTypedArrayKind::Uint8Clamped => "Uint8ClampedArray",
+                ScTypedArrayKind::Int16 => "Int16Array",
+                ScTypedArrayKind::Uint16 => "Uint16Array",
+                ScTypedArrayKind::Int32 => "Int32Array",
+                ScTypedArrayKind::Uint32 => "Uint32Array",
+                ScTypedArrayKind::Float32 => "Float32Array",
+                ScTypedArrayKind::Float64 => "Float64Array",
+                ScTypedArrayKind::BigInt64 => "BigInt64Array",
+                ScTypedArrayKind::BigUint64 => "BigUint64Array",
+                ScTypedArrayKind::Float16 => "Float16Array",
+            };
+            construct_global(
+                context,
+                ctor_name,
+                &[
+                    JsValue::from(buf),
+                    JsValue::from(*byte_offset as f64),
+                    JsValue::from(*length as f64),
+                ],
+            )
+        }
+        ScValue::DataView {
+            byte_offset,
+            byte_length,
+            buffer,
+        } => {
+            let ScValue::ArrayBuffer { data, .. } = buffer.as_ref() else {
+                return Err(JsNativeError::typ()
+                    .with_message("DataCloneError: DataView without backing buffer")
+                    .into());
+            };
+            let buf = super::boa_compat::create_array_buffer(data, context)?;
+            construct_global(
+                context,
+                "DataView",
+                &[
+                    JsValue::from(buf),
+                    JsValue::from(*byte_offset as f64),
+                    JsValue::from(*byte_length as f64),
+                ],
+            )
+        }
         ScValue::Map(entries) => {
-            // Create a new Map and populate it
-            let map_constructor = context
-                .intrinsics()
-                .constructors()
-                .map()
-                .constructor()
-                .clone();
-            let map_obj = map_constructor
-                .call(&JsValue::undefined(), &[], context)?
+            // Create a new Map via `new Map()` and populate it.
+            let map_val = construct_global(context, "Map", &[])?;
+            let map_obj = map_val
                 .as_object()
-                .ok_or_else(|| JsNativeError::typ().with_message("Failed to create Map"))?
-                .clone();
+                .ok_or_else(|| JsNativeError::typ().with_message("Failed to create Map"))?;
 
             for (k, v) in entries {
                 let js_key = deserialize_from_storage(k, context)?;
@@ -639,18 +924,11 @@ pub fn deserialize_from_storage(val: &ScValue, context: &mut Context) -> JsResul
             Ok(map_obj.into())
         }
         ScValue::Set(values) => {
-            // Create a new Set and populate it
-            let set_constructor = context
-                .intrinsics()
-                .constructors()
-                .set()
-                .constructor()
-                .clone();
-            let set_obj = set_constructor
-                .call(&JsValue::undefined(), &[], context)?
+            // Create a new Set via `new Set()` and populate it.
+            let set_val = construct_global(context, "Set", &[])?;
+            let set_obj = set_val
                 .as_object()
-                .ok_or_else(|| JsNativeError::typ().with_message("Failed to create Set"))?
-                .clone();
+                .ok_or_else(|| JsNativeError::typ().with_message("Failed to create Set"))?;
 
             for v in values {
                 let js_val = deserialize_from_storage(v, context)?;
@@ -694,40 +972,31 @@ pub fn deserialize_from_storage(val: &ScValue, context: &mut Context) -> JsResul
             Ok(error_obj.into())
         }
         ScValue::BoxedBoolean(b) => {
-            let boolean_constructor = context
-                .intrinsics()
-                .constructors()
-                .boolean()
-                .constructor()
-                .clone();
-            let obj =
-                boolean_constructor.call(&JsValue::undefined(), &[JsValue::from(*b)], context)?;
-            Ok(obj)
+            // `Object(primitive)` wraps into a Boolean object (calling the
+            // `Boolean` constructor as a function would return a primitive).
+            let object_constructor = context.global_object().get(js_string!("Object"), context)?;
+            let object_callable = object_constructor
+                .as_callable()
+                .ok_or_else(|| JsNativeError::typ().with_message("Object is not callable"))?;
+            object_callable.call(&JsValue::undefined(), &[JsValue::from(*b)], context)
         }
         ScValue::BoxedNumber(n) => {
-            let number_constructor = context
-                .intrinsics()
-                .constructors()
-                .number()
-                .constructor()
-                .clone();
-            let obj =
-                number_constructor.call(&JsValue::undefined(), &[JsValue::from(*n)], context)?;
-            Ok(obj)
+            let object_constructor = context.global_object().get(js_string!("Object"), context)?;
+            let object_callable = object_constructor
+                .as_callable()
+                .ok_or_else(|| JsNativeError::typ().with_message("Object is not callable"))?;
+            object_callable.call(&JsValue::undefined(), &[JsValue::from(*n)], context)
         }
         ScValue::BoxedString(s) => {
-            let string_constructor = context
-                .intrinsics()
-                .constructors()
-                .string()
-                .constructor()
-                .clone();
-            let obj = string_constructor.call(
+            let object_constructor = context.global_object().get(js_string!("Object"), context)?;
+            let object_callable = object_constructor
+                .as_callable()
+                .ok_or_else(|| JsNativeError::typ().with_message("Object is not callable"))?;
+            object_callable.call(
                 &JsValue::undefined(),
                 &[JsValue::from(utf16_to_js_string(s))],
                 context,
-            )?;
-            Ok(obj)
+            )
         }
         ScValue::RegExp { pattern, flags } => {
             // Create a new RegExp from pattern and flags
@@ -773,16 +1042,38 @@ pub fn deserialize_from_storage(val: &ScValue, context: &mut Context) -> JsResul
             Ok(regexp_obj)
         }
         ScValue::BigInt(bi) => {
-            // BigInt is not supported in structured clone for storage
-            Err(JsNativeError::typ()
-                .with_message("DataCloneError: BigInt cannot be deserialized")
-                .into())
+            let ctor = context.global_object().get(js_string!("BigInt"), context)?;
+            let callable = ctor
+                .as_callable()
+                .ok_or_else(|| JsNativeError::typ().with_message("BigInt is not callable"))?;
+            callable.call(
+                &JsValue::undefined(),
+                &[JsValue::from(js_string!(bi.to_string().as_str()))],
+                context,
+            )
         }
-        ScValue::BoxedBigInt(bi) => Err(JsNativeError::typ()
-            .with_message("DataCloneError: BoxedBigInt cannot be deserialized")
-            .into()),
-        _ => Err(JsNativeError::typ()
-            .with_message("DataCloneError: Unsupported type for deserialization")
+        ScValue::BoxedBigInt(bi) => {
+            let ctor = context.global_object().get(js_string!("Object"), context)?;
+            let callable = ctor
+                .as_callable()
+                .ok_or_else(|| JsNativeError::typ().with_message("Object is not callable"))?;
+            let primitive = {
+                let big_ctor = context.global_object().get(js_string!("BigInt"), context)?;
+                let big_callable = big_ctor
+                    .as_callable()
+                    .ok_or_else(|| JsNativeError::typ().with_message("BigInt is not callable"))?;
+                big_callable.call(
+                    &JsValue::undefined(),
+                    &[JsValue::from(js_string!(bi.to_string().as_str()))],
+                    context,
+                )?
+            };
+            callable.call(&JsValue::undefined(), &[primitive], context)
+        }
+        // The decoder resolves every `MemoRef` inline, so none can reach
+        // deserialization; treat a stray one as corrupt input.
+        ScValue::MemoRef(_) => Err(JsNativeError::typ()
+            .with_message("DataCloneError: Unresolved memo reference")
             .into()),
     }
 }

@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --version 0.20.2 --locked
+      - name: Fetch RustSec advisory database
+        shell: bash
+        run: |
+          export CARGO_DENY_DB_PATH="$GITHUB_WORKSPACE/target/cargo-deny-advisories"
+          echo "CARGO_DENY_DB_PATH=$CARGO_DENY_DB_PATH" >> "$GITHUB_ENV"
+          cargo deny fetch db
+      - name: Check dependencies
+        run: cargo deny check
+      - name: Check Rust workspace
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo test --workspace

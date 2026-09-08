@@ -241,14 +241,17 @@ fn scf_invalid_magic() {
 #[test]
 fn scf_unsupported_version() {
     let mut data = b"IDB1".to_vec();
-    data.push(2); // version 2
+    data.push(SCF_VERSION + 1); // unknown future version
     data.push(0); // flags
     data.extend_from_slice(&[0, 0]); // reserved
     data.push(0x00); // body
     let checksum = boa_idb_core::clone::crc32c::crc32c(&data);
     data.extend_from_slice(&checksum.to_le_bytes());
     let result = decode_scf(&data, &limits());
-    assert!(matches!(result, Err(ScError::UnsupportedVersion(2))));
+    assert!(matches!(
+        result,
+        Err(ScError::UnsupportedVersion(v)) if v == SCF_VERSION + 1
+    ));
 }
 
 #[test]
@@ -285,7 +288,7 @@ fn scf_deeply_nested() {
 /// Builds a complete SCF frame (header + body + CRC32C trailer).
 fn frame_with_body(body: &[u8]) -> Vec<u8> {
     let mut data = b"IDB1".to_vec();
-    data.push(1); // version
+    data.push(SCF_VERSION); // version
     data.push(0); // flags
     data.extend_from_slice(&[0, 0]); // reserved
     data.extend_from_slice(body);
@@ -316,9 +319,10 @@ fn scf_memo_ref_roundtrip() {
 
 #[test]
 fn scf_memo_ref_stays_aligned_across_typedarray() {
-    // Memo layout: 0 = outer Array, 1 = buffer, 2 = TypedArray view.
-    // Before the fix the decoder reserved no slot for TypedArray, so
-    // MemoRef(2) resolved to the wrong entry.
+    // Memo layout with embedded buffers: 0 = outer Array, 1 = standalone
+    // buffer, 2 = view, 3 = buffer embedded in the view. A MemoRef(1) after
+    // the view must still resolve to the standalone buffer, proving the
+    // embedded buffer kept the memo table aligned.
     let buf = ScValue::ArrayBuffer {
         data: vec![10, 20, 30, 40],
         max_byte_length: None,
@@ -327,14 +331,13 @@ fn scf_memo_ref_stays_aligned_across_typedarray() {
         kind: ScTypedArrayKind::Uint8,
         byte_offset: 0,
         length: 4,
-        buffer_memo_index: 1,
+        buffer: Box::new(buf.clone()),
     };
     let val = ScValue::Array {
         elements: vec![
             Some(buf.clone()),
             Some(view.clone()),
             Some(ScValue::MemoRef(1)),
-            Some(ScValue::MemoRef(2)),
         ],
         extra_props: Vec::new(),
     };
@@ -342,9 +345,8 @@ fn scf_memo_ref_stays_aligned_across_typedarray() {
     let ScValue::Array { elements, .. } = decoded else {
         panic!("expected Array");
     };
-    assert_eq!(elements.len(), 4);
+    assert_eq!(elements.len(), 3);
     assert_eq!(elements[2].as_ref(), Some(&buf));
-    assert_eq!(elements[3].as_ref(), Some(&view));
 }
 
 #[test]

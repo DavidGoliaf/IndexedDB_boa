@@ -30,7 +30,10 @@ impl SqliteDatabase {
     ) -> Result<Self, BackendError> {
         let meta = {
             let checkout = pool.checkout_reader()?;
-            Self::load_metadata(checkout.conn()?)?
+            let conn = checkout.conn()?;
+            let meta = Self::load_metadata(conn)?;
+            BlobManager::new(&storage_root, &db_hash).sweep_orphans(conn)?;
+            meta
         };
 
         Ok(Self {
@@ -202,7 +205,7 @@ impl Database for SqliteDatabase {
         &mut self,
         mode: TxnMode,
         scope: &[StoreId],
-        _durability: Durability,
+        durability: Durability,
     ) -> Result<Box<dyn BackendTxn + 'static>, BackendError> {
         // Refresh the cached metadata from the last committed state so every
         // transaction starts from a consistent snapshot of the schema.
@@ -223,8 +226,14 @@ impl Database for SqliteDatabase {
             }
             TxnMode::ReadWrite | TxnMode::VersionChange => {
                 let checkout = self.pool.checkout_writer()?;
-                let txn =
-                    SqliteTxn::new_writer(checkout, mode, scope_vec, meta, Some(blob_manager))?;
+                let txn = SqliteTxn::new_writer(
+                    checkout,
+                    mode,
+                    durability,
+                    scope_vec,
+                    meta,
+                    Some(blob_manager),
+                )?;
                 Ok(Box::new(txn))
             }
         }

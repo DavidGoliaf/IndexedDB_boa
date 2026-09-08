@@ -243,7 +243,19 @@ pub fn throw_idb_error(error: &boa_idb_core::error::IdbError, context: &mut Cont
     }
 }
 
-/// Throws a `TypeError` DOMException.
+/// Throws a `SyntaxError` DOMException.
+pub fn throw_syntax_error(message: &str, context: &mut Context) -> JsResult<JsValue> {
+    let value = create_dom_exception("SyntaxError", message, context)?;
+    Err(boa_engine::JsError::from_opaque(value))
+}
+
+/// Throws an `InvalidAccessError` DOMException.
+pub fn throw_invalid_access_error(message: &str, context: &mut Context) -> JsResult<JsValue> {
+    let value = create_dom_exception("InvalidAccessError", message, context)?;
+    Err(boa_engine::JsError::from_opaque(value))
+}
+
+/// Throws a native `TypeError` (WebIDL arity/conversion errors, not IDB errors).
 pub fn throw_type_error(message: &str) -> JsError {
     JsNativeError::typ()
         .with_message(message.to_string())

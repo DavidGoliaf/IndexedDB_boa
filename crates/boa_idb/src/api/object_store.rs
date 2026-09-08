@@ -60,6 +60,9 @@ fn store_of(this: &JsValue, context: &mut Context) -> JsResult<(JsObject, u64, J
             .ok_or_else(|| JsNativeError::typ().with_message("'this' is not an IDBObjectStore"))?;
         (data.store_id, data.transaction.clone())
     };
+    // Deleted/aborted-upgrade handles first (InvalidStateError), then the
+    // activity check (TransactionInactiveError).
+    crate::api::support::require_live_store(context, &txn_obj, store_id)?;
     let txn_id = active_txn_id(context, &txn_obj)?;
     Ok((obj, store_id, txn_obj))
 }
@@ -88,7 +91,7 @@ fn open_cursor_impl(
     let (obj, store_id, txn_obj) = store_of(this, context)?;
     let default_val = JsValue::undefined();
     let query = args.first().unwrap_or(&default_val);
-    let range = query_to_range(query, context)?;
+    let range = crate::api::support::nullable_query_to_range(query, context)?;
     let direction = match args.get(1) {
         Some(v) if !v.is_undefined() => crate::api::support::parse_direction(v, context)?,
         _ => boa_idb_core::proto::Direction::Next,
@@ -123,21 +126,79 @@ fn put_impl(
 
     // Structured clone runs synchronously (AD-2); DataCloneError throws sync.
     let sc_value = serialize_for_storage(value_js, context).map_err(|e| {
-        crate::dom::exception::throw_idb_error(
-            &boa_idb_core::error::IdbError::DataClone(e.to_string()),
-            context,
-        )
+        if e.as_opaque().is_some() {
+            e
+        } else {
+            crate::dom::exception::throw_idb_error(
+                &boa_idb_core::error::IdbError::DataClone(e.to_string()),
+                context,
+            )
+        }
     })?;
 
     let key = explicit_key
         .map(|k| value_to_key(k, context))
         .transpose()
-        .map_err(|e| {
+        .map_err(|e| crate::convert::key::throw_key_conversion_error(e, context))?;
+
+    // Eager key validation (§6.1): invalid keys throw `DataError`
+    // synchronously instead of surfacing through the request.
+    {
+        let (key_path, auto_increment) = {
+            let data = obj.downcast_ref::<IdBObjectStore>().ok_or_else(|| {
+                JsNativeError::typ().with_message("'this' is not an IDBObjectStore")
+            })?;
+            (data.key_path.clone(), data.auto_increment)
+        };
+        let mut data_error = |msg: &str| {
             crate::dom::exception::throw_idb_error(
-                &boa_idb_core::error::IdbError::Data(e.to_string()),
+                &boa_idb_core::error::IdbError::Data(msg.into()),
                 context,
             )
-        })?;
+        };
+        match (&key_path, &key) {
+            // Explicit key with an inline-key store.
+            (Some(kp), Some(_)) if !matches!(kp, KeyPath::Empty) => {
+                return Err(data_error(
+                    "Cannot provide an explicit key when the store has a keyPath",
+                ));
+            }
+            // Inline-key store without explicit key: the key must be
+            // extractable now, or generatable via autoIncrement.
+            (Some(kp), None) if !matches!(kp, KeyPath::Empty) => match kp.extract(&sc_value) {
+                Ok(Some(_)) => {}
+                Ok(None) if auto_increment => {}
+                Ok(None) => {
+                    return Err(data_error(
+                        "Could not extract a key from the value and autoIncrement is disabled",
+                    ));
+                }
+                Err(e) => {
+                    return Err(data_error(&format!("Invalid inline key: {e}")));
+                }
+            },
+            // Empty-string key path without explicit key: the value itself is
+            // the key and must already be a valid key (autoIncrement falls
+            // back to generation, validated at execution).
+            (Some(KeyPath::Empty), None) => match sc_value.to_key() {
+                Ok(Some(_)) => {}
+                _ if auto_increment => {}
+                Ok(None) => {
+                    return Err(data_error("Value cannot be used as a key"));
+                }
+                Err(e) => {
+                    return Err(data_error(&format!("Invalid key: {e}")));
+                }
+            },
+            // Out-of-line store without key and without autoIncrement.
+            (kp, None)
+                if kp.as_ref().is_none_or(|k| matches!(k, KeyPath::Empty)) && !auto_increment =>
+            {
+                return Err(data_error("No key provided and autoIncrement is disabled"));
+            }
+            _ => {}
+        }
+    }
 
     let txn_id = active_txn_id(context, &txn_obj)?;
     Ok(JsValue::from(issue_request(
@@ -547,7 +608,8 @@ impl Class for IdBObjectStore {
                     })?;
                     (data.store_id, data.transaction.clone())
                 };
-                let txn_id = active_txn_id(context, &txn_obj).unwrap_or(u64::MAX);
+                crate::api::support::require_live_store(context, &txn_obj, store_id)?;
+                let txn_id = active_txn_id(context, &txn_obj)?;
                 let name = args
                     .first()
                     .unwrap_or(&JsValue::undefined())
@@ -607,6 +669,11 @@ impl Class for IdBObjectStore {
                     })?;
                     (data.name.clone(), data.transaction.clone())
                 };
+                let store_id = obj
+                    .downcast_ref::<IdBObjectStore>()
+                    .map(|data| data.store_id)
+                    .ok_or_else(|| JsNativeError::typ().with_message("Not an IDBObjectStore"))?;
+                crate::api::support::require_live_store(context, &txn_obj, store_id)?;
                 let txn_id = active_txn_id(context, &txn_obj)?;
 
                 let name = args
@@ -697,6 +764,11 @@ impl Class for IdBObjectStore {
                     })?;
                     (data.name.clone(), data.transaction.clone())
                 };
+                let store_id = obj
+                    .downcast_ref::<IdBObjectStore>()
+                    .map(|data| data.store_id)
+                    .ok_or_else(|| JsNativeError::typ().with_message("Not an IDBObjectStore"))?;
+                crate::api::support::require_live_store(context, &txn_obj, store_id)?;
                 let txn_id = active_txn_id(context, &txn_obj)?;
                 let name = args
                     .first()

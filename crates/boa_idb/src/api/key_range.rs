@@ -35,6 +35,38 @@ impl IdBKeyRange {
     }
 }
 
+fn create_key_range(data: IdBKeyRange, context: &mut Context) -> JsResult<boa_engine::JsObject> {
+    let obj = IdBKeyRange::from_data(data, context)?;
+    if context.get_data::<crate::runtime::IdbRuntime>().is_some() {
+        if let Some(runtime) = context.get_data::<crate::runtime::IdbRuntime>() {
+            runtime.key_range_objects.borrow_mut().push(obj.clone());
+        }
+        let existing = context
+            .get_data::<crate::runtime::IdbRuntime>()
+            .and_then(|runtime| runtime.key_range_set.borrow().clone());
+        let set = if let Some(set) = existing {
+            set
+        } else {
+            let constructor = context
+                .global_object()
+                .get(js_string!("WeakSet"), context)?
+                .as_object()
+                .ok_or_else(|| JsNativeError::typ().with_message("WeakSet is not an object"))?;
+            let set = constructor.construct(&[], None, context)?;
+            if let Some(runtime) = context.get_data::<crate::runtime::IdbRuntime>() {
+                runtime.key_range_set.borrow_mut().replace(set.clone());
+            }
+            set
+        };
+        let add = set
+            .get(js_string!("add"), context)?
+            .as_callable()
+            .ok_or_else(|| JsNativeError::typ().with_message("WeakSet.add is not callable"))?;
+        add.call(&JsValue::from(set), &[JsValue::from(obj.clone())], context)?;
+    }
+    Ok(obj)
+}
+
 impl Class for IdBKeyRange {
     const NAME: &'static str = "IDBKeyRange";
     const LENGTH: usize = 0;
@@ -142,10 +174,7 @@ impl Class for IdBKeyRange {
                 let key = match value_to_key(&args[0], ctx) {
                     Ok(key) => key,
                     Err(e) => {
-                        return crate::dom::exception::throw_data_error(
-                            &format!("Invalid key: {e}"),
-                            ctx,
-                        );
+                        return Err(crate::convert::key::throw_key_conversion_error(e, ctx));
                     }
                 };
 
@@ -195,10 +224,7 @@ impl Class for IdBKeyRange {
                 let key = match value_to_key(&args[0], ctx) {
                     Ok(key) => key,
                     Err(e) => {
-                        return crate::dom::exception::throw_data_error(
-                            &format!("Invalid key: {e}"),
-                            ctx,
-                        );
+                        return Err(crate::convert::key::throw_key_conversion_error(e, ctx));
                     }
                 };
                 let data = IdBKeyRange {
@@ -207,7 +233,7 @@ impl Class for IdBKeyRange {
                     lower_open: false,
                     upper_open: false,
                 };
-                let obj = IdBKeyRange::from_data(data, ctx)?;
+                let obj = create_key_range(data, ctx)?;
                 Ok(JsValue::from(obj))
             }),
         );
@@ -225,10 +251,7 @@ impl Class for IdBKeyRange {
                 let key = match value_to_key(&args[0], ctx) {
                     Ok(key) => key,
                     Err(e) => {
-                        return crate::dom::exception::throw_data_error(
-                            &format!("Invalid key: {e}"),
-                            ctx,
-                        );
+                        return Err(crate::convert::key::throw_key_conversion_error(e, ctx));
                     }
                 };
                 let open = args.get(1).is_some_and(|v| v.to_boolean());
@@ -238,7 +261,7 @@ impl Class for IdBKeyRange {
                     lower_open: open,
                     upper_open: true,
                 };
-                let obj = IdBKeyRange::from_data(data, ctx)?;
+                let obj = create_key_range(data, ctx)?;
                 Ok(JsValue::from(obj))
             }),
         );
@@ -256,10 +279,7 @@ impl Class for IdBKeyRange {
                 let key = match value_to_key(&args[0], ctx) {
                     Ok(key) => key,
                     Err(e) => {
-                        return crate::dom::exception::throw_data_error(
-                            &format!("Invalid key: {e}"),
-                            ctx,
-                        );
+                        return Err(crate::convert::key::throw_key_conversion_error(e, ctx));
                     }
                 };
                 let open = args.get(1).is_some_and(|v| v.to_boolean());
@@ -269,7 +289,7 @@ impl Class for IdBKeyRange {
                     lower_open: true,
                     upper_open: open,
                 };
-                let obj = IdBKeyRange::from_data(data, ctx)?;
+                let obj = create_key_range(data, ctx)?;
                 Ok(JsValue::from(obj))
             }),
         );
@@ -287,19 +307,13 @@ impl Class for IdBKeyRange {
                 let lower = match value_to_key(&args[0], ctx) {
                     Ok(key) => key,
                     Err(e) => {
-                        return crate::dom::exception::throw_data_error(
-                            &format!("Invalid key: {e}"),
-                            ctx,
-                        );
+                        return Err(crate::convert::key::throw_key_conversion_error(e, ctx));
                     }
                 };
                 let upper = match value_to_key(&args[1], ctx) {
                     Ok(key) => key,
                     Err(e) => {
-                        return crate::dom::exception::throw_data_error(
-                            &format!("Invalid key: {e}"),
-                            ctx,
-                        );
+                        return Err(crate::convert::key::throw_key_conversion_error(e, ctx));
                     }
                 };
                 if compare_keys(&lower, &upper) == Ordering::Greater {
@@ -316,7 +330,7 @@ impl Class for IdBKeyRange {
                     lower_open,
                     upper_open,
                 };
-                let obj = IdBKeyRange::from_data(data, ctx)?;
+                let obj = create_key_range(data, ctx)?;
                 Ok(JsValue::from(obj))
             }),
         );

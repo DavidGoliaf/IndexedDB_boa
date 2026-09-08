@@ -205,6 +205,20 @@ fn determine_key(
         }
         // No keyPath, explicit key provided -> use it
         (_, Some(k)) => Ok(k.clone()),
+        // Empty key path without explicit key -> the value itself is the key.
+        (crate::key::path::KeyPath::Empty, None) => {
+            // `StoreMeta` uses `KeyPath::Empty` for an omitted keyPath. An
+            // auto-increment store with no keyPath always generates a key;
+            // the value is not itself an out-of-line key in this case.
+            if store_meta.auto_increment {
+                return Ok(Key::Number(keygen.generate()?));
+            }
+            match value.to_key() {
+                Ok(Some(k)) => Ok(k),
+                Ok(None) => Err(IdbError::Data("Value cannot be used as a key".into())),
+                Err(e) => Err(IdbError::Data(format!("Invalid key: {e}"))),
+            }
+        }
         // No keyPath, no explicit key -> generate
         (_, None) => {
             if store_meta.auto_increment {
@@ -266,32 +280,36 @@ fn sync_indexes_on_put(
 /// Extracts the deduplicated set of encoded index keys one index derives
 /// from a value (multiEntry arrays are expanded, duplicates removed).
 ///
-/// All elements are valid keys by construction here (`Key` values, not raw
-/// JS input), so there is nothing to skip — only deduplication applies.
+/// A value that does not produce a valid key (missing path, or an
+/// un-keyable value like a plain object) is simply not indexed — this is
+/// not an error (§6.1: only the store's own key validation can fail a put).
 fn index_keys_for_value(
     index: &IndexMeta,
     value: &ScValue,
     limits: &LimitConfig,
 ) -> Result<Vec<Vec<u8>>, IdbError> {
     let mut out = Vec::new();
-    if let Some(idx_key) = index.key_path.extract(value)? {
-        let keys = if index.multi_entry {
-            expand_multi_entry_key(&idx_key)
-        } else {
-            vec![idx_key]
+    let keys = if index.multi_entry {
+        index.key_path.extract_multi_entry(value)?
+    } else {
+        let Ok(Some(idx_key)) = index.key_path.extract(value) else {
+            // Missing path or un-keyable value: skip this index.
+            return Ok(Vec::new());
         };
-        for k in keys {
-            let mut bytes = Vec::new();
-            encode_key(&k, &mut bytes, limits)?;
-            if !out.contains(&bytes) {
-                out.push(bytes);
-            }
+        vec![idx_key]
+    };
+    for k in keys {
+        let mut bytes = Vec::new();
+        encode_key(&k, &mut bytes, limits)?;
+        if !out.contains(&bytes) {
+            out.push(bytes);
         }
     }
     Ok(out)
 }
 
 /// Expands a multiEntry key into individual keys.
+#[allow(dead_code)]
 fn expand_multi_entry_key(key: &Key) -> Vec<Key> {
     match key {
         Key::Array(arr) => arr.clone(),

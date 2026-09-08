@@ -10,6 +10,9 @@ use boa_idb_core::key::utf16::Utf16String;
 
 use super::boa_compat::js_string_to_utf16;
 
+/// Maximum integer exactly representable as `f64` (2^53 − 1).
+const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+
 /// Converts a `JsValue` to `u64` using `[EnforceRange]` rules.
 ///
 /// Per WebIDL: NaN/Infinity → TypeError; truncates fractional part; range [0, 2^53−1].
@@ -21,7 +24,7 @@ pub fn to_unsigned_long_long_enforce_range(val: &JsValue, context: &mut Context)
             .into());
     }
     let integer = num.trunc();
-    if integer < 0.0 || integer > u64::MAX as f64 {
+    if !(0.0..=MAX_SAFE_INTEGER).contains(&integer) {
         return Err(JsNativeError::typ()
             .with_message("EnforceRange: value is out of range for unsigned long long")
             .into());
@@ -95,17 +98,23 @@ pub fn to_key_path_argument(val: &JsValue, context: &mut Context) -> JsResult<Op
             let arr = JsArray::from_object(obj.clone())?;
             let length = arr.length(context)? as u32;
             if length == 0 {
-                return Err(JsNativeError::syntax()
-                    .with_message("KeyPath array cannot be empty")
-                    .into());
+                return crate::dom::exception::throw_syntax_error(
+                    "KeyPath array cannot be empty",
+                    context,
+                )
+                .map(|_| None);
             }
             let mut paths = Vec::with_capacity(length as usize);
             for i in 0..length {
                 let elem = obj.get(i, context)?;
                 let s = to_dom_string(&elem, context)?;
                 // Validate as key path
-                KeyPath::parse_single(&s.to_string())
-                    .map_err(|e| JsNativeError::syntax().with_message(e.to_string()))?;
+                KeyPath::parse_single(&s.to_string()).map_err(|e| {
+                    crate::dom::exception::throw_idb_error(
+                        &boa_idb_core::error::IdbError::Syntax(e.to_string()),
+                        context,
+                    )
+                })?;
                 paths.push(s);
             }
             return Ok(Some(KeyPath::Array(paths)));
@@ -116,8 +125,12 @@ pub fn to_key_path_argument(val: &JsValue, context: &mut Context) -> JsResult<Op
     if s.is_empty() {
         return Ok(Some(KeyPath::Empty));
     }
-    KeyPath::parse_single(&s.to_string())
-        .map_err(|e| JsNativeError::syntax().with_message(e.to_string()))?;
+    KeyPath::parse_single(&s.to_string()).map_err(|e| {
+        crate::dom::exception::throw_idb_error(
+            &boa_idb_core::error::IdbError::Syntax(e.to_string()),
+            context,
+        )
+    })?;
     Ok(Some(KeyPath::Single(s)))
 }
 

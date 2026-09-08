@@ -1,0 +1,671 @@
+{
+  "files": {
+    "abort-in-initial-upgradeneeded.any.js": {
+      "subtests": {
+        "An abort() in the initial onupgradeneeded sets version back to 0": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "close-in-upgradeneeded.any.js": {
+      "subtests": {
+        "When db.close() is called in onupgradeneeded, the db is cleaned up on refresh": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "get-databases.any.js": {
+      "subtests": {
+        "Ensure that databases() doesn't pick up changes that haven't commited.": "PASS",
+        "Ensure that databases() returns a promise.": "PASS",
+        "Enumerate multiple databases.": "PASS",
+        "Enumerate one database.": "PASS",
+        "Make sure an empty list is returned for the case of no databases.": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idb-binary-key-roundtrip.any.js": {
+      "subtests": {
+        "ArrayBuffer can be used to supply a binary key": "PASS",
+        "Binary keys can be supplied using the view type Float16Array": "PASS",
+        "Binary keys can be supplied using the view type Float32Array": "PASS",
+        "Binary keys can be supplied using the view type Float64Array": "PASS",
+        "Binary keys can be supplied using the view type Int16Array": "PASS",
+        "Binary keys can be supplied using the view type Int32Array": "PASS",
+        "Binary keys can be supplied using the view type Int8Array": "PASS",
+        "Binary keys can be supplied using the view type Uint16Array": "PASS",
+        "Binary keys can be supplied using the view type Uint32Array": "PASS",
+        "Binary keys can be supplied using the view type Uint8Array": "PASS",
+        "Binary keys can be supplied using the view type Uint8ClampedArray": "PASS",
+        "DataView can be used to supply a binary key": "PASS",
+        "DataView with explicit offset and length can be used to supply a binary key": "PASS",
+        "DataView with explicit offset can be used to supply a binary key": "PASS",
+        "Uint8Array with explicit offset and length can be used to supply a binary key": "PASS",
+        "Uint8Array with explicit offset can be used to supply a binary key": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idb-explicit-commit.any.js": {
+      "subtests": {
+        "A committed transaction becomes inactive immediately.": "PASS",
+        "A committed transaction is inactive in future request callbacks.": "PASS",
+        "Calling abort on a committed transaction throws and does not prevent persisting the data.": "PASS",
+        "Calling commit on a committed transaction throws.": "PASS",
+        "Calling commit on an aborted transaction throws.": "PASS",
+        "Calling txn.commit() when txn is inactive should throw.": "PASS",
+        "Explicitly committed data can be read back out.": "PASS",
+        "Puts issued after commit are not fulfilled.": "PASS",
+        "Transactions that explicitly commit and have errors should abort.": "PASS",
+        "Transactions that handle all errors properly should behave as expected when an explicit commit is called in an onerror handler.": "PASS",
+        "Transactions with same scope should stay in program order, even if one calls commit.": "PASS",
+        "commit() on a version change transaction does not cause errors.": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbcursor-advance.any.js": {
+      "subtests": {
+        "IDBCursor.advance() - advances": "PASS",
+        "IDBCursor.advance() - advances backwards": "PASS",
+        "IDBCursor.advance() - skip far forward": "PASS",
+        "IDBCursor.advance() - within range": "PASS",
+        "IDBCursor.advance() - within single key range": "PASS",
+        "IDBCursor.advance() - within single key range, with several results": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbcursor-continue.any.js": {
+      "subtests": {
+        "IDBCursor.continue() - continues": "PASS",
+        "IDBCursor.continue() - continues in prev direction": "PASS",
+        "IDBCursor.continue() - skip far forward": "PASS",
+        "IDBCursor.continue() - with given key": "PASS",
+        "IDBCursor.continue() - with given key in prev direction": "PASS",
+        "IDBCursor.continue() - within range": "PASS",
+        "IDBCursor.continue() - within single key range": "PASS",
+        "IDBCursor.continue() - within single key range, with several results": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbcursor-continuePrimaryKey.any.js": {
+      "subtests": {
+        "": "PASS",
+        "IDBCursor.continuePrimaryKey() with \"prev\" direction": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbcursor_delete_objectstore.any.js": {
+      "subtests": {
+        "Attempt to remove a record in a read-only transaction": "PASS",
+        "If the cursor's source or effective object store has been deleted, the implementation MUST throw a DOMException of type InvalidStateError": "PASS",
+        "Index - attempt to remove a record in an inactive transaction": "PASS",
+        "Remove a record from the object store ": "PASS",
+        "Throw InvalidStateError when the cursor is being iterated": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbcursor_update_objectstore.any.js": {
+      "subtests": {
+        "Attempt to modify a record after the cursor's source or effective object store has been deleted. The implementation MUST throw a DOMException of type InvalidStateError": "PASS",
+        "Attempt to modify a record in a read-only transaction": "PASS",
+        "Index - modify a record in the object store ": "PASS",
+        "Modify a record in the object store ": "PASS",
+        "No argument": "PASS",
+        "Object store - attempt to modify a record in an inactive transaction": "PASS",
+        "Throw DataCloneError": "PASS",
+        "Throw DataError": "PASS",
+        "Throw InvalidStateError when the cursor is being iterated": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbdatabase_createObjectStore.any.js": {
+      "subtests": {
+        "Attempt to create an object store outside of a version change transaction ": "PASS",
+        "Attempt to create an object store that already exists ": "PASS",
+        "Attempt to create an object store with an invalid key path ": "PASS",
+        "Attempting to create an existing object store with a different keyPath throw ConstraintError ": "PASS",
+        "Both with empty name": "PASS",
+        "Create 1000 object stores, add one item and delete": "PASS",
+        "Create an object store with an unknown optional parameter ": "PASS",
+        "Empty name": "PASS",
+        "Object store 'name' and 'keyPath' properties are correctly set ": "PASS",
+        "Object store's name appears in database's list ": "PASS",
+        "Returns an instance of IDBObjectStore": "PASS",
+        "autoInc and empty keyPath": "PASS",
+        "autoInc and keyPath array": "PASS",
+        "autoInc and keyPath array 2": "PASS",
+        "autoInc and keyPath object": "PASS",
+        "autoInc false, keyPath array": "PASS",
+        "autoInc false, keyPath empty": "PASS",
+        "autoInc false, keyPath string": "PASS",
+        "autoInc true": "PASS",
+        "autoInc true, keyPath null": "PASS",
+        "autoInc true, keyPath string": "PASS",
+        "autoInc true, keyPath undefined": "PASS",
+        "keyPath array": "PASS",
+        "keyPath empty": "PASS",
+        "keyPath null": "PASS",
+        "keyPath string": "PASS",
+        "keyPath undefined": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbdatabase_deleteObjectStore.any.js": {
+      "subtests": {
+        "Attempting to access an index that was deleted as part of object store deletion and then recreated using the same object store name should throw a NotFoundError": "PASS",
+        "Attempting to remove an object store that does not exist should throw a NotFoundError": "PASS",
+        "Deleted object store's name should be removed from database's list. Attempting to use a deleted IDBObjectStore should throw an InvalidStateError": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbdatabase_transaction.any.js": {
+      "subtests": {
+        "Attempt to open a transaction from closed database connection": "PASS",
+        "Attempt to open a transaction with invalid mode": "PASS",
+        "Attempt to open a transaction with invalid scope": "PASS",
+        "If storeNames is an empty list, the implementation must throw a DOMException of type InvalidAccessError": "PASS",
+        "Opening a transaction defaults to a read-only mode": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbfactory_cmp.any.js": {
+      "subtests": {
+        "Array vs. Binary": "PASS",
+        "Binary vs. String": "PASS",
+        "Compare in unsigned octet values (in the range [0, 255])": "PASS",
+        "Compare values of different lengths": "PASS",
+        "Compare values of the same length": "PASS",
+        "Compare when values in the range of their minimal length are the same": "PASS",
+        "Date vs. Number": "PASS",
+        "IDBFactory.cmp() - NaN": "PASS",
+        "IDBFactory.cmp() - compared keys return correct value": "PASS",
+        "IDBFactory.cmp() - no argument": "PASS",
+        "IDBFactory.cmp() - null": "PASS",
+        "String vs. Date": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbfactory_deleteDatabase.any.js": {
+      "subtests": {
+        "Delete an existing database - Test events opening a second database when one connection is open already": "PASS",
+        "Result of the deleteDatabase() request is set to undefined.": "PASS",
+        "The deleteDatabase() request's success event is an IDBVersionChangeEvent.": "PASS",
+        "deleteDatabase() request should have no source, and deleting a non-existent database should succeed with oldVersion of 0.": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbfactory_open.any.js": {
+      "subtests": {
+        "Calling open() with version argument \"foo\" should throw TypeError.": "PASS",
+        "Calling open() with version argument -0.5 should throw TypeError.": "PASS",
+        "Calling open() with version argument -1 should throw TypeError.": "PASS",
+        "Calling open() with version argument -Infinity should throw TypeError.": "PASS",
+        "Calling open() with version argument 0 should throw TypeError.": "PASS",
+        "Calling open() with version argument 0.5 should throw TypeError.": "PASS",
+        "Calling open() with version argument 0.8 should throw TypeError.": "PASS",
+        "Calling open() with version argument 1.5 should not throw.": "PASS",
+        "Calling open() with version argument 9007199254740991 should not throw.": "PASS",
+        "Calling open() with version argument 9007199254740992 should throw TypeError.": "PASS",
+        "Calling open() with version argument Infinity should throw TypeError.": "PASS",
+        "Calling open() with version argument NaN should throw TypeError.": "PASS",
+        "Calling open() with version argument false should throw TypeError.": "PASS",
+        "Calling open() with version argument null should throw TypeError.": "PASS",
+        "Calling open() with version argument object (second) should throw TypeError.": "PASS",
+        "Calling open() with version argument object (third) should throw TypeError.": "PASS",
+        "Calling open() with version argument object should throw TypeError.": "PASS",
+        "Calling open() with version argument undefined should not throw.": "PASS",
+        "IDBFactory.open() - database 'name' and 'version' are correctly set": "PASS",
+        "IDBFactory.open() - error in upgradeneeded resets db": "PASS",
+        "IDBFactory.open() - error in version change transaction aborts open": "PASS",
+        "IDBFactory.open() - new database has default version": "PASS",
+        "IDBFactory.open() - new database is empty": "PASS",
+        "IDBFactory.open() - no version opens current database": "PASS",
+        "IDBFactory.open() - open database with a higher version than current": "PASS",
+        "IDBFactory.open() - open database with a lower version than current": "PASS",
+        "IDBFactory.open() - request has no source": "PASS",
+        "IDBFactory.open() - second open's transaction is available to get objectStores": "PASS",
+        "IDBFactory.open() - upgradeneeded gets VersionChangeEvent": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbindex-multientry.any.js": {
+      "subtests": {
+        "A 1000 entry multiEntry array": "PASS",
+        "Adding keys": "PASS",
+        "Array keyPath with multiEntry": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbindex_count.any.js": {
+      "subtests": {
+        "count() returns the number of records in the index": "PASS",
+        "count() returns the number of records that have keys with the key": "PASS",
+        "count() returns the number of records that have keys within the range": "PASS",
+        "count() throws DataError when using invalid key": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbindex_get.any.js": {
+      "subtests": {
+        "get() attempts to retrieve a record that does not exist": "PASS",
+        "get() returns the record": "PASS",
+        "get() returns the record where the index contains duplicate values": "PASS",
+        "get() returns the record with the first key in the range": "PASS",
+        "get() throws DataError when using invalid key": "PASS",
+        "get() throws InvalidStateError on index deleted by aborted upgrade": "PASS",
+        "get() throws InvalidStateError when the index is deleted": "PASS",
+        "get() throws TransactionInactiveError on aborted transaction": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbindex_getAll.any.js": {
+      "subtests": {
+        "Empty object store": "PASS",
+        "Get all": "PASS",
+        "Get all values with invalid query keys": "PASS",
+        "Get all with generated keys": "PASS",
+        "Get all with large values": "PASS",
+        "Get bound range": "PASS",
+        "Get bound range (generated) with maxCount": "PASS",
+        "Get bound range with maxCount": "PASS",
+        "Get lower excluded": "PASS",
+        "Get upper excluded": "PASS",
+        "Max value count": "PASS",
+        "Non existent key": "PASS",
+        "Query with empty range where  first key < upperBound": "PASS",
+        "Query with empty range where lowerBound < last key": "PASS",
+        "Retrieve multiEntry key": "PASS",
+        "Retrieve one key multiple values": "PASS",
+        "Single item get": "PASS",
+        "maxCount=0": "PASS",
+        "maxCount=10": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbindex_openCursor.any.js": {
+      "subtests": {
+        "If the index is deleted by an aborted upgrade, throw InvalidStateError": "PASS",
+        "If the index is deleted, throw InvalidStateError": "PASS",
+        "If the transaction has been aborted, throw TransactionInactiveError": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbkeyrange-includes.any.js": {
+      "subtests": {
+        "IDBKeyRange.includes() with a closed range": "PASS",
+        "IDBKeyRange.includes() with a lower-closed upper-open range": "PASS",
+        "IDBKeyRange.includes() with a lower-open upper-closed range": "PASS",
+        "IDBKeyRange.includes() with an closed lower-bounded range": "PASS",
+        "IDBKeyRange.includes() with an closed upper-bounded range": "PASS",
+        "IDBKeyRange.includes() with an only range": "PASS",
+        "IDBKeyRange.includes() with an open lower-bounded range": "PASS",
+        "IDBKeyRange.includes() with an open range": "PASS",
+        "IDBKeyRange.includes() with an open upper-bounded range": "PASS",
+        "IDBKeyRange.includes() with invalid input": "PASS",
+        "IDBKeyRange.includes() with non-numeric keys": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbkeyrange.any.js": {
+      "subtests": {
+        "IDBKeyRange.bound() - 'lowerOpen' and 'upperOpen' parameters have correct defaults set": "PASS",
+        "IDBKeyRange.bound() - returns an IDBKeyRange and the properties are set correctly": "PASS",
+        "IDBKeyRange.lowerBound() - 'open' parameter has correct default set": "PASS",
+        "IDBKeyRange.lowerBound() - returns an IDBKeyRange and the properties are set correctly": "PASS",
+        "IDBKeyRange.lowerBound() - throws on invalid keys": "PASS",
+        "IDBKeyRange.only() - returns an IDBKeyRange and the properties are set correctly": "PASS",
+        "IDBKeyRange.only() - throws on invalid keys": "PASS",
+        "IDBKeyRange.upperBound() - 'open' parameter has correct default set": "PASS",
+        "IDBKeyRange.upperBound() - returns an IDBKeyRange and the properties are set correctly": "PASS",
+        "IDBKeyRange.upperBound() - throws on invalid keys": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbkeyrange_incorrect.any.js": {
+      "subtests": {
+        "IDBKeyRange.bound() - bound requires more than 0 arguments.": "PASS",
+        "IDBKeyRange.bound(1, null / null, 1) - null parameter is incorrect.": "PASS",
+        "IDBKeyRange.bound(DOMString/Date/Array, 1) - A DOMString, Date and Array are greater than a float.": "PASS",
+        "IDBKeyRange.bound(lower, upper / lower > upper) - lower' is greater than 'upper'.": "PASS",
+        "IDBKeyRange.bound(noExistingVariable, 1 / goodVariable, noExistingVariable) -    noExistingVariable is not defined.": "PASS",
+        "IDBKeyRange.bound(null, null) - null parameters are incorrect.": "PASS",
+        "IDBKeyRange.bound(true, 1) - boolean is not a valid key type.": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbobjectstore_add.any.js": {
+      "subtests": {
+        "Attempt to 'add()' a record that does not meet the constraints of an   object store's inline key requirements": "PASS",
+        "Attempt to 'add()' a record where the out of line key provided does not meet the constraints of a valid key": "PASS",
+        "Attempt to 'add()' a record where the record's in-line key is not  defined": "PASS",
+        "Attempt to 'add()' a record where the record's key does not meet the constraints of a valid key": "PASS",
+        "Attempt to call 'add()' without a key parameter when the object store uses out-of-line keys": "PASS",
+        "If the object store has been deleted, the implementation must throw a DOMException of type InvalidStateError": "PASS",
+        "If the transaction this IDBObjectStore belongs to has its mode set to readonly, throw ReadOnlyError": "PASS",
+        "Object store has autoIncrement:true and the key path is an object attribute": "PASS",
+        "add() a record where a value being indexed does not meet the constraints of a valid key": "PASS",
+        "add() autoIncrement and inline keys": "PASS",
+        "add() autoIncrement and out-of-line keys": "PASS",
+        "add() object store's key path is an object attribute": "PASS",
+        "add() record with same key already exists": "PASS",
+        "add() where an index has unique:true specified": "PASS",
+        "add() with an inline key": "PASS",
+        "add() with an out-of-line key": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbobjectstore_clear.any.js": {
+      "subtests": {
+        "Clear removes all records from an index ": "PASS",
+        "If the object store has been deleted, the implementation must throw a DOMException of type InvalidStateError ": "PASS",
+        "If the transaction this IDBObjectStore belongs to has its mode set to readonly, throw ReadOnlyError ": "PASS",
+        "Verify clear removes all records ": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbobjectstore_count.any.js": {
+      "subtests": {
+        "If the object store has been deleted, the implementation must throw a DOMException of type InvalidStateError ": "PASS",
+        "Returns the number of records in the object store ": "PASS",
+        "Returns the number of records that have keys with the key": "PASS",
+        "Returns the number of records that have keys within the range ": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbobjectstore_delete.any.js": {
+      "subtests": {
+        "If the object store has been deleted, the implementation must throw a DOMException of type InvalidStateError": "PASS",
+        "If the transaction this IDBObjectStore belongs to has its mode set to readonly, throw ReadOnlyError": "PASS",
+        "Object store's key path is an object attribute": "PASS",
+        "delete() key doesn't match any records": "PASS",
+        "delete() removes all of the records in the range": "PASS",
+        "delete() removes record (inline keys)": "PASS",
+        "delete() removes record (out-of-line keys)": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbobjectstore_get.any.js": {
+      "subtests": {
+        "Attempts to retrieve a record that doesn't exist": "PASS",
+        "Key is a date": "PASS",
+        "Key is a number": "PASS",
+        "Key is a string": "PASS",
+        "Returns the record with the first key in the range": "PASS",
+        "When a transaction is aborted, throw TransactionInactiveError": "PASS",
+        "When an invalid key is used, throw DataError": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbobjectstore_getAll.any.js": {
+      "subtests": {
+        "Get all values": "PASS",
+        "Get all values with invalid query keys": "PASS",
+        "Get all values with transaction.commit()": "PASS",
+        "Get all with large values": "PASS",
+        "Get bound range": "PASS",
+        "Get bound range (generated) with maxCount": "PASS",
+        "Get bound range with maxCount": "PASS",
+        "Get lower excluded": "PASS",
+        "Get upper excluded": "PASS",
+        "Max value count": "PASS",
+        "Non existent key": "PASS",
+        "Query with empty range where  first key < upperBound": "PASS",
+        "Query with empty range where lowerBound < last key": "PASS",
+        "Single item get": "PASS",
+        "Single item get (generated key)": "PASS",
+        "Test maxCount": "PASS",
+        "getAll on empty object store": "PASS",
+        "zero maxCount": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbobjectstore_put.any.js": {
+      "subtests": {
+        "Attempt to call put() without an key parameter when the object store uses out-of-line keys": "PASS",
+        "Attempt to put() a record that does not meet the constraints of an object store's inline key requirements": "PASS",
+        "Attempt to put() a record where the out of line key provided does not meet the constraints of a valid key": "PASS",
+        "Attempt to put() a record where the record's in-line key is not defined": "PASS",
+        "Attempt to put() a record where the record's key does not meet the constraints of a valid key": "PASS",
+        "If the object store has been deleted, the implementation must throw a DOMException of type InvalidStateError": "PASS",
+        "If the transaction this IDBObjectStore belongs to has its mode set to readonly, throw ReadOnlyError": "PASS",
+        "Object store has autoIncrement:true and the key path is an object attribute": "PASS",
+        "Object store's key path is an object attribute": "PASS",
+        "autoIncrement and inline keys": "PASS",
+        "autoIncrement and out-of-line keys": "PASS",
+        "put() a record where a value being indexed does not meet the constraints of a valid key": "PASS",
+        "put() record with key already exists": "PASS",
+        "put() where an index has unique:true specified": "PASS",
+        "put() with an inline key": "PASS",
+        "put() with an out-of-line key": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "idbtransaction_abort.any.js": {
+      "subtests": {
+        "Abort during auto-committing should throw InvalidStateError.": "PASS",
+        "Abort event should fire during transaction": "PASS",
+        "Abort on completed transaction should throw InvalidStateError.": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "key-conversion-exceptions.any.js": {
+      "subtests": {
+        "": "PASS",
+        "IDBCursor continue() method with throwing/invalid keys": "PASS",
+        "IDBCursor update() method with throwing/invalid keys": "PASS",
+        "IDBFactory cmp() static with throwing/invalid keys": "PASS",
+        "IDBIndex count() method with throwing/invalid keys": "PASS",
+        "IDBIndex get() method with throwing/invalid keys": "PASS",
+        "IDBIndex getAll() method with throwing/invalid keys": "PASS",
+        "IDBIndex getAllKeys() method with throwing/invalid keys": "PASS",
+        "IDBIndex getAllRecords() method with throwing/invalid keys": "PASS",
+        "IDBIndex getKey() method with throwing/invalid keys": "PASS",
+        "IDBIndex openCursor() method with throwing/invalid keys": "PASS",
+        "IDBIndex openKeyCursor() method with throwing/invalid keys": "PASS",
+        "IDBKeyRange bound() static with throwing/invalid keys": "PASS",
+        "IDBKeyRange lowerBound() static with throwing/invalid keys": "PASS",
+        "IDBKeyRange only() static with throwing/invalid keys": "PASS",
+        "IDBKeyRange upperBound() static with throwing/invalid keys": "PASS",
+        "IDBObjectStore add() method with throwing/invalid keys": "PASS",
+        "IDBObjectStore count() method with throwing/invalid keys": "PASS",
+        "IDBObjectStore delete() method with throwing/invalid keys": "PASS",
+        "IDBObjectStore get() method with throwing/invalid keys": "PASS",
+        "IDBObjectStore getAll() method with throwing/invalid keys": "PASS",
+        "IDBObjectStore getAllKeys() method with throwing/invalid keys": "PASS",
+        "IDBObjectStore getAllRecords() method with throwing/invalid keys": "PASS",
+        "IDBObjectStore getKey() method with throwing/invalid keys": "PASS",
+        "IDBObjectStore openCursor() method with throwing/invalid keys": "PASS",
+        "IDBObjectStore openKeyCursor() method with throwing/invalid keys": "PASS",
+        "IDBObjectStore put() method with throwing/invalid keys": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "keyorder.any.js": {
+      "subtests": {
+        "Database readback sort - \"\" < \"a\" < \"ab\" < \"b\" < \"ba\"": "PASS",
+        "Database readback sort - -1.1 < 1 < 1.01337 < 1.013373 < 2": "PASS",
+        "Database readback sort - -Infinity < -0.01 < 0 < Infinity": "PASS",
+        "Database readback sort - Array.length: 10,000 < Array.length: 10,001": "PASS",
+        "Database readback sort - Arrays": "PASS",
+        "Database readback sort - Date(1 sec ago) < Date(now) < Date(1 minute in future)": "PASS",
+        "Database readback sort - Infinity inside arrays": "PASS",
+        "Database readback sort - String < Array": "PASS",
+        "Database readback sort - Test different stuff at once": "PASS",
+        "Database readback sort - float < Date": "PASS",
+        "Database readback sort - float < Date < String < Array": "PASS",
+        "Database readback sort - float < String": "PASS",
+        "IDBKey.cmp sort - \"\" < \"a\" < \"ab\" < \"b\" < \"ba\"": "PASS",
+        "IDBKey.cmp sort - -1.1 < 1 < 1.01337 < 1.013373 < 2": "PASS",
+        "IDBKey.cmp sort - -Infinity < -0.01 < 0 < Infinity": "PASS",
+        "IDBKey.cmp sort - Array.length: 10,000 < Array.length: 10,001": "PASS",
+        "IDBKey.cmp sort - Arrays": "PASS",
+        "IDBKey.cmp sort - Date(1 sec ago) < Date(now) < Date(1 minute in future)": "PASS",
+        "IDBKey.cmp sort - Infinity inside arrays": "PASS",
+        "IDBKey.cmp sort - String < Array": "PASS",
+        "IDBKey.cmp sort - Test different stuff at once": "PASS",
+        "IDBKey.cmp sort - float < Date": "PASS",
+        "IDBKey.cmp sort - float < Date < String < Array": "PASS",
+        "IDBKey.cmp sort - float < String": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "keypath.any.js": {
+      "subtests": {
+        "undefined - '' uses value as key": "PASS",
+        "undefined - [''] uses value as [key]": "PASS",
+        "undefined - ['x', 'y']": "PASS",
+        "undefined - ['x', {toString->'y'}] (stringifies)": "PASS",
+        "undefined - [['x'], 'y'] (stringifies)": "PASS",
+        "undefined - arr.length": "PASS",
+        "undefined - array loop -> stringify becomes ['']": "PASS",
+        "undefined - delete.a7": "PASS",
+        "undefined - length": "PASS",
+        "undefined - list with 1 field": "PASS",
+        "undefined - my._": "PASS",
+        "undefined - my.key": "PASS",
+        "undefined - my.key_ya": "PASS",
+        "undefined - my.køi": "PASS",
+        "undefined - name,type": "PASS",
+        "undefined - name,type.name": "PASS",
+        "undefined - p.p.p.p.p.p.p.p.p.p.p.p.p.p": "PASS",
+        "undefined - public.key$ya": "PASS",
+        "undefined - str.length": "PASS",
+        "undefined - true.$": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "structured-clone.any.js": {
+      "subtests": {
+        "Array: ": "PASS",
+        "Array: 1,2,3": "PASS",
+        "Array: foo,bar": "PASS",
+        "Array: foo,bar,,,,,,,,,true,false,,,,,,,,,123,456,,,,,,,,,": "PASS",
+        "ArrayBuffer: [object ArrayBuffer]": "PASS",
+        "BigInt: -1": "PASS",
+        "BigInt: -12345678901234567890": "PASS",
+        "BigInt: 0": "PASS",
+        "BigInt: 1": "PASS",
+        "BigInt: 12345678901234567890": "PASS",
+        "Blob: [object Object]": "PASS",
+        "Boolean: false": "PASS",
+        "Boolean: true": "PASS",
+        "DOMMatrix: [object Object]": "PASS",
+        "DOMMatrixReadOnly: [object Object]": "PASS",
+        "DOMPoint: [object Object]": "PASS",
+        "DOMPointReadOnly: [object Object]": "PASS",
+        "DOMRect: [object Object]": "PASS",
+        "DOMRectReadOnly: [object Object]": "PASS",
+        "Date: Mon Apr 25 1938 00:13:20 GMT+0200": "PASS",
+        "Date: Mon Feb 10 1653 07:13:20 GMT+0100": "PASS",
+        "Date: Mon Jan 12 1970 14:46:40 GMT+0100": "PASS",
+        "Date: Sat Dec 20 1969 11:13:20 GMT+0100": "PASS",
+        "Date: Sat Nov 20 2286 18:46:40 GMT+0100": "PASS",
+        "Date: Sun Sep 09 2001 03:46:40 GMT+0200": "PASS",
+        "Date: Thu Jan 01 1970 00:43:20 GMT+0100": "PASS",
+        "Date: Thu Jan 01 1970 00:59:59 GMT+0100": "PASS",
+        "Date: Thu Jan 01 1970 01:00:00 GMT+0100": "PASS",
+        "Date: Thu Jan 01 1970 01:00:01 GMT+0100": "PASS",
+        "Date: Thu Jan 01 1970 01:16:40 GMT+0100": "PASS",
+        "Error: Error": "PASS",
+        "Error: Error: abc": "PASS",
+        "EvalError: EvalError": "PASS",
+        "EvalError: EvalError: ghi": "PASS",
+        "File: [object Object]": "PASS",
+        "Float16Array: -Infinity,-1.5,-1,-0.5,0,0.5,1,1.5,Infinity,NaN": "PASS",
+        "Float32Array: -Infinity,-1.5,-1,-0.5,0,0.5,1,1.5,Infinity,NaN": "PASS",
+        "Float64Array: -Infinity,-1.7976931348623157e+308,-5e-324,0,5e-324,1.7976931348623157e+308,Infinity,NaN": "PASS",
+        "ImageData: [object Object]": "PASS",
+        "Int16Array: 0,1,-2,-1": "PASS",
+        "Int32Array: 0,1,-2,-1": "PASS",
+        "Int8Array: 0,1,-2,-1": "PASS",
+        "Map: [object Map]": "PASS",
+        "Not serializable: : [object Object]": "PASS",
+        "Not serializable: Event: [object Object]": "PASS",
+        "Not serializable: Object: [object Object]": "PASS",
+        "Not serializable: function: function() {}": "PASS",
+        "Not serializable: symbol: Symbol(desc)": "PASS",
+        "Number: -0": "PASS",
+        "Number: -1": "PASS",
+        "Number: -1.7976931348623157e+308": "PASS",
+        "Number: -2147483647": "PASS",
+        "Number: -2147483648": "PASS",
+        "Number: -4294967295": "PASS",
+        "Number: -5e-324": "PASS",
+        "Number: -Infinity": "PASS",
+        "Number: 0": "PASS",
+        "Number: 1": "PASS",
+        "Number: 1.7976931348623157e+308": "PASS",
+        "Number: 2147483647": "PASS",
+        "Number: 2147483648": "PASS",
+        "Number: 4294967295": "PASS",
+        "Number: 5e-324": "PASS",
+        "Number: Infinity": "PASS",
+        "Number: NaN": "PASS",
+        "Object: [object Object]": "PASS",
+        "RangeError: RangeError": "PASS",
+        "RangeError: RangeError: ghi": "PASS",
+        "ReferenceError: ReferenceError": "PASS",
+        "ReferenceError: ReferenceError: ghi": "PASS",
+        "RegExp: /(?:)/": "PASS",
+        "RegExp: /abc/": "PASS",
+        "RegExp: /abc/g": "PASS",
+        "RegExp: /abc/gi": "PASS",
+        "RegExp: /abc/gim": "PASS",
+        "RegExp: /abc/gimsuy": "PASS",
+        "RegExp: /abc/gm": "PASS",
+        "RegExp: /abc/i": "PASS",
+        "RegExp: /abc/im": "PASS",
+        "RegExp: /abc/m": "PASS",
+        "Set: [object Set]": "PASS",
+        "String: ": "PASS",
+        "String: null(\u0000)": "PASS",
+        "String: this is a sample string": "PASS",
+        "SyntaxError: SyntaxError": "PASS",
+        "SyntaxError: SyntaxError: ghi": "PASS",
+        "TypeError: TypeError": "PASS",
+        "TypeError: TypeError: ghi": "PASS",
+        "URIError: URIError": "PASS",
+        "URIError: URIError: ghi": "PASS",
+        "Uint16Array: 0,1,65534,65535": "PASS",
+        "Uint32Array: 0,1,4294967294,4294967295": "PASS",
+        "Uint8Array: ": "PASS",
+        "Uint8Array: 0,1,254,255": "PASS",
+        "Uint8ClampedArray: 0,1,254,255": "PASS",
+        "bigint: -1": "PASS",
+        "bigint: -12345678901234567890": "PASS",
+        "bigint: 0": "PASS",
+        "bigint: 1": "PASS",
+        "bigint: 12345678901234567890": "PASS",
+        "boolean: false": "PASS",
+        "boolean: true": "PASS",
+        "number: -0": "PASS",
+        "number: -1": "PASS",
+        "number: -1.7976931348623157e+308": "PASS",
+        "number: -2147483647": "PASS",
+        "number: -2147483648": "PASS",
+        "number: -4294967295": "PASS",
+        "number: -5e-324": "PASS",
+        "number: -Infinity": "PASS",
+        "number: 0": "PASS",
+        "number: 1": "PASS",
+        "number: 1.7976931348623157e+308": "PASS",
+        "number: 2147483647": "PASS",
+        "number: 2147483648": "PASS",
+        "number: 4294967295": "PASS",
+        "number: 5e-324": "PASS",
+        "number: Infinity": "PASS",
+        "number: NaN": "PASS",
+        "object: null": "PASS",
+        "string: ": "PASS",
+        "string: null(\u0000)": "PASS",
+        "string: this is a sample string": "PASS",
+        "undefined: undefined": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    },
+    "transaction-lifetime-empty.any.js": {
+      "subtests": {
+        "Multiple transactions without requests complete in the expected order": "PASS",
+        "Transactions without requests complete in the expected order": "PASS"
+      },
+      "reason": "event loop settled before completion; pending async subtests finalized as FAIL"
+    }
+  }
+}

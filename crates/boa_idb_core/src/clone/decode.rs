@@ -1,6 +1,7 @@
 //! SCF-v1 binary decoder for `ScValue`.
 
 use crate::clone::crc32c::crc32c;
+use crate::clone::encode::SCF_VERSION;
 use crate::clone::scvalue::{RegExpFlags, ScErrorKind, ScErrorObject, ScTypedArrayKind, ScValue};
 use crate::clone::varint::{decode_ivarint, decode_uvarint};
 use crate::error::ScError;
@@ -40,7 +41,7 @@ const BOXED_BIGINT: u8 = 3;
 /// SCF-v1 magic bytes.
 const SCF_MAGIC: &[u8; 4] = b"IDB1";
 
-/// Decodes an `ScValue` from the SCF-v1 binary format.
+/// Decodes an `ScValue` from the SCF binary format.
 ///
 /// Validates the header, CRC32C trailer, and format version.
 pub fn decode_scf(data: &[u8], limits: &LimitConfig) -> Result<ScValue, ScError> {
@@ -58,7 +59,7 @@ pub fn decode_scf(data: &[u8], limits: &LimitConfig) -> Result<ScValue, ScError>
         return Err(ScError::CorruptedPayload("SCF data too short".into()));
     }
     let format_ver = data[4];
-    if format_ver != 1 {
+    if format_ver != SCF_VERSION {
         return Err(ScError::UnsupportedVersion(format_ver));
     }
 
@@ -207,8 +208,8 @@ impl<'a> ScfDecoder<'a> {
             TAG_SET => self.decode_set_value(depth),
             TAG_ERROR => self.decode_error_value(depth),
             TAG_ARRAYBUFFER => self.decode_arraybuffer_value(),
-            TAG_TYPEDARRAY => self.decode_typedarray_value(),
-            TAG_DATAVIEW => self.decode_dataview_value(),
+            TAG_TYPEDARRAY => self.decode_typedarray_value(depth),
+            TAG_DATAVIEW => self.decode_dataview_value(depth),
             TAG_BOXED => self.decode_boxed_value(depth),
             TAG_MEMO_REF => {
                 let idx = decode_uvarint(self.data, &mut self.offset)? as usize;
@@ -475,7 +476,7 @@ impl<'a> ScfDecoder<'a> {
         Ok(buf)
     }
 
-    fn decode_typedarray_value(&mut self) -> Result<ScValue, ScError> {
+    fn decode_typedarray_value(&mut self, depth: usize) -> Result<ScValue, ScError> {
         // Reserve a memo slot to stay index-aligned with the encoder, which
         // allocates a memo index for every TypedArray (see `encode_typedarray`).
         let memo_idx = self.memo_vec.len();
@@ -487,19 +488,19 @@ impl<'a> ScfDecoder<'a> {
         })?;
         let byte_offset = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
         let length = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
-        let buffer_memo_index = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
+        let buffer = Box::new(self.decode_value_depth(depth + 1)?);
 
         let view = ScValue::TypedArray {
             kind,
             byte_offset,
             length,
-            buffer_memo_index,
+            buffer,
         };
         self.memo_vec[memo_idx] = view.clone();
         Ok(view)
     }
 
-    fn decode_dataview_value(&mut self) -> Result<ScValue, ScError> {
+    fn decode_dataview_value(&mut self, depth: usize) -> Result<ScValue, ScError> {
         // Reserve a memo slot to stay index-aligned with the encoder
         // (see `encode_dataview`).
         let memo_idx = self.memo_vec.len();
@@ -507,12 +508,12 @@ impl<'a> ScfDecoder<'a> {
 
         let byte_offset = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
         let byte_length = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
-        let buffer_memo_index = Self::u64_to_usize(decode_uvarint(self.data, &mut self.offset)?)?;
+        let buffer = Box::new(self.decode_value_depth(depth + 1)?);
 
         let view = ScValue::DataView {
             byte_offset,
             byte_length,
-            buffer_memo_index,
+            buffer,
         };
         self.memo_vec[memo_idx] = view.clone();
         Ok(view)

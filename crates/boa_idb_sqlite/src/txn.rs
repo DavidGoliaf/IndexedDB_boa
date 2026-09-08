@@ -9,7 +9,7 @@ use boa_idb_core::backend::traits::{BackendCursor, BackendTxn};
 use boa_idb_core::backend::types::{DatabaseMeta, IndexSpec, StoreSpec};
 use boa_idb_core::key::range::EncodedRange;
 use boa_idb_core::key::utf16::Utf16String;
-use boa_idb_core::proto::{Direction, IndexId, SourceRef, StoreId, TxnMode};
+use boa_idb_core::proto::{Direction, Durability, IndexId, SourceRef, StoreId, TxnMode};
 use rusqlite::Connection;
 use std::collections::HashMap;
 
@@ -27,6 +27,7 @@ use crate::pool::Checkout;
 pub struct SqliteTxn {
     checkout: Checkout,
     mode: TxnMode,
+    durability: Durability,
     scope: Vec<StoreId>,
     meta: DatabaseMeta,
     request_seq: u64,
@@ -50,12 +51,19 @@ impl SqliteTxn {
     pub fn new_writer(
         checkout: Checkout,
         mode: TxnMode,
+        durability: Durability,
         scope: Vec<StoreId>,
         meta: DatabaseMeta,
         blob_manager: Option<BlobManager>,
     ) -> Result<Self, BackendError> {
         {
             let conn = checkout.conn()?;
+            if durability == Durability::Strict {
+                conn.execute_batch("PRAGMA synchronous = FULL")
+                    .map_err(|e| {
+                        BackendError::Internal(format!("setting strict durability failed: {e}"))
+                    })?;
+            }
             conn.execute_batch("BEGIN IMMEDIATE")
                 .map_err(|e| BackendError::Internal(format!("BEGIN IMMEDIATE failed: {e}")))?;
         }
@@ -63,6 +71,7 @@ impl SqliteTxn {
         Ok(Self {
             checkout,
             mode,
+            durability,
             scope,
             meta,
             request_seq: 0,
@@ -91,6 +100,7 @@ impl SqliteTxn {
         Ok(Self {
             checkout,
             mode: TxnMode::ReadOnly,
+            durability: Durability::Default,
             scope,
             meta,
             request_seq: 0,
@@ -370,6 +380,23 @@ impl SqliteTxn {
     }
 }
 
+/// Reports whether a rusqlite error is a uniqueness violation.
+///
+/// Only `PRIMARYKEY` (1555) and `UNIQUE` (2067) extended codes map to
+/// `BackendError::Constraint`. Every other `SQLITE_CONSTRAINT` subcode
+/// (`NOT NULL`, `FOREIGN KEY`, …) shares the primary `ConstraintViolation`
+/// code but signals a real defect and must stay `Internal` with its message
+/// intact — otherwise, e.g., a missing parent row would surface as a bogus
+/// "already exists" error.
+fn is_uniqueness_violation(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::SqliteFailure(err, _)
+            if err.code == rusqlite::ffi::ErrorCode::ConstraintViolation
+                && (err.extended_code == 1555 || err.extended_code == 2067)
+    )
+}
+
 impl BackendTxn for SqliteTxn {
     fn begin_request(&mut self) -> Result<(), BackendError> {
         let savepoint_name = format!("r{}", self.request_seq);
@@ -460,13 +487,12 @@ impl BackendTxn for SqliteTxn {
                     if spec.auto_increment { 1i32 } else { 0 },
                 ],
             )
-            .map_err(|e| match e {
-                rusqlite::Error::SqliteFailure(err, _)
-                    if err.code == rusqlite::ffi::ErrorCode::ConstraintViolation =>
-                {
+            .map_err(|e| {
+                if is_uniqueness_violation(&e) {
                     BackendError::Constraint(format!("Object store '{}' already exists", spec.name))
+                } else {
+                    BackendError::Internal(format!("create_store failed: {e}"))
                 }
-                _ => BackendError::Internal(format!("create_store failed: {e}")),
             })?;
 
         let id = self.conn()?.last_insert_rowid() as StoreId;
@@ -520,13 +546,12 @@ impl BackendTxn for SqliteTxn {
                 "UPDATE object_stores SET name = ?1 WHERE id = ?2",
                 rusqlite::params![name_bytes, id],
             )
-            .map_err(|e| match e {
-                rusqlite::Error::SqliteFailure(err, _)
-                    if err.code == rusqlite::ffi::ErrorCode::ConstraintViolation =>
-                {
+            .map_err(|e| {
+                if is_uniqueness_violation(&e) {
                     BackendError::Constraint(format!("Object store '{new_name}' already exists"))
+                } else {
+                    BackendError::Internal(format!("rename_store failed: {e}"))
                 }
-                _ => BackendError::Internal(format!("rename_store failed: {e}")),
             })?;
         if let Some(store) = self.meta.stores.iter_mut().find(|s| s.id == id) {
             store.name = Utf16String::from(new_name);
@@ -556,21 +581,23 @@ impl BackendTxn for SqliteTxn {
                 rusqlite::params![
                     store,
                     name_bytes,
-                    key_path_bytes,
+                    // `None` (empty key path) would bind as NULL and violate
+                    // `NOT NULL`; an empty blob decodes back to
+                    // `KeyPath::Empty` all the same.
+                    key_path_bytes.unwrap_or_default(),
                     if spec.unique { 1i32 } else { 0 },
                     if spec.multi_entry { 1i32 } else { 0 },
                 ],
             )
-            .map_err(|e| match e {
-                rusqlite::Error::SqliteFailure(err, _)
-                    if err.code == rusqlite::ffi::ErrorCode::ConstraintViolation =>
-                {
+            .map_err(|e| {
+                if is_uniqueness_violation(&e) {
                     BackendError::Constraint(format!(
                         "Index '{}' already exists on store {store}",
                         spec.name
                     ))
+                } else {
+                    BackendError::Internal(format!("create_index failed: {e}"))
                 }
-                _ => BackendError::Internal(format!("create_index failed: {e}")),
             })?;
 
         let id = self.conn()?.last_insert_rowid() as IndexId;
@@ -633,13 +660,12 @@ impl BackendTxn for SqliteTxn {
                 "UPDATE indexes SET name = ?1 WHERE id = ?2 AND store_id = ?3",
                 rusqlite::params![name_bytes, id, store],
             )
-            .map_err(|e| match e {
-                rusqlite::Error::SqliteFailure(err, _)
-                    if err.code == rusqlite::ffi::ErrorCode::ConstraintViolation =>
-                {
+            .map_err(|e| {
+                if is_uniqueness_violation(&e) {
                     BackendError::Constraint(format!("Index '{new_name}' already exists"))
+                } else {
+                    BackendError::Internal(format!("rename_index failed: {e}"))
                 }
-                _ => BackendError::Internal(format!("rename_index failed: {e}")),
             })?;
         if let Some(idx) = self
             .meta
@@ -701,15 +727,14 @@ impl BackendTxn for SqliteTxn {
 
         self.conn()?
             .execute(sql, rusqlite::params![store, key, value_col, ext_col, vlen])
-            .map_err(|e| match e {
-                rusqlite::Error::SqliteFailure(err, _)
-                    if err.code == rusqlite::ffi::ErrorCode::ConstraintViolation =>
-                {
+            .map_err(|e| {
+                if is_uniqueness_violation(&e) {
                     BackendError::Constraint(format!(
                         "Record already exists for key in store {store}"
                     ))
+                } else {
+                    BackendError::Internal(format!("put failed: {e}"))
                 }
-                _ => BackendError::Internal(format!("put failed: {e}")),
             })?;
 
         Ok(())
@@ -993,6 +1018,21 @@ impl BackendTxn for SqliteTxn {
             .execute_batch("COMMIT")
             .map_err(|e| BackendError::Internal(format!("COMMIT failed: {e}")))?;
 
+        if self.durability == Durability::Strict {
+            self.conn()?
+                .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+                .map_err(|e| {
+                    BackendError::Internal(format!("strict WAL checkpoint failed: {e}"))
+                })?;
+            // Connections are pooled. Do not leak FULL into a later default
+            // transaction after the strict commit has been made durable.
+            self.conn()?
+                .execute_batch("PRAGMA synchronous = NORMAL")
+                .map_err(|e| {
+                    BackendError::Internal(format!("restoring SQLite durability failed: {e}"))
+                })?;
+        }
+
         // Collect orphaned blob files: references are final now, so whatever
         // is still unreferenced can go.
         let orphaned: Vec<String> = self.blob_orphaned.drain(..).flatten().collect();
@@ -1112,3 +1152,51 @@ fn range_sql_upper(range: &EncodedRange) -> (String, Vec<Box<dyn rusqlite::types
 }
 
 use rusqlite::OptionalExtension;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pool::ConnectionPool;
+    use boa_idb_core::backend::types::DatabaseMeta;
+
+    #[test]
+    fn strict_commit_uses_full_sync_and_restores_pool_connection() {
+        let temp = tempfile::tempdir().unwrap();
+        let pool = ConnectionPool::open(&temp.path().join("strict.db")).unwrap();
+        let checkout = pool.checkout_writer().unwrap();
+        let txn = SqliteTxn::new_writer(
+            checkout,
+            TxnMode::ReadWrite,
+            Durability::Strict,
+            Vec::new(),
+            DatabaseMeta {
+                name: Utf16String::default(),
+                version: 0,
+                stores: Vec::new(),
+                next_store_id: 1,
+                next_index_id: 1,
+            },
+            None,
+        )
+        .unwrap();
+
+        let synchronous: i64 = txn
+            .conn()
+            .unwrap()
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(synchronous, 2, "strict transactions must use FULL sync");
+
+        Box::new(txn).commit().unwrap();
+        let checkout = pool.checkout_writer().unwrap();
+        let synchronous: i64 = checkout
+            .conn()
+            .unwrap()
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            synchronous, 1,
+            "pooled connections must restore NORMAL sync"
+        );
+    }
+}

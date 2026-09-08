@@ -8,19 +8,21 @@ use boa_gc::{Finalize, Trace};
 
 /// Creates a DOM `Event` object with the given type (not cancelable).
 pub fn create_event_object(event_type: &str, context: &mut Context) -> JsValue {
-    create_event_object_cancelable(event_type, false, context)
+    create_event_object_cancelable(event_type, false, None, context)
 }
 
-/// Creates a DOM `Event` object with the given type and cancelability.
+/// Creates a DOM `Event` object with the given type, cancelability, and target.
 ///
 /// IDB request `error` events are cancelable: calling `preventDefault()` on
 /// them keeps the transaction alive (§2.8).
 pub fn create_event_object_cancelable(
     event_type: &str,
     cancelable: bool,
+    target: Option<JsObject>,
     context: &mut Context,
 ) -> JsValue {
-    let data = EventData::new(event_type.to_string(), false, cancelable);
+    let mut data = EventData::new(event_type.to_string(), false, cancelable);
+    data.target = target;
     let helper = EventDataHelper { data };
     match EventDataHelper::from_data(helper, context) {
         Ok(obj) => obj.into(),
