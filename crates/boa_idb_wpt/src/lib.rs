@@ -1,7 +1,7 @@
 //! W3C Web Platform Tests runner for `boa_idb`.
 //!
 //! The runner executes the official `wpt/IndexedDB/**` suite against the
-//! `boa_idb` implementation on either backend (`memory` / `sqlite`) without a
+//! `boa_idb` implementation on memory, `SQLite`, or filesystem backends without a
 //! browser or Node.js: every test file runs in an isolated Boa `Context`
 //! with browser polyfills and a native `testharness.js` bridge.
 //!
@@ -15,5 +15,3 @@ pub mod expectations;
 pub mod harness;
 pub mod report;
 pub mod runner;
-
-pub use report::{FileReport, RunSummary, SubtestResult, SubtestStatus, WptRunResult};

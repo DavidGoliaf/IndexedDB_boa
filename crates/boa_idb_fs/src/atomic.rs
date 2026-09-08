@@ -1,9 +1,7 @@
 //! Atomic file replace: temp → write → sync → rename → dir sync.
 
-use crate::sync_hooks::{SyncHooks, io_to_backend};
+use crate::vfs::{FileSystem, io_to_backend};
 use boa_idb_core::backend::error::BackendError;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -12,7 +10,7 @@ pub fn atomic_write(
     target: &Path,
     data: &[u8],
     sync: bool,
-    hooks: &Arc<dyn SyncHooks>,
+    fs: &Arc<dyn FileSystem>,
 ) -> Result<(), BackendError> {
     let parent = target.parent().ok_or_else(|| {
         BackendError::Io(format!(
@@ -20,28 +18,20 @@ pub fn atomic_write(
             target.display()
         ))
     })?;
-    fs::create_dir_all(parent).map_err(|e| io_to_backend(e, "create_dir_all"))?;
+    fs.create_dir_all(parent)
+        .map_err(|e| io_to_backend(e, "create_dir_all"))?;
 
     let tmp = temp_path_for(target);
-    {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&tmp)
-            .map_err(|e| io_to_backend(e, "open temp"))?;
-        file.write_all(data)
-            .map_err(|e| io_to_backend(e, "write temp"))?;
-        if sync {
-            hooks
-                .sync_file(&file)
-                .map_err(|e| io_to_backend(e, "sync temp"))?;
-        }
-    }
-    fs::rename(&tmp, target).map_err(|e| io_to_backend(e, "rename"))?;
+    fs.write_truncate(&tmp, data)
+        .map_err(|e| io_to_backend(e, "write temp"))?;
     if sync {
-        hooks
-            .sync_dir(parent)
+        fs.sync_path(&tmp)
+            .map_err(|e| io_to_backend(e, "sync temp"))?;
+    }
+    fs.rename(&tmp, target)
+        .map_err(|e| io_to_backend(e, "rename"))?;
+    if sync {
+        fs.sync_dir(parent)
             .map_err(|e| io_to_backend(e, "sync dir"))?;
     }
     Ok(())
@@ -52,31 +42,21 @@ pub fn append_and_maybe_sync(
     path: &Path,
     data: &[u8],
     sync: bool,
-    hooks: &Arc<dyn SyncHooks>,
+    fs: &Arc<dyn FileSystem>,
 ) -> Result<(), BackendError> {
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|e| io_to_backend(e, "open wal append"))?;
-    file.write_all(data)
+    fs.append(path, data)
         .map_err(|e| io_to_backend(e, "append wal"))?;
     if sync {
-        hooks
-            .sync_file(&file)
+        fs.sync_path(path)
             .map_err(|e| io_to_backend(e, "sync wal"))?;
     }
     Ok(())
 }
 
 /// Truncates a file to `len` after successful validation.
-pub fn truncate_file(path: &Path, len: u64) -> Result<(), BackendError> {
-    let file = OpenOptions::new()
-        .write(true)
-        .open(path)
-        .map_err(|e| io_to_backend(e, "open truncate"))?;
-    file.set_len(len).map_err(|e| io_to_backend(e, "set_len"))?;
-    Ok(())
+pub fn truncate_file(path: &Path, len: u64, fs: &Arc<dyn FileSystem>) -> Result<(), BackendError> {
+    fs.set_len(path, len)
+        .map_err(|e| io_to_backend(e, "set_len"))
 }
 
 fn temp_path_for(target: &Path) -> PathBuf {
@@ -88,15 +68,7 @@ fn temp_path_for(target: &Path) -> PathBuf {
 }
 
 /// Ensures a file exists (empty if newly created).
-pub fn ensure_file(path: &Path) -> Result<File, BackendError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| io_to_backend(e, "ensure parent"))?;
-    }
-    OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path)
+pub fn ensure_file(path: &Path, fs: &Arc<dyn FileSystem>) -> Result<(), BackendError> {
+    fs.ensure_file(path)
         .map_err(|e| io_to_backend(e, "ensure file"))
 }

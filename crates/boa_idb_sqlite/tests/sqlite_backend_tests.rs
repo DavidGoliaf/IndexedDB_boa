@@ -828,7 +828,13 @@ fn db_file_path(factory: &SqliteBackendFactory) -> std::path::PathBuf {
     let mut files: Vec<_> = std::fs::read_dir(factory.storage_dir(&key))
         .unwrap()
         .filter_map(Result::ok)
-        .filter(|e| e.file_name().to_string_lossy().starts_with("db-"))
+        .filter(|e| {
+            let fname = e.file_name();
+            let name = fname.to_string_lossy();
+            // Exclude WAL/SHM sidecars (`db-….sqlite-wal`); a live pooled
+            // connection keeps those files around.
+            name.starts_with("db-") && name.ends_with(".sqlite")
+        })
         .map(|e| e.path())
         .collect();
     assert_eq!(files.len(), 1);

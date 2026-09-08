@@ -19,7 +19,7 @@ use boa_idb_wpt::runner::{self, RunnerOptions};
     about = "W3C Web Platform Tests runner for boa_idb"
 )]
 struct Cli {
-    /// Storage backend: `memory` or `sqlite`.
+    /// Storage backend: `memory`, `sqlite`, or `fs`.
     #[arg(long, default_value = "memory")]
     backend: String,
 
@@ -69,7 +69,7 @@ fn main() {
 
     let backend = Backend::parse(&cli.backend).unwrap_or_else(|| {
         eprintln!(
-            "{} unknown backend '{}' (expected 'memory' or 'sqlite')",
+            "{} unknown backend '{}' (expected 'memory', 'sqlite', or 'fs')",
             "error:".red().bold(),
             cli.backend
         );

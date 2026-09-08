@@ -59,3 +59,25 @@ fn independent_readwrite_stores_run_parallel() {
     let ready = sched.poll_ready();
     assert_eq!(ready.len(), 2);
 }
+
+#[test]
+fn requeue_unstarted_recovers_locked_begin() {
+    // Mimics the driver path: poll_ready moves both independent RW txns into
+    // running; a Locked begin must put the loser back on pending so it can
+    // start after the holder finishes (not stay stranded in running).
+    let mut sched = TransactionScheduler::new();
+    sched.enqueue(item(1, TxnMode::ReadWrite, &[1]));
+    sched.enqueue(item(2, TxnMode::ReadWrite, &[2]));
+    assert_eq!(sched.poll_ready().len(), 2);
+
+    sched.requeue_unstarted(2);
+    assert_eq!(sched.running_count(), 1);
+    assert_eq!(sched.pending_count(), 1);
+
+    // Disjoint scopes still look schedulable; without requeue, 2 would never
+    // appear here again. After the holder finishes, begin can succeed.
+    assert_eq!(sched.poll_ready(), vec![2]);
+    sched.requeue_unstarted(2);
+    sched.on_txn_finished(1);
+    assert_eq!(sched.poll_ready(), vec![2]);
+}

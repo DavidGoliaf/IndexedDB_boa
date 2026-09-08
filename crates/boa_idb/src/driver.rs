@@ -1724,11 +1724,16 @@ fn start_ready_txns(
                     }
                     started_any = true;
                 }
-                // A taken writer slot is transient under the single-threaded
-                // pump (the holder always progresses or finishes): leave the
-                // transaction scheduled and retry on a later turn instead of
-                // failing its queue. Anything else is fatal.
-                Err(boa_idb_core::backend::error::BackendError::Locked) => {}
+                // Writer slot taken: move off `running` back onto pending so
+                // the next pump turn retries begin. Leaving the id in running
+                // with `backend.is_none()` strands it forever.
+                Err(boa_idb_core::backend::error::BackendError::Locked) => {
+                    let mut d = crate::runtime::lock_mutex(driver_handle);
+                    d.scheduler.requeue_unstarted(txn_id);
+                    // Do not mark progress: retrying begin alone must not spin
+                    // the pump. The holder advances via later phases / turns;
+                    // once it finishes, poll_ready releases this txn again.
+                }
                 Err(_) => {
                     let mut d = crate::runtime::lock_mutex(driver_handle);
                     d.scheduler.forget(txn_id);

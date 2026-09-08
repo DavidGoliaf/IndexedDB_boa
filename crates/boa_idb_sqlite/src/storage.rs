@@ -3,7 +3,9 @@
 use boa_idb_core::backend::error::BackendError;
 use boa_idb_core::backend::traits::{Database, Storage};
 use boa_idb_core::proto::StorageKey;
+use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,6 +18,13 @@ use crate::schema;
 pub struct SqliteStorage {
     root: PathBuf,
     registry_conn: Connection,
+    /// Shared connection pools keyed by registry `db_file` name.
+    ///
+    /// Every `open_database` must reuse the same pool so the single writer
+    /// slot is visible across driver `begin` calls (each of which opens a
+    /// fresh [`SqliteDatabase`] handle). Without this, concurrent RW txns
+    /// each take a private writer connection and collide inside SQLite.
+    pools: Mutex<HashMap<String, ConnectionPool>>,
 }
 
 impl SqliteStorage {
@@ -37,6 +46,7 @@ impl SqliteStorage {
         Ok(Self {
             root: root.to_path_buf(),
             registry_conn,
+            pools: Mutex::new(HashMap::new()),
         })
     }
 
@@ -141,7 +151,16 @@ impl Storage for SqliteStorage {
             .ok_or_else(|| BackendError::Internal("Invalid db filename".into()))?
             .to_string();
 
-        let pool = ConnectionPool::open(&db_path)?;
+        let pool = {
+            let mut pools = self.pools.lock();
+            if let Some(existing) = pools.get(&db_file) {
+                existing.clone()
+            } else {
+                let created = ConnectionPool::open(&db_path)?;
+                pools.insert(db_file.clone(), created.clone());
+                created
+            }
+        };
 
         // For a freshly created database, store the canonical name in metadata
         // so `DatabaseMeta::name` is populated after reopen.
@@ -189,6 +208,10 @@ impl Storage for SqliteStorage {
             .map_err(|e| BackendError::Internal(format!("Registry lookup failed: {e}")))?;
 
         if let Some(ref file) = db_file {
+            // Drop the cached pool before unlinking files so open connections
+            // are released and a later reopen does not reuse a dead handle.
+            self.pools.lock().remove(file);
+
             // Delete the database file
             let db_path = self.root.join(file);
             if db_path.exists() {

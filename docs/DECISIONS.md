@@ -154,3 +154,90 @@ M6-B. TZ suggests `fs4`/`fd-lock` for locks.
 safety without claiming compaction or O(1)/O(log n) snapshots. New crates
 are permissive-licensed and covered by `cargo deny`.
 
+## ADR-010: M6-B1 — `im` OrdMap snapshots and immutable segments
+
+**Context.** TASK-08 / M6-B1 must close R8.3.3 (immutable `seg/*.seg` +
+manifest compaction) and R8.3.4 (readonly snapshot start in O(1)/O(log n)
+by record count). M6-A used `BTreeMap` with a full clone on readonly begin.
+
+**Decision.**
+1. **Persistent maps:** depend on crates.io `rpds` 1.x
+   (`RedBlackTreeMap`) under MIT. Structural `clone` is O(1); updates are
+   path-copying. Chosen over `im`/`imbl` because those pull unmaintained
+   `bitmaps`/`sized-chunks` crates rejected by `cargo deny`
+   (`RUSTSEC-2026-0247` / `RUSTSEC-2026-0251`). TZ names `im`/`rpds`-like
+   trees; `rpds` matches the requirement with a clean dependency graph.
+2. **Readonly begin:** `DbState::clone` copies `im::OrdMap` structurally (no
+   per-record walk). An injectable `SnapshotMeter` counts structural clones
+   vs forbidden deep record walks so tests prove the complexity class without
+   timing flakes.
+3. **Segments:** versioned `seg/<seq>.seg` files encode a full durable
+   snapshot (meta, records, indexes, key generators, `next_txn_seq`) with
+   magic `ISEG`, version, and CRC32C. Manifest (`IMAN`) lists live segment
+   sequence(s) and the active WAL file id. `CURRENT` is published only after
+   the manifest file is fully synced (temp → sync → rename → dir sync).
+4. **Compaction:** when WAL bytes ≥ 64 MiB or committed frame groups ≥
+   10_000 (both configurable downward for tests), between write transactions
+   write a new segment, publish a new manifest/`CURRENT`, then rotate to an
+   empty WAL. Failure mid-publish leaves either the old or the new consistent
+   generation — never a hybrid. Live state holds `Arc<SegmentGuard>`; old
+   segment files are deleted only when the last `Arc` drops (readonly
+   snapshots keep them alive).
+5. **Out of scope for B1:** `FileSystem` fault injection (B2), kill-worker /
+   WPT FS (B3).
+
+**Consequences.** R8.3.3/R8.3.4 can be marked PASS for B1 once tests cover
+thresholds, publication order, snapshot retention, and the meter proof.
+
+## ADR-011: M6-B2 — `FileSystem` trait and fault injection
+
+**Context.** TASK-08 / M6-B2 must close R8.5.2 / R8.5.3 for the filesystem
+backend: every production IO path must be injectable so ENOSPC, EIO, short
+writes, sync/rename failures, and interrupts can be tested without changing
+commit/recovery control flow. Legacy `SyncHooks` only covered sync.
+
+**Decision.**
+1. Introduce internal trait `FileSystem` (`crates/boa_idb_fs/src/vfs.rs`)
+   covering create/read/write/append/truncate/rename/remove/dir listing/
+   sync/lock. Default implementation is `OsFileSystem`.
+2. Factory holds `Arc<dyn FileSystem>`; `with_filesystem` injects test
+   doubles. `with_sync_hooks` remains as a compatibility adapter
+   (`SyncHooksFs`) so existing durability counting tests keep working.
+3. `FaultInjectingFs` wraps any `FileSystem` and fires queued
+   `(FaultSite, FaultKind)` rules classified by path (WAL / segment /
+   manifest / `CURRENT` rename / meta / dir sync / cleanup / lock /
+   truncate). `ENOSPC` maps to `BackendError::QuotaExceeded`; other faults
+   to `BackendError::Io`. No production `unwrap`/`expect`/`panic!` on these
+   paths.
+4. Segment reclaim (`SegmentGuard` drop) unlinks through the same
+   `FileSystem` so cleanup faults are observable.
+5. Out of scope for B2: kill-worker process crash suite and WPT
+   `--backend fs` (M6-B3).
+
+**Consequences.** Table-driven `m6b2_tests` prove committed-prefix survival
+after each publication-stage fault and safe handling of corrupt WAL /
+segment / manifest tails. R8.5.2 / R8.5.3 → PASS for in-process injection;
+R8.5.1 / R8.3.6 process-kill closed in M6-B3.
+
+## ADR-012: M6-B3 — crash worker and WPT `--backend fs`
+
+**Context.** TASK-08 / M6-B3 must close R8.3.6 / R8.5.1 with a real
+inter-process kill (not only torn-WAL simulation) and expose the FS backend
+to the WPT / differential runners at ≥92 % PASS.
+
+**Decision.**
+1. Ship `boa-idb-fs-crash-worker`: deterministic commits + index/keygen,
+   marker file `READY <kind> <durable>`, then park. Parent waits for the
+   marker and calls `Child::kill` (SIGKILL / TerminateProcess).
+2. CI runs 8 seeded iterations by default; nightly sets
+   `BOA_IDB_FS_CRASH_ITERS=200` (workflow + README). Failures print seed and
+   replay command.
+3. WPT gains `--backend fs` via `FsBackendFactory` on the existing per-file
+   temp root (same isolation model as SQLite).
+4. Differential FS scenarios live in `differential_fs_tests.rs` (memory↔FS
+   parity for CRUD/schema/index/cursors/abort/savepoint; FS reopen for
+   Strict durability).
+
+**Consequences.** R8.3.6 / R8.5.1 and FS WPT can be marked PASS with measured
+commands; no mass expectation updates were required (FS 482/482).
+

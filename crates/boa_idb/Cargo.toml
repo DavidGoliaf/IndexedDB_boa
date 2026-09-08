@@ -23,6 +23,8 @@ parking_lot = "0.12"
 
 [dev-dependencies]
 boa_idb_memory = { path = "../boa_idb_memory" }
+boa_idb_sqlite = { path = "../boa_idb_sqlite" }
+tempfile = "3"
 proptest = { workspace = true }
 rstest = { workspace = true }
 

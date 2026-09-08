@@ -8,14 +8,21 @@ authors.workspace = true
 repository.workspace = true
 description = "Filesystem backend for IndexedDB (WAL, recovery, advisory lock)"
 
+[[bin]]
+name = "boa-idb-fs-crash-worker"
+path = "src/bin/crash_worker.rs"
+
 [dependencies]
 boa_idb_core = { path = "../boa_idb_core" }
 data-encoding = "2.6"
+rpds = "1.2"
+archery = "1.2"
 parking_lot = "0.12"
 sha2 = "0.10"
 thiserror = { workspace = true }
 
 [dev-dependencies]
+boa_idb_memory = { path = "../boa_idb_memory" }
 proptest = { workspace = true }
 tempfile = "3"
 
