@@ -1,5 +1,7 @@
 # Handoff: M7 — performance, reliability, final acceptance (EXTERNAL BLOCKER)
 
+<!-- bench-check-probe: trigger PR `bench-regression` check on main (no content change) -->
+
 > **Status 2026-09-07 (M7-C):** `EXTERNAL BLOCKER` — nightly CI is
 > green (runs `34050249898` fs-crash + `34092345578` nightly-m7, 9/9 on
 > the fixed SHA — see §5). The single remaining blocker is §4: labelled
