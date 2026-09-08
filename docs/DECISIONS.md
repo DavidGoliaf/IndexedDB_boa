@@ -116,16 +116,41 @@ non-cryptographic) check. GC and dedup are content-addressed too, so
 collision risk is bounded by the same SHA-256 assumptions as the rest of
 the design.
 
-## ADR-008: Explicitly allow transitive MPL-2.0 and Unicode-3.0 licenses (M5)
+## ADR-009: Filesystem backend foundation — locking, WAL, in-memory index (M6-A)
 
-**Context.** `cargo deny check` reports two transitive license families that
-are required by the existing dependency graph: `MPL-2.0` through the WPT
-runner's `colored` dependency and `Unicode-3.0` through Boa/ICU. The project
-does not distribute modified copies of either dependency.
+**Context.** Normative M6 (`boa_idb_fs`) needs advisory multi-process locking,
+WAL frames with CRC32C recovery, atomic `CURRENT`/`MANIFEST` updates, and an
+ordered in-memory key index. Full segment/compaction/MVCC work is deferred to
+M6-B. TZ suggests `fs4`/`fd-lock` for locks.
 
-**Decision.** Add `MPL-2.0` and `Unicode-3.0` to the explicit license allowlist
-in `deny.toml`.
+**Decision.**
+1. **Advisory lock:** use the stable `std::fs::File::try_lock` /
+   `File::unlock` API (Rust ≥ 1.89; workspace MSRV 1.91). TZ suggested
+   `fs4`/`fd-lock`, but std now provides the same portable advisory lock
+   without an extra dependency. A contended lock maps to
+   `BackendError::Locked`. No `unsafe`, no FFI.
+2. **Persistent map (M6-A):** keep a per-database `BTreeMap` index in memory,
+   rebuilt from `meta.scf` + valid WAL prefix on open. Do **not** add `im` /
+   `rpds` yet; readonly transactions use copy-on-write of the maps (O(n)
+   clone). Document R8.3.4 as `PARTIAL` until M6-B.
+3. **Encoding:** reuse `boa_idb_core::clone::crc32c` for WAL trailers; custom
+   little-endian codecs for WAL frames and `meta.scf` (no new serde format
+   crate). Path hashing mirrors SQLite (`sha2` + `data-encoding` Base32).
+4. **Atomic replace:** write temp file → optional file sync → `rename` over
+   target → optional directory sync via injectable `SyncHooks` (real OS sync
+   by default; counting observer in tests). Never overwrite `MANIFEST` or
+   `meta.scf` in place.
+5. **Dev/test:** `tempfile` and `proptest` as already used by sibling crates.
+6. **WAL flags / multi-frame protocol:** a committed transaction is either a
+   single frame with flags exactly `FLAG_COMMIT` (`0x02`), or a chain of one or
+   more frames with flags exactly `FLAG_CONTINUES` (`0x01`) followed by a final
+   frame with flags exactly `FLAG_COMMIT`, all sharing the same `txn_seq`.
+   `CONTINUES|COMMIT`, zero flags, and other bits are illegal and stop recovery
+   at the prior committed prefix. Ops that do not fit in one payload are split
+   across CONTINUES/COMMIT frames without splitting a single op; an op larger
+   than the payload limit fails with `QuotaExceeded` before any WAL write.
 
-**Rationale.** Both are OSI-approved licenses, and the allowlist records the
-actual transitive policy instead of silently accepting unknown licenses. No
-dependency, lockfile, or source code is changed by this decision.
+**Consequences.** M6-A delivers durable single-writer recovery and lock
+safety without claiming compaction or O(1)/O(log n) snapshots. New crates
+are permissive-licensed and covered by `cargo deny`.
+

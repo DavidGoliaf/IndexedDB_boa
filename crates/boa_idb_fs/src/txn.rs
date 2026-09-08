@@ -1,17 +1,23 @@
-//! In-memory transaction with undo log support.
+//! Filesystem-backed transaction with undo logs and WAL commit.
 
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use boa_idb_core::backend::error::BackendError;
 use boa_idb_core::backend::traits::{BackendCursor, BackendTxn};
 use boa_idb_core::backend::types::{DatabaseMeta, IndexSpec, StoreSpec};
 use boa_idb_core::key::range::EncodedRange;
-use boa_idb_core::proto::{Direction, IndexId, SourceRef, StoreId, TxnMode};
+use boa_idb_core::proto::{Direction, Durability, IndexId, SourceRef, StoreId, TxnMode};
 use parking_lot::RwLock;
-use std::sync::Arc;
 
-use crate::cursor::MemoryCursor;
-use crate::storage::{IndexKey, RecordKey, StorageState};
+use crate::atomic::{append_and_maybe_sync, truncate_file};
+use crate::cursor::FsCursor;
+use crate::meta::{encode_meta, write_meta_file};
+use crate::state::{DbState, IndexKey, RecordKey};
+use crate::sync_hooks::SyncHooks;
+use crate::wal::{CodecError, WalOp, encode_txn_frames_limited};
 
 /// Undo operation for savepoint rollback.
 ///
@@ -46,12 +52,18 @@ enum PendingSlot {
     Value(Vec<u8>),
 }
 
-/// In-memory transaction implementation.
-pub struct MemoryTxn {
+/// Filesystem transaction: pending mutations + WAL on commit.
+pub struct FsTxn {
     mode: TxnMode,
     scope: Vec<StoreId>,
     meta: DatabaseMeta,
-    storage_state: Arc<RwLock<StorageState>>,
+    state: Arc<RwLock<DbState>>,
+    durability: Durability,
+    db_dir: PathBuf,
+    hooks: Arc<dyn SyncHooks>,
+    max_keys_in_memory: u64,
+    max_frame_payload: u32,
+    schema_dirty: bool,
 
     // Transaction-local data (pending changes)
     pending_records: BTreeMap<RecordKey, Option<Vec<u8>>>,
@@ -62,24 +74,60 @@ pub struct MemoryTxn {
     undo_stack: Vec<Vec<UndoOp>>,
 }
 
-impl MemoryTxn {
-    /// Creates a new memory transaction.
+impl FsTxn {
+    /// Creates a new filesystem transaction.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         mode: TxnMode,
         scope: Vec<StoreId>,
         meta: DatabaseMeta,
-        storage_state: Arc<RwLock<StorageState>>,
+        state: Arc<RwLock<DbState>>,
+        durability: Durability,
+        db_dir: PathBuf,
+        hooks: Arc<dyn SyncHooks>,
+        max_keys_in_memory: u64,
+        max_frame_payload: u32,
     ) -> Self {
         Self {
             mode,
             scope,
             meta,
-            storage_state,
+            state,
+            durability,
+            db_dir,
+            hooks,
+            max_keys_in_memory,
+            max_frame_payload,
+            schema_dirty: false,
             pending_records: BTreeMap::new(),
             pending_index_entries: BTreeMap::new(),
             pending_key_generators: BTreeMap::new(),
             undo_stack: Vec::new(),
         }
+    }
+
+    fn wants_sync(&self) -> bool {
+        matches!(self.durability, Durability::Strict)
+    }
+
+    /// Projected key count if `map_key` is inserted as a brand-new record.
+    fn projected_key_count_after_insert(&self, map_key: &RecordKey) -> u64 {
+        let state = self.state.read();
+        let mut count = state.key_count();
+        for (rk, val) in &self.pending_records {
+            let existed = state.records.contains_key(rk);
+            match (existed, val.is_some()) {
+                (false, true) => count += 1,
+                (true, false) => count = count.saturating_sub(1),
+                _ => {}
+            }
+        }
+        let already_counted = state.records.contains_key(map_key)
+            || matches!(self.pending_records.get(map_key), Some(Some(_)));
+        if !already_counted {
+            count += 1;
+        }
+        count
     }
 
     fn check_scope(&self, store: StoreId) -> Result<(), BackendError> {
@@ -112,7 +160,7 @@ impl MemoryTxn {
             return val.clone();
         }
         // Fall back to committed data
-        let state = self.storage_state.read();
+        let state = self.state.read();
         state.records.get(key).cloned()
     }
 
@@ -130,7 +178,7 @@ impl MemoryTxn {
         if let Some(val) = self.pending_records.get(key) {
             return val.is_some();
         }
-        let state = self.storage_state.read();
+        let state = self.state.read();
         state.records.contains_key(key)
     }
 
@@ -139,13 +187,13 @@ impl MemoryTxn {
         if let Some(existed) = self.pending_index_entries.get(key) {
             return *existed;
         }
-        let state = self.storage_state.read();
+        let state = self.state.read();
         state.index_entries.contains_key(key)
     }
 
     /// Finds index entries matching a prefix (index_id, idx_key).
     fn find_index_entries(&self, index_id: IndexId, idx_key: &[u8]) -> Vec<(Vec<u8>, bool)> {
-        let state = self.storage_state.read();
+        let state = self.state.read();
         let mut results = Vec::new();
 
         // Check committed entries
@@ -178,7 +226,7 @@ impl MemoryTxn {
 
     /// Finds all index entries for a primary key across all indexes.
     fn find_index_entries_by_primary(&self, index_id: IndexId, primary_key: &[u8]) -> Vec<Vec<u8>> {
-        let state = self.storage_state.read();
+        let state = self.state.read();
         let mut results = Vec::new();
 
         // Check committed entries
@@ -223,7 +271,7 @@ impl MemoryTxn {
     ) -> Vec<(Vec<u8>, Vec<u8>, Option<Vec<u8>>)> {
         // Merged (index_key, primary_key) set: committed entries minus
         // pending deletions, plus pending-only inserts.
-        let state = self.storage_state.read();
+        let state = self.state.read();
         let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
         for ((iid, idx_key, pk), _) in &state.index_entries {
             if *iid != index || !range.contains(idx_key) {
@@ -290,9 +338,89 @@ impl MemoryTxn {
 
         entries
     }
+
+    fn build_commit_payload(&self) -> (Vec<WalOp>, DatabaseMeta, bool) {
+        let mut ops = Vec::new();
+        for (key, value) in &self.pending_records {
+            match value {
+                Some(val) => ops.push(WalOp::Put {
+                    store: key.0,
+                    key: key.1.clone(),
+                    value: val.clone(),
+                }),
+                None => ops.push(WalOp::Delete {
+                    store: key.0,
+                    key: key.1.clone(),
+                }),
+            }
+        }
+        for (key, exists) in &self.pending_index_entries {
+            if *exists {
+                ops.push(WalOp::IndexPut {
+                    index: key.0,
+                    idx_key: key.1.clone(),
+                    primary_key: key.2.clone(),
+                });
+            } else {
+                ops.push(WalOp::IndexDelete {
+                    index: key.0,
+                    idx_key: key.1.clone(),
+                    primary_key: key.2.clone(),
+                });
+            }
+        }
+        for (store, value) in &self.pending_key_generators {
+            ops.push(WalOp::KeyGenSet {
+                store: *store,
+                value_bits: value.to_bits(),
+            });
+        }
+
+        let mut meta = self.meta.clone();
+        for (store, value) in &self.pending_key_generators {
+            if let Some(s) = meta.stores.iter_mut().find(|s| s.id == *store) {
+                s.key_gen = *value;
+            }
+        }
+        let schema_dirty = self.schema_dirty || !self.pending_key_generators.is_empty();
+        if schema_dirty {
+            ops.push(WalOp::MetaReplace {
+                bytes: encode_meta(&meta),
+            });
+        }
+        (ops, meta, schema_dirty)
+    }
+
+    fn apply_pending_to_state(&self, meta: DatabaseMeta, txn_seq: u64, bump_seq: bool) {
+        let mut state = self.state.write();
+        if bump_seq {
+            state.next_txn_seq = txn_seq.saturating_add(1);
+        }
+        for (key, value) in &self.pending_records {
+            match value {
+                Some(val) => {
+                    state.records.insert(key.clone(), val.clone());
+                }
+                None => {
+                    state.records.remove(key);
+                }
+            }
+        }
+        for (key, exists) in &self.pending_index_entries {
+            if *exists {
+                state.index_entries.insert(key.clone(), ());
+            } else {
+                state.index_entries.remove(key);
+            }
+        }
+        for (store, value) in &self.pending_key_generators {
+            state.key_generators.insert(*store, *value);
+        }
+        state.meta = Some(meta);
+    }
 }
 
-impl BackendTxn for MemoryTxn {
+impl BackendTxn for FsTxn {
     fn begin_request(&mut self) -> Result<(), BackendError> {
         self.undo_stack.push(Vec::new());
         Ok(())
@@ -355,6 +483,7 @@ impl BackendTxn for MemoryTxn {
             ));
         }
         self.meta.version = version;
+        self.schema_dirty = true;
         Ok(())
     }
 
@@ -377,6 +506,7 @@ impl BackendTxn for MemoryTxn {
                 indexes: Vec::new(),
                 deleted: false,
             });
+        self.schema_dirty = true;
         Ok(id)
     }
 
@@ -389,6 +519,7 @@ impl BackendTxn for MemoryTxn {
         if let Some(store) = self.meta.stores.iter_mut().find(|s| s.id == id) {
             store.deleted = true;
         }
+        self.schema_dirty = true;
         Ok(())
     }
 
@@ -401,6 +532,7 @@ impl BackendTxn for MemoryTxn {
         if let Some(store) = self.meta.stores.iter_mut().find(|s| s.id == id) {
             store.name = new_name.into();
         }
+        self.schema_dirty = true;
         Ok(())
     }
 
@@ -423,6 +555,7 @@ impl BackendTxn for MemoryTxn {
                 deleted: false,
             });
         }
+        self.schema_dirty = true;
         Ok(id)
     }
 
@@ -437,6 +570,7 @@ impl BackendTxn for MemoryTxn {
                 idx.deleted = true;
             }
         }
+        self.schema_dirty = true;
         Ok(())
     }
 
@@ -456,6 +590,7 @@ impl BackendTxn for MemoryTxn {
                 idx.name = new_name.into();
             }
         }
+        self.schema_dirty = true;
         Ok(())
     }
 
@@ -476,6 +611,16 @@ impl BackendTxn for MemoryTxn {
             return Err(BackendError::Constraint(format!(
                 "Record already exists for key in store {store}"
             )));
+        }
+
+        if !self.record_exists(&map_key) {
+            let projected = self.projected_key_count_after_insert(&map_key);
+            if projected > self.max_keys_in_memory {
+                return Err(BackendError::QuotaExceeded {
+                    needed: projected,
+                    available: self.max_keys_in_memory,
+                });
+            }
         }
 
         // Save pending state for undo (Absent = no pending entry yet).
@@ -522,7 +667,7 @@ impl BackendTxn for MemoryTxn {
         self.check_readwrite()?;
 
         // Collect keys in range from committed storage
-        let state = self.storage_state.read();
+        let state = self.state.read();
         let keys_in_range: Vec<RecordKey> = state
             .records
             .keys()
@@ -589,7 +734,7 @@ impl BackendTxn for MemoryTxn {
         // for each key captures the *merged* value (including outer-level
         // tombstones) — logging the raw committed value here would resurrect
         // records deleted by an outer savepoint level on rollback.
-        let state = self.storage_state.read();
+        let state = self.state.read();
         let mut keys: Vec<RecordKey> = state
             .records
             .keys()
@@ -626,7 +771,7 @@ impl BackendTxn for MemoryTxn {
                 let mut count: u64 = 0;
 
                 // Count committed records in range
-                let state = self.storage_state.read();
+                let state = self.state.read();
                 for (sid, key) in state.records.keys() {
                     if *sid == store && range.contains(key) {
                         // Check if not deleted in pending
@@ -647,7 +792,7 @@ impl BackendTxn for MemoryTxn {
                     if *sid == store && val.is_some() && range.contains(key) {
                         // Only count if not already counted from committed
                         let committed_exists = {
-                            let state = self.storage_state.read();
+                            let state = self.state.read();
                             state.records.contains_key(&(*sid, key.clone()))
                         };
                         if !committed_exists {
@@ -664,7 +809,7 @@ impl BackendTxn for MemoryTxn {
 
                 // Merged view: committed entries, minus those deleted in
                 // pending, plus pending-only inserts.
-                let state = self.storage_state.read();
+                let state = self.state.read();
                 for ((iid, idx_key, pk), _) in &state.index_entries {
                     if *iid != index || !range.contains(idx_key) {
                         continue;
@@ -710,7 +855,7 @@ impl BackendTxn for MemoryTxn {
                 let mut entries: Vec<(Vec<u8>, Vec<u8>, Option<Vec<u8>>)> = Vec::new();
 
                 // Add committed records
-                let state = self.storage_state.read();
+                let state = self.state.read();
                 for ((sid, key), value) in &state.records {
                     if *sid == store && range.contains(key) {
                         // Check if overridden by pending
@@ -732,7 +877,7 @@ impl BackendTxn for MemoryTxn {
                     if *sid == store && val.is_some() && range.contains(key) {
                         // Only add if not already added from committed
                         let committed_exists = {
-                            let state = self.storage_state.read();
+                            let state = self.state.read();
                             state.records.contains_key(&(*sid, key.clone()))
                         };
                         if !committed_exists {
@@ -748,26 +893,26 @@ impl BackendTxn for MemoryTxn {
                 let cursor = match dir {
                     Direction::Next | Direction::NextUnique => {
                         if key_only {
-                            MemoryCursor::with_entries(
+                            FsCursor::with_entries(
                                 entries
                                     .into_iter()
                                     .map(|(k, pk, _)| (k, pk, None))
                                     .collect(),
                             )
                         } else {
-                            MemoryCursor::with_entries(entries)
+                            FsCursor::with_entries(entries)
                         }
                     }
                     Direction::Prev | Direction::PrevUnique => {
                         if key_only {
-                            MemoryCursor::with_entries_reversed(
+                            FsCursor::with_entries_reversed(
                                 entries
                                     .into_iter()
                                     .map(|(k, pk, _)| (k, pk, None))
                                     .collect(),
                             )
                         } else {
-                            MemoryCursor::with_entries_reversed(entries)
+                            FsCursor::with_entries_reversed(entries)
                         }
                     }
                 };
@@ -777,7 +922,7 @@ impl BackendTxn for MemoryTxn {
             SourceRef::Index { store, index } => {
                 self.check_scope(store)?;
                 let entries = self.scan_index(store, index, range, dir, key_only);
-                Ok(Box::new(MemoryCursor::with_entries(entries)))
+                Ok(Box::new(FsCursor::with_entries(entries)))
             }
         }
     }
@@ -788,7 +933,7 @@ impl BackendTxn for MemoryTxn {
             return Ok(*val);
         }
         // Fall back to committed
-        let state = self.storage_state.read();
+        let state = self.state.read();
         Ok(state.key_generators.get(&store).copied().unwrap_or(1.0))
     }
 
@@ -886,44 +1031,57 @@ impl BackendTxn for MemoryTxn {
     }
 
     fn commit(self: Box<Self>) -> Result<(), BackendError> {
-        let mut state = self.storage_state.write();
+        // Readonly transactions never touch durable state.
+        if self.mode == TxnMode::ReadOnly {
+            return Ok(());
+        }
 
-        // Apply pending record changes
-        for (key, value) in &self.pending_records {
-            match value {
-                Some(val) => {
-                    state.records.insert(key.clone(), val.clone());
+        let sync = self.wants_sync();
+        let (ops, meta, schema_dirty) = self.build_commit_payload();
+        let empty = ops.is_empty();
+        let wal_path = self.db_dir.join("wal").join("000001.log");
+        let wal_len_before = fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
+        let txn_seq = self.state.read().next_txn_seq;
+
+        if !empty {
+            let frames = match encode_txn_frames_limited(txn_seq, &ops, self.max_frame_payload) {
+                Ok(frames) => frames,
+                Err(CodecError::PayloadTooLarge(needed)) => {
+                    return Err(BackendError::QuotaExceeded {
+                        needed: needed as u64,
+                        available: u64::from(self.max_frame_payload),
+                    });
                 }
-                None => {
-                    state.records.remove(key);
+                Err(err) => {
+                    return Err(BackendError::Internal(format!("encode WAL frames: {err}")));
+                }
+            };
+            // Schema commits always sync the WAL (final COMMIT included) before
+            // advancing meta.scf so a crash cannot leave newer meta with an
+            // older durable journal.
+            let wal_sync = sync || schema_dirty;
+            for (i, bytes) in frames.iter().enumerate() {
+                let is_last = i + 1 == frames.len();
+                let do_sync = wal_sync && is_last;
+                if let Err(err) = append_and_maybe_sync(&wal_path, bytes, do_sync, &self.hooks) {
+                    let _ = truncate_file(&wal_path, wal_len_before);
+                    return Err(err);
                 }
             }
         }
 
-        // Apply pending index entry changes
-        for (key, exists) in &self.pending_index_entries {
-            if *exists {
-                state.index_entries.insert(key.clone(), ());
-            } else {
-                state.index_entries.remove(key);
+        if schema_dirty {
+            if let Err(err) = write_meta_file(&self.db_dir, &meta, sync, &self.hooks) {
+                let _ = truncate_file(&wal_path, wal_len_before);
+                return Err(err);
             }
         }
 
-        // Apply pending key generator changes
-        for (store, value) in &self.pending_key_generators {
-            state.key_generators.insert(*store, *value);
-        }
-
-        // Apply schema changes
-        state
-            .databases
-            .insert(self.meta.name.to_string(), self.meta);
-
+        self.apply_pending_to_state(meta, txn_seq, !empty);
         Ok(())
     }
 
     fn abort(self: Box<Self>) -> Result<(), BackendError> {
-        // Discard all changes
         Ok(())
     }
 }
