@@ -51,7 +51,10 @@ fn test_database_capabilities() {
     let storage = factory.open_storage(&key).unwrap();
     let db = storage.open_database("mydb").unwrap();
     let caps = db.capabilities();
-    assert!(caps.snapshot_isolation);
+    // No snapshot isolation (M7-B H-MEM): lazy cursors re-read committed
+    // state per step for O(1) memory instead of snapshotting the range.
+    // The L1 driver never branches on this flag.
+    assert!(!caps.snapshot_isolation);
     assert!(!caps.durable);
     assert!(caps.concurrent);
 }

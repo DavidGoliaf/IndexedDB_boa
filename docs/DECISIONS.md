@@ -219,6 +219,30 @@ after each publication-stage fault and safe handling of corrupt WAL /
 segment / manifest tails. R8.5.2 / R8.5.3 → PASS for in-process injection;
 R8.5.1 / R8.3.6 process-kill closed in M6-B3.
 
+## ADR-014: `dhat` 0.3 as the heap-gate allocator (M7-B rework P1-1)
+
+**Context.** M7-B review P1-1 rejects the hand-rolled counting global
+allocator in `memory_gates_tests.rs` (`unsafe impl GlobalAlloc` violates
+the no-`unsafe` rule; a QUESTIONS.md note is not consent). The gates need
+portable, precise heap measurement (peak + live bytes around scenarios) on
+all CI platforms.
+
+**Decision.** Depend on crates.io `dhat` 0.3.x as a **dev-only** dependency
+of `boa_idb` (gates test target only). It is maintained by the Valgrind/DHAT
+author (nnethercote), the de-facto standard heap-usage-testing crate,
+dual-licensed MIT/Apache-2.0 (both on the `deny.toml` allowlist), works on
+all platforms, and moves every `unsafe` line into the reviewed upstream
+crate: our code uses `dhat::Alloc`, `Profiler::builder().testing()` and
+`HeapStats::get()` with zero `unsafe`, so `deny(unsafe_code)` holds
+workspace-wide again. Rejected: keeping the shim (rule violation);
+Linux-only `/proc` RSS as the sole gate (loses precision on
+Windows/macOS dev and PR runs — Valgrind massif stays as the complementary
+RSS leg on nightly); `tikv-jemalloc` (heavier, weaker MSVC story).
+
+**Consequences.** The gates binary runs slower (tracked allocator, accepted
+for tests); per dhat docs, tests in the file serialize on a mutex (parallel
+harness threads would pollute global stats).
+
 ## ADR-013: `criterion` 0.5 as the benchmark harness (M7-A)
 
 **Context.** TASK-09 / M7-A must measure the seven §12.1 scenarios for SQLite

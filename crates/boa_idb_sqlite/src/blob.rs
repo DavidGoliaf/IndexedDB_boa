@@ -123,7 +123,13 @@ impl BlobManager {
     /// transaction reached SQLite COMMIT. Only content-addressed `.bin`
     /// files are considered; temporary files are left for a separate cleanup
     /// policy and database references are never removed.
+    ///
+    /// Fast path (M7-B H-F4): without a blob directory no orphans can exist,
+    /// so the full-table reference scan is skipped entirely.
     pub fn sweep_orphans(&self, conn: &Connection) -> Result<usize, BackendError> {
+        if !self.blob_dir.is_dir() {
+            return Ok(0);
+        }
         let mut stmt = conn
             .prepare("SELECT ext FROM records WHERE ext IS NOT NULL")
             .map_err(|e| BackendError::Internal(format!("blob reference query failed: {e}")))?;

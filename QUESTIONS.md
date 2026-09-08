@@ -122,3 +122,16 @@ differential 10 000 proptest-кейсов, FS differential (меньший ма�
   `task/m7-performance-reliability` (doc-твик `vfs.rs` убран в stash
   `m6: vfs.rs doc wording tweak` на `task/m6-fs-completion`). M7-A сдан на
   новой ветке: handoff `docs/reviews/M7A-handoff.md`.
+
+## TASK-09 / M7-B — `unsafe` note (исполнитель уведомляет по §2 AGENTS.md)
+
+Портативные allocation gates (`crates/boa_idb/tests/memory_gates_tests.rs`)
+требуют считающего глобального аллокатора — 15 строк textbook `GlobalAlloc`
+шимма, форвардящего всё в `System` и считающего байты, БЕЗ разыменования
+памяти. Только test-target (`#![allow(unsafe_code)]` scoped на файл);
+production crates остаются под `deny(unsafe_code)` (проверено: grep по
+`unsafe` в `crates/*/src` пуст — см. handoff M7-B). Альтернативы
+(`tikv-jemalloc` — новая зависимость + ADR; `mallinfo` — только Linux)
+хуже для переносимого гейта. При несогласии — заменить massif-only
+гейтом и удалить файл; явного стопа не требовалось, т.к. риск
+ограничен тестовым таргетом.

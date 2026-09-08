@@ -229,13 +229,26 @@ pub fn with_listeners_mut<R>(
 
 /// Snapshots `(id, callback, once)` listeners of `event_type` in registration order.
 pub fn snapshot_listeners(obj: &JsObject, event_type: &str) -> Vec<(u64, JsValue, bool)> {
+    snapshot_listeners_full(obj, event_type)
+        .into_iter()
+        .map(|(id, callback, _, once)| (id, callback, once))
+        .collect()
+}
+
+/// Snapshots `(id, callback, capture, once)` listeners of `event_type` in
+/// registration order. Used by `dispatchEvent`, which must filter by phase
+/// (capture/bubble/at-target) unlike the driver's at-target-only flow.
+pub fn snapshot_listeners_full(
+    obj: &JsObject,
+    event_type: &str,
+) -> Vec<(u64, JsValue, bool, bool)> {
     let mut out = Vec::new();
     with_listeners_mut(obj, |listeners| {
         // Next listener id for deduplication of re-added entries is kept
         // simple: capture order is registration order.
         for l in listeners.iter() {
             if l.event_type == event_type {
-                out.push((l.id, l.callback.clone(), l.once));
+                out.push((l.id, l.callback.clone(), l.capture, l.once));
             }
         }
     });

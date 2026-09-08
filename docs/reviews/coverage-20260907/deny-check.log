@@ -1,0 +1,633 @@
+warning[duplicate]: found 2 duplicate entries for crate 'cpufeatures'
+   тФМтФА D:\projects\BoaX\boa-idb/Cargo.lock:55:1
+   тФВ
+55 тФВ тХн cpufeatures 0.2.17 registry+https://github.com/rust-lang/crates.io-index
+56 тФВ тФВ cpufeatures 0.3.1 registry+https://github.com/rust-lang/crates.io-index
+   тФВ тХ░тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФШ lock entries
+   тФВ
+   тФЬ cpufeatures v0.2.17
+     тФФтФАтФА sha2 v0.10.9
+         тФЬтФАтФА boa_idb_fs v0.1.0
+         тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0
+         тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0
+         тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+         тФФтФАтФА boa_idb_sqlite v0.1.0
+             тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+             тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+   тФЬ cpufeatures v0.3.1
+     тФФтФАтФА chacha20 v0.10.2
+         тФФтФАтФА rand v0.10.2
+             тФФтФАтФА boa_engine v0.22.0
+                 тФЬтФАтФА boa_idb v0.1.0
+                 тФВ   тФФтФАтФА boa_idb_wpt v0.1.0
+                 тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'foldhash'
+   тФМтФА D:\projects\BoaX\boa-idb/Cargo.lock:88:1
+   тФВ
+88 тФВ тХн foldhash 0.1.5 registry+https://github.com/rust-lang/crates.io-index
+89 тФВ тФВ foldhash 0.2.0 registry+https://github.com/rust-lang/crates.io-index
+   тФВ тХ░тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФШ lock entries
+   тФВ
+   тФЬ foldhash v0.1.5
+     тФФтФАтФА hashbrown v0.15.5
+         тФЬтФАтФА boa_idb v0.1.0
+         тФВ   тФФтФАтФА boa_idb_wpt v0.1.0
+         тФЬтФАтФА boa_idb_core v0.1.0
+         тФВ   тФЬтФАтФА boa_idb v0.1.0 (*)
+         тФВ   тФЬтФАтФА boa_idb_fs v0.1.0
+         тФВ   тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+         тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+         тФВ   тФЬтФАтФА boa_idb_memory v0.1.0
+         тФВ   тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+         тФВ   тФВ   тФЬтФАтФА (dev) boa_idb_fs v0.1.0 (*)
+         тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+         тФВ   тФЬтФАтФА boa_idb_sqlite v0.1.0
+         тФВ   тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+         тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+         тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+         тФФтФАтФА boa_idb_memory v0.1.0 (*)
+   тФЬ foldhash v0.2.0
+     тФФтФАтФА hashbrown v0.17.1
+         тФЬтФАтФА boa_engine v0.22.0
+         тФВ   тФЬтФАтФА boa_idb v0.1.0
+         тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0
+         тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+         тФЬтФАтФА boa_gc v0.22.0
+         тФВ   тФЬтФАтФА boa_engine v0.22.0 (*)
+         тФВ   тФЬтФАтФА boa_idb v0.1.0 (*)
+         тФВ   тФЬтФАтФА boa_idb_wpt v0.1.0 (*)
+         тФВ   тФФтФАтФА boa_interner v0.22.0
+         тФВ       тФЬтФАтФА boa_ast v0.22.0
+         тФВ       тФВ   тФЬтФАтФА boa_engine v0.22.0 (*)
+         тФВ       тФВ   тФФтФАтФА boa_parser v0.22.0
+         тФВ       тФВ       тФФтФАтФА boa_engine v0.22.0 (*)
+         тФВ       тФЬтФАтФА boa_engine v0.22.0 (*)
+         тФВ       тФФтФАтФА boa_parser v0.22.0 (*)
+         тФЬтФАтФА boa_interner v0.22.0 (*)
+         тФФтФАтФА indexmap v2.14.1
+             тФЬтФАтФА boa_ast v0.22.0 (*)
+             тФЬтФАтФА boa_engine v0.22.0 (*)
+             тФЬтФАтФА boa_idb v0.1.0 (*)
+             тФЬтФАтФА boa_idb_core v0.1.0
+             тФВ   тФЬтФАтФА boa_idb v0.1.0 (*)
+             тФВ   тФЬтФАтФА boa_idb_fs v0.1.0
+             тФВ   тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+             тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+             тФВ   тФЬтФАтФА boa_idb_memory v0.1.0
+             тФВ   тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+             тФВ   тФВ   тФЬтФАтФА (dev) boa_idb_fs v0.1.0 (*)
+             тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+             тФВ   тФЬтФАтФА boa_idb_sqlite v0.1.0
+             тФВ   тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+             тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+             тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+             тФЬтФАтФА boa_idb_memory v0.1.0 (*)
+             тФЬтФАтФА boa_interner v0.22.0 (*)
+             тФФтФАтФА toml_edit v0.25.13+spec-1.1.0
+                 тФФтФАтФА proc-macro-crate v3.5.0
+                     тФЬтФАтФА num_enum_derive v0.7.6
+                     тФВ   тФФтФАтФА num_enum v0.7.6
+                     тФВ       тФФтФАтФА boa_engine v0.22.0 (*)
+                     тФФтФАтФА rstest_macros v0.24.0
+                         тФФтФАтФА rstest v0.24.0
+                             тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+                             тФЬтФАтФА (dev) boa_idb_core v0.1.0 (*)
+                             тФЬтФАтФА (dev) boa_idb_memory v0.1.0 (*)
+                             тФФтФАтФА (dev) boa_idb_sqlite v0.1.0 (*)
+
+warning[duplicate]: found 3 duplicate entries for crate 'hashbrown'
+    тФМтФА D:\projects\BoaX\boa-idb/Cargo.lock:104:1
+    тФВ
+104 тФВ тХн hashbrown 0.14.5 registry+https://github.com/rust-lang/crates.io-index
+105 тФВ тФВ hashbrown 0.15.5 registry+https://github.com/rust-lang/crates.io-index
+106 тФВ тФВ hashbrown 0.17.1 registry+https://github.com/rust-lang/crates.io-index
+    тФВ тХ░тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФШ lock entries
+    тФВ
+    тФЬ hashbrown v0.14.5
+      тФЬтФАтФА dashmap v6.2.1
+      тФВ   тФФтФАтФА boa_engine v0.22.0
+      тФВ       тФЬтФАтФА boa_idb v0.1.0
+      тФВ       тФВ   тФФтФАтФА boa_idb_wpt v0.1.0
+      тФВ       тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФФтФАтФА hashlink v0.9.1
+          тФФтФАтФА rusqlite v0.32.1
+              тФФтФАтФА boa_idb_sqlite v0.1.0
+                  тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+                  тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+    тФЬ hashbrown v0.15.5
+      тФЬтФАтФА boa_idb v0.1.0
+      тФВ   тФФтФАтФА boa_idb_wpt v0.1.0
+      тФЬтФАтФА boa_idb_core v0.1.0
+      тФВ   тФЬтФАтФА boa_idb v0.1.0 (*)
+      тФВ   тФЬтФАтФА boa_idb_fs v0.1.0
+      тФВ   тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+      тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФВ   тФЬтФАтФА boa_idb_memory v0.1.0
+      тФВ   тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+      тФВ   тФВ   тФЬтФАтФА (dev) boa_idb_fs v0.1.0 (*)
+      тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФВ   тФЬтФАтФА boa_idb_sqlite v0.1.0
+      тФВ   тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+      тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФФтФАтФА boa_idb_memory v0.1.0 (*)
+    тФЬ hashbrown v0.17.1
+      тФЬтФАтФА boa_engine v0.22.0
+      тФВ   тФЬтФАтФА boa_idb v0.1.0
+      тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0
+      тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФЬтФАтФА boa_gc v0.22.0
+      тФВ   тФЬтФАтФА boa_engine v0.22.0 (*)
+      тФВ   тФЬтФАтФА boa_idb v0.1.0 (*)
+      тФВ   тФЬтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФВ   тФФтФАтФА boa_interner v0.22.0
+      тФВ       тФЬтФАтФА boa_ast v0.22.0
+      тФВ       тФВ   тФЬтФАтФА boa_engine v0.22.0 (*)
+      тФВ       тФВ   тФФтФАтФА boa_parser v0.22.0
+      тФВ       тФВ       тФФтФАтФА boa_engine v0.22.0 (*)
+      тФВ       тФЬтФАтФА boa_engine v0.22.0 (*)
+      тФВ       тФФтФАтФА boa_parser v0.22.0 (*)
+      тФЬтФАтФА boa_interner v0.22.0 (*)
+      тФФтФАтФА indexmap v2.14.1
+          тФЬтФАтФА boa_ast v0.22.0 (*)
+          тФЬтФАтФА boa_engine v0.22.0 (*)
+          тФЬтФАтФА boa_idb v0.1.0 (*)
+          тФЬтФАтФА boa_idb_core v0.1.0
+          тФВ   тФЬтФАтФА boa_idb v0.1.0 (*)
+          тФВ   тФЬтФАтФА boa_idb_fs v0.1.0
+          тФВ   тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+          тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+          тФВ   тФЬтФАтФА boa_idb_memory v0.1.0
+          тФВ   тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+          тФВ   тФВ   тФЬтФАтФА (dev) boa_idb_fs v0.1.0 (*)
+          тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+          тФВ   тФЬтФАтФА boa_idb_sqlite v0.1.0
+          тФВ   тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+          тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+          тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+          тФЬтФАтФА boa_idb_memory v0.1.0 (*)
+          тФЬтФАтФА boa_interner v0.22.0 (*)
+          тФФтФАтФА toml_edit v0.25.13+spec-1.1.0
+              тФФтФАтФА proc-macro-crate v3.5.0
+                  тФЬтФАтФА num_enum_derive v0.7.6
+                  тФВ   тФФтФАтФА num_enum v0.7.6
+                  тФВ       тФФтФАтФА boa_engine v0.22.0 (*)
+                  тФФтФАтФА rstest_macros v0.24.0
+                      тФФтФАтФА rstest v0.24.0
+                          тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+                          тФЬтФАтФА (dev) boa_idb_core v0.1.0 (*)
+                          тФЬтФАтФА (dev) boa_idb_memory v0.1.0 (*)
+                          тФФтФАтФА (dev) boa_idb_sqlite v0.1.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'num-bigint'
+    тФМтФА D:\projects\BoaX\boa-idb/Cargo.lock:140:1
+    тФВ
+140 тФВ тХн num-bigint 0.4.8 registry+https://github.com/rust-lang/crates.io-index
+141 тФВ тФВ num-bigint 0.5.1 registry+https://github.com/rust-lang/crates.io-index
+    тФВ тХ░тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФШ lock entries
+    тФВ
+    тФЬ num-bigint v0.4.8
+      тФЬтФАтФА boa_idb v0.1.0
+      тФВ   тФФтФАтФА boa_idb_wpt v0.1.0
+      тФФтФАтФА boa_idb_core v0.1.0
+          тФЬтФАтФА boa_idb v0.1.0 (*)
+          тФЬтФАтФА boa_idb_fs v0.1.0
+          тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+          тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+          тФЬтФАтФА boa_idb_memory v0.1.0
+          тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+          тФВ   тФЬтФАтФА (dev) boa_idb_fs v0.1.0 (*)
+          тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+          тФЬтФАтФА boa_idb_sqlite v0.1.0
+          тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+          тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+          тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+    тФЬ num-bigint v0.5.1
+      тФЬтФАтФА boa_ast v0.22.0
+      тФВ   тФЬтФАтФА boa_engine v0.22.0
+      тФВ   тФВ   тФЬтФАтФА boa_idb v0.1.0
+      тФВ   тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0
+      тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФВ   тФФтФАтФА boa_parser v0.22.0
+      тФВ       тФФтФАтФА boa_engine v0.22.0 (*)
+      тФЬтФАтФА boa_engine v0.22.0 (*)
+      тФФтФАтФА boa_parser v0.22.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'syn'
+    тФМтФА D:\projects\BoaX\boa-idb/Cargo.lock:223:1
+    тФВ
+223 тФВ тХн syn 2.0.119 registry+https://github.com/rust-lang/crates.io-index
+224 тФВ тФВ syn 3.0.4 registry+https://github.com/rust-lang/crates.io-index
+    тФВ тХ░тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФШ lock entries
+    тФВ
+    тФЬ syn v2.0.119
+      тФЬтФАтФА dynify-macros v0.1.2
+      тФВ   тФФтФАтФА dynify v0.1.2
+      тФВ       тФФтФАтФА boa_engine v0.22.0
+      тФВ           тФЬтФАтФА boa_idb v0.1.0
+      тФВ           тФВ   тФФтФАтФА boa_idb_wpt v0.1.0
+      тФВ           тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФЬтФАтФА equator-macro v0.4.2
+      тФВ   тФФтФАтФА equator v0.4.2
+      тФВ       тФФтФАтФА aligned-vec v0.6.4
+      тФВ           тФФтФАтФА boa_engine v0.22.0 (*)
+      тФЬтФАтФА num_enum_derive v0.7.6
+      тФВ   тФФтФАтФА num_enum v0.7.6
+      тФВ       тФФтФАтФА boa_engine v0.22.0 (*)
+      тФЬтФАтФА phf_macros v0.14.0
+      тФВ   тФФтФАтФА phf v0.14.0
+      тФВ       тФФтФАтФА boa_interner v0.22.0
+      тФВ           тФЬтФАтФА boa_ast v0.22.0
+      тФВ           тФВ   тФЬтФАтФА boa_engine v0.22.0 (*)
+      тФВ           тФВ   тФФтФАтФА boa_parser v0.22.0
+      тФВ           тФВ       тФФтФАтФА boa_engine v0.22.0 (*)
+      тФВ           тФЬтФАтФА boa_engine v0.22.0 (*)
+      тФВ           тФФтФАтФА boa_parser v0.22.0 (*)
+      тФЬтФАтФА pin-project-internal v1.1.13
+      тФВ   тФФтФАтФА pin-project v1.1.13
+      тФВ       тФФтФАтФА futures-concurrency v7.7.1
+      тФВ           тФФтФАтФА boa_engine v0.22.0 (*)
+      тФЬтФАтФА rstest_macros v0.24.0
+      тФВ   тФФтФАтФА rstest v0.24.0
+      тФВ       тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+      тФВ       тФЬтФАтФА (dev) boa_idb_core v0.1.0
+      тФВ       тФВ   тФЬтФАтФА boa_idb v0.1.0 (*)
+      тФВ       тФВ   тФЬтФАтФА boa_idb_fs v0.1.0
+      тФВ       тФВ   тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+      тФВ       тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФВ       тФВ   тФЬтФАтФА boa_idb_memory v0.1.0
+      тФВ       тФВ   тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+      тФВ       тФВ   тФВ   тФЬтФАтФА (dev) boa_idb_fs v0.1.0 (*)
+      тФВ       тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФВ       тФВ   тФЬтФАтФА boa_idb_sqlite v0.1.0
+      тФВ       тФВ   тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+      тФВ       тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФВ       тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФВ       тФЬтФАтФА (dev) boa_idb_memory v0.1.0 (*)
+      тФВ       тФФтФАтФА (dev) boa_idb_sqlite v0.1.0 (*)
+      тФЬтФАтФА strum_macros v0.28.0
+      тФВ   тФФтФАтФА strum v0.28.0
+      тФВ       тФФтФАтФА boa_ast v0.22.0 (*)
+      тФЬтФАтФА synstructure v0.13.2
+      тФВ   тФЬтФАтФА yoke-derive v0.8.2
+      тФВ   тФВ   тФФтФАтФА yoke v0.8.3
+      тФВ   тФВ       тФЬтФАтФА icu_collections v2.3.0
+      тФВ   тФВ       тФВ   тФЬтФАтФА icu_normalizer v2.3.0
+      тФВ   тФВ       тФВ   тФВ   тФФтФАтФА boa_engine v0.22.0 (*)
+      тФВ   тФВ       тФВ   тФФтФАтФА icu_properties v2.3.0
+      тФВ   тФВ       тФВ       тФФтФАтФА boa_parser v0.22.0 (*)
+      тФВ   тФВ       тФЬтФАтФА icu_provider v2.3.1
+      тФВ   тФВ       тФВ   тФЬтФАтФА icu_calendar v2.3.0
+      тФВ   тФВ       тФВ   тФВ   тФЬтФАтФА boa_engine v0.22.0 (*)
+      тФВ   тФВ       тФВ   тФВ   тФФтФАтФА temporal_rs v0.2.6
+      тФВ   тФВ       тФВ   тФВ       тФФтФАтФА boa_engine v0.22.0 (*)
+      тФВ   тФВ       тФВ   тФЬтФАтФА icu_locale_fallback v2.3.0
+      тФВ   тФВ       тФВ   тФВ   тФФтФАтФА icu_calendar v2.3.0 (*)
+      тФВ   тФВ       тФВ   тФЬтФАтФА icu_normalizer v2.3.0 (*)
+      тФВ   тФВ       тФВ   тФФтФАтФА icu_properties v2.3.0 (*)
+      тФВ   тФВ       тФЬтФАтФА zerotrie v0.2.5
+      тФВ   тФВ       тФВ   тФЬтФАтФА icu_properties v2.3.0 (*)
+      тФВ   тФВ       тФВ   тФЬтФАтФА icu_provider v2.3.1 (*)
+      тФВ   тФВ       тФВ   тФФтФАтФА timezone_provider v0.2.6
+      тФВ   тФВ       тФВ       тФЬтФАтФА boa_engine v0.22.0 (*)
+      тФВ   тФВ       тФВ       тФФтФАтФА temporal_rs v0.2.6 (*)
+      тФВ   тФВ       тФФтФАтФА zerovec v0.11.8
+      тФВ   тФВ           тФЬтФАтФА icu_calendar v2.3.0 (*)
+      тФВ   тФВ           тФЬтФАтФА icu_collections v2.3.0 (*)
+      тФВ   тФВ           тФЬтФАтФА icu_locale_core v2.3.0
+      тФВ   тФВ           тФВ   тФЬтФАтФА icu_calendar v2.3.0 (*)
+      тФВ   тФВ           тФВ   тФЬтФАтФА icu_locale_fallback v2.3.0 (*)
+      тФВ   тФВ           тФВ   тФЬтФАтФА icu_properties v2.3.0 (*)
+      тФВ   тФВ           тФВ   тФЬтФАтФА icu_provider v2.3.1 (*)
+      тФВ   тФВ           тФВ   тФФтФАтФА temporal_rs v0.2.6 (*)
+      тФВ   тФВ           тФЬтФАтФА icu_locale_fallback v2.3.0 (*)
+      тФВ   тФВ           тФЬтФАтФА icu_normalizer v2.3.0 (*)
+      тФВ   тФВ           тФЬтФАтФА icu_properties v2.3.0 (*)
+      тФВ   тФВ           тФЬтФАтФА icu_provider v2.3.1 (*)
+      тФВ   тФВ           тФЬтФАтФА potential_utf v0.1.6
+      тФВ   тФВ           тФВ   тФЬтФАтФА icu_collections v2.3.0 (*)
+      тФВ   тФВ           тФВ   тФФтФАтФА icu_locale_fallback v2.3.0 (*)
+      тФВ   тФВ           тФЬтФАтФА timezone_provider v0.2.6 (*)
+      тФВ   тФВ           тФФтФАтФА tinystr v0.8.4
+      тФВ   тФВ               тФЬтФАтФА icu_calendar v2.3.0 (*)
+      тФВ   тФВ               тФЬтФАтФА icu_locale_core v2.3.0 (*)
+      тФВ   тФВ               тФЬтФАтФА icu_locale_fallback v2.3.0 (*)
+      тФВ   тФВ               тФЬтФАтФА temporal_rs v0.2.6 (*)
+      тФВ   тФВ               тФФтФАтФА timezone_provider v0.2.6 (*)
+      тФВ   тФФтФАтФА zerofrom-derive v0.1.7
+      тФВ       тФФтФАтФА zerofrom v0.1.8
+      тФВ           тФЬтФАтФА icu_collections v2.3.0 (*)
+      тФВ           тФЬтФАтФА icu_provider v2.3.1 (*)
+      тФВ           тФЬтФАтФА timezone_provider v0.2.6 (*)
+      тФВ           тФЬтФАтФА yoke v0.8.3 (*)
+      тФВ           тФЬтФАтФА zerotrie v0.2.5 (*)
+      тФВ           тФФтФАтФА zerovec v0.11.8 (*)
+      тФЬтФАтФА yoke-derive v0.8.2 (*)
+      тФЬтФАтФА zerocopy-derive v0.8.56
+      тФВ   тФФтФАтФА zerocopy v0.8.56
+      тФВ       тФЬтФАтФА ahash v0.8.12
+      тФВ       тФВ   тФФтФАтФА hashbrown v0.14.5
+      тФВ       тФВ       тФЬтФАтФА dashmap v6.2.1
+      тФВ       тФВ       тФВ   тФФтФАтФА boa_engine v0.22.0 (*)
+      тФВ       тФВ       тФФтФАтФА hashlink v0.9.1
+      тФВ       тФВ           тФФтФАтФА rusqlite v0.32.1
+      тФВ       тФВ               тФФтФАтФА boa_idb_sqlite v0.1.0 (*)
+      тФВ       тФЬтФАтФА half v2.7.1
+      тФВ       тФВ   тФФтФАтФА ciborium-ll v0.2.2
+      тФВ       тФВ       тФФтФАтФА ciborium v0.2.2
+      тФВ       тФВ           тФФтФАтФА criterion v0.5.1
+      тФВ       тФВ               тФФтФАтФА (dev) boa_idb v0.1.0 (*)
+      тФВ       тФФтФАтФА ppv-lite86 v0.2.21
+      тФВ           тФФтФАтФА rand_chacha v0.9.0
+      тФВ               тФФтФАтФА proptest v1.11.0
+      тФВ                   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+      тФВ                   тФЬтФАтФА (dev) boa_idb_core v0.1.0 (*)
+      тФВ                   тФЬтФАтФА (dev) boa_idb_fs v0.1.0 (*)
+      тФВ                   тФЬтФАтФА (dev) boa_idb_memory v0.1.0 (*)
+      тФВ                   тФФтФАтФА (dev) boa_idb_sqlite v0.1.0 (*)
+      тФФтФАтФА zerofrom-derive v0.1.7 (*)
+    тФЬ syn v3.0.4
+      тФЬтФАтФА boa_macros v0.22.0
+      тФВ   тФЬтФАтФА boa_ast v0.22.0
+      тФВ   тФВ   тФЬтФАтФА boa_engine v0.22.0
+      тФВ   тФВ   тФВ   тФЬтФАтФА boa_idb v0.1.0
+      тФВ   тФВ   тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0
+      тФВ   тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФВ   тФВ   тФФтФАтФА boa_parser v0.22.0
+      тФВ   тФВ       тФФтФАтФА boa_engine v0.22.0 (*)
+      тФВ   тФЬтФАтФА boa_engine v0.22.0 (*)
+      тФВ   тФЬтФАтФА boa_gc v0.22.0
+      тФВ   тФВ   тФЬтФАтФА boa_engine v0.22.0 (*)
+      тФВ   тФВ   тФЬтФАтФА boa_idb v0.1.0 (*)
+      тФВ   тФВ   тФЬтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФВ   тФВ   тФФтФАтФА boa_interner v0.22.0
+      тФВ   тФВ       тФЬтФАтФА boa_ast v0.22.0 (*)
+      тФВ   тФВ       тФЬтФАтФА boa_engine v0.22.0 (*)
+      тФВ   тФВ       тФФтФАтФА boa_parser v0.22.0 (*)
+      тФВ   тФЬтФАтФА boa_interner v0.22.0 (*)
+      тФВ   тФФтФАтФА boa_parser v0.22.0 (*)
+      тФЬтФАтФА bytemuck_derive v1.12.0
+      тФВ   тФФтФАтФА bytemuck v1.25.2
+      тФВ       тФЬтФАтФА boa_engine v0.22.0 (*)
+      тФВ       тФФтФАтФА boa_idb_core v0.1.0
+      тФВ           тФЬтФАтФА boa_idb v0.1.0 (*)
+      тФВ           тФЬтФАтФА boa_idb_fs v0.1.0
+      тФВ           тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+      тФВ           тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФВ           тФЬтФАтФА boa_idb_memory v0.1.0
+      тФВ           тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+      тФВ           тФВ   тФЬтФАтФА (dev) boa_idb_fs v0.1.0 (*)
+      тФВ           тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФВ           тФЬтФАтФА boa_idb_sqlite v0.1.0
+      тФВ           тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+      тФВ           тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФВ           тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФЬтФАтФА clap_derive v4.6.4
+      тФВ   тФФтФАтФА clap v4.6.6
+      тФВ       тФЬтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФВ       тФФтФАтФА criterion v0.5.1
+      тФВ           тФФтФАтФА (dev) boa_idb v0.1.0 (*)
+      тФЬтФАтФА displaydoc v0.2.7
+      тФВ   тФЬтФАтФА calendrical_calculations v0.2.4
+      тФВ   тФВ   тФЬтФАтФА icu_calendar v2.3.0
+      тФВ   тФВ   тФВ   тФЬтФАтФА boa_engine v0.22.0 (*)
+      тФВ   тФВ   тФВ   тФФтФАтФА temporal_rs v0.2.6
+      тФВ   тФВ   тФВ       тФФтФАтФА boa_engine v0.22.0 (*)
+      тФВ   тФВ   тФФтФАтФА temporal_rs v0.2.6 (*)
+      тФВ   тФЬтФАтФА icu_calendar v2.3.0 (*)
+      тФВ   тФЬтФАтФА icu_collections v2.3.0
+      тФВ   тФВ   тФЬтФАтФА icu_normalizer v2.3.0
+      тФВ   тФВ   тФВ   тФФтФАтФА boa_engine v0.22.0 (*)
+      тФВ   тФВ   тФФтФАтФА icu_properties v2.3.0
+      тФВ   тФВ       тФФтФАтФА boa_parser v0.22.0 (*)
+      тФВ   тФЬтФАтФА icu_locale_core v2.3.0
+      тФВ   тФВ   тФЬтФАтФА icu_calendar v2.3.0 (*)
+      тФВ   тФВ   тФЬтФАтФА icu_locale_fallback v2.3.0
+      тФВ   тФВ   тФВ   тФФтФАтФА icu_calendar v2.3.0 (*)
+      тФВ   тФВ   тФЬтФАтФА icu_properties v2.3.0 (*)
+      тФВ   тФВ   тФЬтФАтФА icu_provider v2.3.1
+      тФВ   тФВ   тФВ   тФЬтФАтФА icu_calendar v2.3.0 (*)
+      тФВ   тФВ   тФВ   тФЬтФАтФА icu_locale_fallback v2.3.0 (*)
+      тФВ   тФВ   тФВ   тФЬтФАтФА icu_normalizer v2.3.0 (*)
+      тФВ   тФВ   тФВ   тФФтФАтФА icu_properties v2.3.0 (*)
+      тФВ   тФВ   тФФтФАтФА temporal_rs v0.2.6 (*)
+      тФВ   тФЬтФАтФА icu_properties v2.3.0 (*)
+      тФВ   тФЬтФАтФА icu_provider v2.3.1 (*)
+      тФВ   тФЬтФАтФА tinystr v0.8.4
+      тФВ   тФВ   тФЬтФАтФА icu_calendar v2.3.0 (*)
+      тФВ   тФВ   тФЬтФАтФА icu_locale_core v2.3.0 (*)
+      тФВ   тФВ   тФЬтФАтФА icu_locale_fallback v2.3.0 (*)
+      тФВ   тФВ   тФЬтФАтФА temporal_rs v0.2.6 (*)
+      тФВ   тФВ   тФФтФАтФА timezone_provider v0.2.6
+      тФВ   тФВ       тФЬтФАтФА boa_engine v0.22.0 (*)
+      тФВ   тФВ       тФФтФАтФА temporal_rs v0.2.6 (*)
+      тФВ   тФФтФАтФА zerotrie v0.2.5
+      тФВ       тФЬтФАтФА icu_properties v2.3.0 (*)
+      тФВ       тФЬтФАтФА icu_provider v2.3.1 (*)
+      тФВ       тФФтФАтФА timezone_provider v0.2.6 (*)
+      тФЬтФАтФА futures-macro v0.3.34
+      тФВ   тФФтФАтФА futures-util v0.3.34
+      тФВ       тФЬтФАтФА js-sys v0.3.105
+      тФВ       тФВ   тФФтФАтФА web-sys v0.3.105
+      тФВ       тФВ       тФФтФАтФА plotters v0.3.7
+      тФВ       тФВ           тФФтФАтФА criterion v0.5.1 (*)
+      тФВ       тФФтФАтФА rstest v0.24.0
+      тФВ           тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+      тФВ           тФЬтФАтФА (dev) boa_idb_core v0.1.0 (*)
+      тФВ           тФЬтФАтФА (dev) boa_idb_memory v0.1.0 (*)
+      тФВ           тФФтФАтФА (dev) boa_idb_sqlite v0.1.0 (*)
+      тФЬтФАтФА serde_derive v1.0.229
+      тФВ   тФЬтФАтФА criterion v0.5.1 (*)
+      тФВ   тФФтФАтФА serde v1.0.229
+      тФВ       тФЬтФАтФА boa_engine v0.22.0 (*)
+      тФВ       тФЬтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФВ       тФЬтФАтФА ciborium v0.2.2
+      тФВ       тФВ   тФФтФАтФА criterion v0.5.1 (*)
+      тФВ       тФЬтФАтФА criterion v0.5.1 (*)
+      тФВ       тФЬтФАтФА dhat v0.3.3
+      тФВ       тФВ   тФФтФАтФА (dev) boa_idb v0.1.0 (*)
+      тФВ       тФЬтФАтФА num-bigint v0.5.1
+      тФВ       тФВ   тФЬтФАтФА boa_ast v0.22.0 (*)
+      тФВ       тФВ   тФЬтФАтФА boa_engine v0.22.0 (*)
+      тФВ       тФВ   тФФтФАтФА boa_parser v0.22.0 (*)
+      тФВ       тФФтФАтФА tinytemplate v1.2.1
+      тФВ           тФФтФАтФА criterion v0.5.1 (*)
+      тФЬтФАтФА synstructure v0.14.0
+      тФВ   тФФтФАтФА boa_macros v0.22.0 (*)
+      тФЬтФАтФА thiserror-impl v2.0.20
+      тФВ   тФФтФАтФА thiserror v2.0.20
+      тФВ       тФЬтФАтФА boa_engine v0.22.0 (*)
+      тФВ       тФЬтФАтФА boa_idb v0.1.0 (*)
+      тФВ       тФЬтФАтФА boa_idb_core v0.1.0 (*)
+      тФВ       тФЬтФАтФА boa_idb_fs v0.1.0 (*)
+      тФВ       тФЬтФАтФА boa_idb_memory v0.1.0 (*)
+      тФВ       тФЬтФАтФА boa_idb_sqlite v0.1.0 (*)
+      тФВ       тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФЬтФАтФА wasm-bindgen-macro-support v0.2.128
+      тФВ   тФФтФАтФА wasm-bindgen-macro v0.2.128
+      тФВ       тФФтФАтФА wasm-bindgen v0.2.128
+      тФВ           тФЬтФАтФА js-sys v0.3.105 (*)
+      тФВ           тФЬтФАтФА plotters v0.3.7 (*)
+      тФВ           тФФтФАтФА web-sys v0.3.105 (*)
+      тФФтФАтФА zerovec-derive v0.11.6
+          тФФтФАтФА zerovec v0.11.8
+              тФЬтФАтФА icu_calendar v2.3.0 (*)
+              тФЬтФАтФА icu_collections v2.3.0 (*)
+              тФЬтФАтФА icu_locale_core v2.3.0 (*)
+              тФЬтФАтФА icu_locale_fallback v2.3.0 (*)
+              тФЬтФАтФА icu_normalizer v2.3.0 (*)
+              тФЬтФАтФА icu_properties v2.3.0 (*)
+              тФЬтФАтФА icu_provider v2.3.1 (*)
+              тФЬтФАтФА potential_utf v0.1.6
+              тФВ   тФЬтФАтФА icu_collections v2.3.0 (*)
+              тФВ   тФФтФАтФА icu_locale_fallback v2.3.0 (*)
+              тФЬтФАтФА timezone_provider v0.2.6 (*)
+              тФФтФАтФА tinystr v0.8.4 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'synstructure'
+    тФМтФА D:\projects\BoaX\boa-idb/Cargo.lock:225:1
+    тФВ
+225 тФВ тХн synstructure 0.13.2 registry+https://github.com/rust-lang/crates.io-index
+226 тФВ тФВ synstructure 0.14.0 registry+https://github.com/rust-lang/crates.io-index
+    тФВ тХ░тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФШ lock entries
+    тФВ
+    тФЬ synstructure v0.13.2
+      тФЬтФАтФА yoke-derive v0.8.2
+      тФВ   тФФтФАтФА yoke v0.8.3
+      тФВ       тФЬтФАтФА icu_collections v2.3.0
+      тФВ       тФВ   тФЬтФАтФА icu_normalizer v2.3.0
+      тФВ       тФВ   тФВ   тФФтФАтФА boa_engine v0.22.0
+      тФВ       тФВ   тФВ       тФЬтФАтФА boa_idb v0.1.0
+      тФВ       тФВ   тФВ       тФВ   тФФтФАтФА boa_idb_wpt v0.1.0
+      тФВ       тФВ   тФВ       тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФВ       тФВ   тФФтФАтФА icu_properties v2.3.0
+      тФВ       тФВ       тФФтФАтФА boa_parser v0.22.0
+      тФВ       тФВ           тФФтФАтФА boa_engine v0.22.0 (*)
+      тФВ       тФЬтФАтФА icu_provider v2.3.1
+      тФВ       тФВ   тФЬтФАтФА icu_calendar v2.3.0
+      тФВ       тФВ   тФВ   тФЬтФАтФА boa_engine v0.22.0 (*)
+      тФВ       тФВ   тФВ   тФФтФАтФА temporal_rs v0.2.6
+      тФВ       тФВ   тФВ       тФФтФАтФА boa_engine v0.22.0 (*)
+      тФВ       тФВ   тФЬтФАтФА icu_locale_fallback v2.3.0
+      тФВ       тФВ   тФВ   тФФтФАтФА icu_calendar v2.3.0 (*)
+      тФВ       тФВ   тФЬтФАтФА icu_normalizer v2.3.0 (*)
+      тФВ       тФВ   тФФтФАтФА icu_properties v2.3.0 (*)
+      тФВ       тФЬтФАтФА zerotrie v0.2.5
+      тФВ       тФВ   тФЬтФАтФА icu_properties v2.3.0 (*)
+      тФВ       тФВ   тФЬтФАтФА icu_provider v2.3.1 (*)
+      тФВ       тФВ   тФФтФАтФА timezone_provider v0.2.6
+      тФВ       тФВ       тФЬтФАтФА boa_engine v0.22.0 (*)
+      тФВ       тФВ       тФФтФАтФА temporal_rs v0.2.6 (*)
+      тФВ       тФФтФАтФА zerovec v0.11.8
+      тФВ           тФЬтФАтФА icu_calendar v2.3.0 (*)
+      тФВ           тФЬтФАтФА icu_collections v2.3.0 (*)
+      тФВ           тФЬтФАтФА icu_locale_core v2.3.0
+      тФВ           тФВ   тФЬтФАтФА icu_calendar v2.3.0 (*)
+      тФВ           тФВ   тФЬтФАтФА icu_locale_fallback v2.3.0 (*)
+      тФВ           тФВ   тФЬтФАтФА icu_properties v2.3.0 (*)
+      тФВ           тФВ   тФЬтФАтФА icu_provider v2.3.1 (*)
+      тФВ           тФВ   тФФтФАтФА temporal_rs v0.2.6 (*)
+      тФВ           тФЬтФАтФА icu_locale_fallback v2.3.0 (*)
+      тФВ           тФЬтФАтФА icu_normalizer v2.3.0 (*)
+      тФВ           тФЬтФАтФА icu_properties v2.3.0 (*)
+      тФВ           тФЬтФАтФА icu_provider v2.3.1 (*)
+      тФВ           тФЬтФАтФА potential_utf v0.1.6
+      тФВ           тФВ   тФЬтФАтФА icu_collections v2.3.0 (*)
+      тФВ           тФВ   тФФтФАтФА icu_locale_fallback v2.3.0 (*)
+      тФВ           тФЬтФАтФА timezone_provider v0.2.6 (*)
+      тФВ           тФФтФАтФА tinystr v0.8.4
+      тФВ               тФЬтФАтФА icu_calendar v2.3.0 (*)
+      тФВ               тФЬтФАтФА icu_locale_core v2.3.0 (*)
+      тФВ               тФЬтФАтФА icu_locale_fallback v2.3.0 (*)
+      тФВ               тФЬтФАтФА temporal_rs v0.2.6 (*)
+      тФВ               тФФтФАтФА timezone_provider v0.2.6 (*)
+      тФФтФАтФА zerofrom-derive v0.1.7
+          тФФтФАтФА zerofrom v0.1.8
+              тФЬтФАтФА icu_collections v2.3.0 (*)
+              тФЬтФАтФА icu_provider v2.3.1 (*)
+              тФЬтФАтФА timezone_provider v0.2.6 (*)
+              тФЬтФАтФА yoke v0.8.3 (*)
+              тФЬтФАтФА zerotrie v0.2.5 (*)
+              тФФтФАтФА zerovec v0.11.8 (*)
+    тФЬ synstructure v0.14.0
+      тФФтФАтФА boa_macros v0.22.0
+          тФЬтФАтФА boa_ast v0.22.0
+          тФВ   тФЬтФАтФА boa_engine v0.22.0
+          тФВ   тФВ   тФЬтФАтФА boa_idb v0.1.0
+          тФВ   тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0
+          тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+          тФВ   тФФтФАтФА boa_parser v0.22.0
+          тФВ       тФФтФАтФА boa_engine v0.22.0 (*)
+          тФЬтФАтФА boa_engine v0.22.0 (*)
+          тФЬтФАтФА boa_gc v0.22.0
+          тФВ   тФЬтФАтФА boa_engine v0.22.0 (*)
+          тФВ   тФЬтФАтФА boa_idb v0.1.0 (*)
+          тФВ   тФЬтФАтФА boa_idb_wpt v0.1.0 (*)
+          тФВ   тФФтФАтФА boa_interner v0.22.0
+          тФВ       тФЬтФАтФА boa_ast v0.22.0 (*)
+          тФВ       тФЬтФАтФА boa_engine v0.22.0 (*)
+          тФВ       тФФтФАтФА boa_parser v0.22.0 (*)
+          тФЬтФАтФА boa_interner v0.22.0 (*)
+          тФФтФАтФА boa_parser v0.22.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'windows-sys'
+    тФМтФА D:\projects\BoaX\boa-idb/Cargo.lock:263:1
+    тФВ
+263 тФВ тХн windows-sys 0.59.0 registry+https://github.com/rust-lang/crates.io-index
+264 тФВ тФВ windows-sys 0.61.2 registry+https://github.com/rust-lang/crates.io-index
+    тФВ тХ░тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФШ lock entries
+    тФВ
+    тФЬ windows-sys v0.59.0
+      тФФтФАтФА colored v2.2.0
+          тФФтФАтФА boa_idb_wpt v0.1.0
+    тФЬ windows-sys v0.61.2
+      тФЬтФАтФА anstyle-query v1.1.5
+      тФВ   тФФтФАтФА anstream v1.0.0
+      тФВ       тФФтФАтФА clap_builder v4.6.6
+      тФВ           тФФтФАтФА clap v4.6.6
+      тФВ               тФЬтФАтФА boa_idb_wpt v0.1.0
+      тФВ               тФФтФАтФА criterion v0.5.1
+      тФВ                   тФФтФАтФА (dev) boa_idb v0.1.0
+      тФВ                       тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФЬтФАтФА anstyle-wincon v3.0.11
+      тФВ   тФФтФАтФА anstream v1.0.0 (*)
+      тФЬтФАтФА errno v0.3.14
+      тФВ   тФФтФАтФА rustix v1.1.4
+      тФВ       тФФтФАтФА tempfile v3.27.0
+      тФВ           тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+      тФВ           тФЬтФАтФА (dev) boa_idb_fs v0.1.0
+      тФВ           тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+      тФВ           тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФВ           тФЬтФАтФА (dev) boa_idb_sqlite v0.1.0
+      тФВ           тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+      тФВ           тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФВ           тФЬтФАтФА (dev) boa_idb_wpt v0.1.0 (*)
+      тФВ           тФЬтФАтФА proptest v1.11.0
+      тФВ           тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+      тФВ           тФВ   тФЬтФАтФА (dev) boa_idb_core v0.1.0
+      тФВ           тФВ   тФВ   тФЬтФАтФА boa_idb v0.1.0 (*)
+      тФВ           тФВ   тФВ   тФЬтФАтФА boa_idb_fs v0.1.0 (*)
+      тФВ           тФВ   тФВ   тФЬтФАтФА boa_idb_memory v0.1.0
+      тФВ           тФВ   тФВ   тФВ   тФЬтФАтФА (dev) boa_idb v0.1.0 (*)
+      тФВ           тФВ   тФВ   тФВ   тФЬтФАтФА (dev) boa_idb_fs v0.1.0 (*)
+      тФВ           тФВ   тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФВ           тФВ   тФВ   тФЬтФАтФА boa_idb_sqlite v0.1.0 (*)
+      тФВ           тФВ   тФВ   тФФтФАтФА boa_idb_wpt v0.1.0 (*)
+      тФВ           тФВ   тФЬтФАтФА (dev) boa_idb_fs v0.1.0 (*)
+      тФВ           тФВ   тФЬтФАтФА (dev) boa_idb_memory v0.1.0 (*)
+      тФВ           тФВ   тФФтФАтФА (dev) boa_idb_sqlite v0.1.0 (*)
+      тФВ           тФФтФАтФА rusty-fork v0.3.1
+      тФВ               тФФтФАтФА proptest v1.11.0 (*)
+      тФЬтФАтФА is-terminal v0.4.17
+      тФВ   тФФтФАтФА criterion v0.5.1 (*)
+      тФЬтФАтФА rustix v1.1.4 (*)
+      тФЬтФАтФА tempfile v3.27.0 (*)
+      тФФтФАтФА winapi-util v0.1.11
+          тФЬтФАтФА same-file v1.0.6
+          тФВ   тФФтФАтФА walkdir v2.5.0
+          тФВ       тФЬтФАтФА boa_idb_wpt v0.1.0 (*)
+          тФВ       тФФтФАтФА criterion v0.5.1 (*)
+          тФФтФАтФА walkdir v2.5.0 (*)
+
+advisories ok, bans ok, licenses ok, sources ok

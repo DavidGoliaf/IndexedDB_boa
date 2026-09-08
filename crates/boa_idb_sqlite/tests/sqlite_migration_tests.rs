@@ -88,9 +88,6 @@ fn test_meta_table_schema_version() {
     // could open the WAL file as a database, yielding an empty `meta`
     // table and a spurious "schema_version should be in meta table"
     // failure (filesystem-dependent `read_dir` order).
-    //
-    // Backported to the M6-B merge into main: the same flake failed CI
-    // there; the full fix lives on task/m7c-ci-evidence-final (`f1912a6`).
     let files = db_files(&tmp);
     assert!(!files.is_empty());
 

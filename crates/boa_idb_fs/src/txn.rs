@@ -13,7 +13,7 @@ use parking_lot::RwLock;
 
 use crate::atomic::{append_and_maybe_sync, truncate_file};
 use crate::compact::{CompactConfig, maybe_compact, wal_path};
-use crate::cursor::FsCursor;
+use crate::cursor::{CursorMaps, FsCursor};
 use crate::meta::{encode_meta, write_meta_file};
 use crate::state::{DbState, IndexKey, RecordKey, SnapshotMeter};
 use crate::vfs::FileSystem;
@@ -75,6 +75,14 @@ pub struct FsTxn {
 
     // Undo log stack (one per savepoint level)
     undo_stack: Vec<Vec<UndoOp>>,
+
+    /// Net pending record inserts vs committed storage (M7-B H-F1).
+    ///
+    /// Lets quota projection stay O(1) per mutation instead of rescanning
+    /// all pending records per `put` (which was quadratic in batch size).
+    key_delta: i64,
+    /// `key_delta` snapshot per savepoint frame (parallel to `undo_stack`).
+    key_delta_stack: Vec<i64>,
 }
 
 impl FsTxn {
@@ -110,6 +118,8 @@ impl FsTxn {
             pending_index_entries: BTreeMap::new(),
             pending_key_generators: BTreeMap::new(),
             undo_stack: Vec::new(),
+            key_delta: 0,
+            key_delta_stack: Vec::new(),
         }
     }
 
@@ -117,24 +127,32 @@ impl FsTxn {
         matches!(self.durability, Durability::Strict)
     }
 
-    /// Projected key count if `map_key` is inserted as a brand-new record.
-    fn projected_key_count_after_insert(&self, map_key: &RecordKey) -> u64 {
-        let state = self.state.read();
-        let mut count = state.key_count();
-        for (rk, val) in &self.pending_records {
-            let existed = state.records.contains_key(rk);
-            match (existed, val.is_some()) {
-                (false, true) => count += 1,
-                (true, false) => count = count.saturating_sub(1),
-                _ => {}
-            }
+    /// Adjusts the pending key delta for a record presence transition.
+    ///
+    /// Keeps quota projection O(1) per mutation (M7-B H-F1): the previous
+    /// implementation rescanned all pending records on every `put`, making
+    /// batches quadratic. `before` is the effective existence ahead of the
+    /// mutation, `after` the existence it establishes. Takes only the delta
+    /// (not `&mut self`) so callers holding the state read guard compile.
+    fn apply_record_transition(delta: &mut i64, before: bool, after: bool) {
+        match (before, after) {
+            (false, true) => *delta += 1,
+            (true, false) => *delta -= 1,
+            _ => {}
         }
-        let already_counted = state.records.contains_key(map_key)
-            || matches!(self.pending_records.get(map_key), Some(Some(_)));
-        if !already_counted {
-            count += 1;
-        }
-        count
+    }
+
+    /// Projected key count after inserting one brand-new record.
+    ///
+    /// Fresh O(1) committed count plus the maintained pending delta: proven
+    /// equivalent to the previous rescan for every key state (new key,
+    /// overwrite, delete-then-put within one transaction), since the delta
+    /// only tracks this transaction's own mutations. Callers gate on the
+    /// key being absent (overwrites project no growth).
+    fn projected_key_count_for_insert(&self) -> u64 {
+        let committed = self.state.read().key_count();
+        let projected = i128::from(committed) + i128::from(self.key_delta) + 1;
+        u64::try_from(projected.max(0)).unwrap_or(u64::MAX)
     }
 
     fn check_scope(&self, store: StoreId) -> Result<(), BackendError> {
@@ -265,90 +283,6 @@ impl FsTxn {
         results
     }
 
-    /// Collects index-scan entries over the merged pending/committed view.
-    ///
-    /// Entries are ordered ascending by `(index key, primary key)`; `*unique`
-    /// directions collapse each index-key group to its first entry (smallest
-    /// primary key), and `prev*` directions reverse the result.
-    fn scan_index(
-        &self,
-        store: StoreId,
-        index: IndexId,
-        range: &EncodedRange,
-        dir: Direction,
-        key_only: bool,
-    ) -> Vec<(Vec<u8>, Vec<u8>, Option<Vec<u8>>)> {
-        // Merged (index_key, primary_key) set: committed entries minus
-        // pending deletions, plus pending-only inserts.
-        let state = self.state.read();
-        let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-        for (ikey, _) in state.index_entries.iter() {
-            let (iid, idx_key, pk) = ikey;
-            if *iid != index || !range.contains(idx_key) {
-                continue;
-            }
-            let key = (index, idx_key.clone(), pk.clone());
-            if self
-                .pending_index_entries
-                .get(&key)
-                .copied()
-                .unwrap_or(true)
-            {
-                pairs.push((idx_key.clone(), pk.clone()));
-            }
-        }
-        for ((iid, idx_key, pk), existed) in &self.pending_index_entries {
-            if *iid != index || !*existed || !range.contains(idx_key) {
-                continue;
-            }
-            let key = (index, idx_key.clone(), pk.clone());
-            if !state.index_entries.contains_key(&key)
-                && !pairs.contains(&(idx_key.clone(), pk.clone()))
-            {
-                pairs.push((idx_key.clone(), pk.clone()));
-            }
-        }
-
-        // Resolve record values through the merged record view so index
-        // cursors (non-key-only) yield values (read-your-writes).
-        let mut entries: Vec<(Vec<u8>, Vec<u8>, Option<Vec<u8>>)> = Vec::with_capacity(pairs.len());
-        for (idx_key, pk) in pairs {
-            let value = if key_only {
-                None
-            } else {
-                self.read_record(&(store, pk.clone()))
-            };
-            entries.push((idx_key, pk, value));
-        }
-        drop(state);
-
-        // Sort by (index key, primary key) ascending.
-        entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-
-        // `*unique` directions yield one entry per index key — the first in
-        // sort order, i.e. the one with the smallest primary key. Reversing
-        // afterwards gives `prevunique` its groups in descending index-key
-        // order with the same representative.
-        if dir.is_unique() {
-            let mut deduped: Vec<(Vec<u8>, Vec<u8>, Option<Vec<u8>>)> =
-                Vec::with_capacity(entries.len());
-            for entry in entries {
-                let same_group = deduped
-                    .last()
-                    .is_some_and(|last: &(Vec<u8>, Vec<u8>, Option<Vec<u8>>)| last.0 == entry.0);
-                if !same_group {
-                    deduped.push(entry);
-                }
-            }
-            entries = deduped;
-        }
-        if dir.is_prev() {
-            entries.reverse();
-        }
-
-        entries
-    }
-
     fn build_commit_payload(&self) -> (Vec<WalOp>, DatabaseMeta, bool) {
         let mut ops = Vec::new();
         for (key, value) in &self.pending_records {
@@ -433,6 +367,7 @@ impl FsTxn {
 impl BackendTxn for FsTxn {
     fn begin_request(&mut self) -> Result<(), BackendError> {
         self.undo_stack.push(Vec::new());
+        self.key_delta_stack.push(self.key_delta);
         Ok(())
     }
 
@@ -442,6 +377,9 @@ impl BackendTxn for FsTxn {
                 "commit_request without matching begin_request".into(),
             ));
         };
+        // Mutations persist into the parent scope, so the running delta is
+        // already current: only the snapshot is discarded.
+        let _ = self.key_delta_stack.pop();
         // Merge into the parent level instead of discarding: an outer
         // rollback must still undo everything, including committed inner
         // requests (nested-savepoint semantics, AD-7).
@@ -457,6 +395,11 @@ impl BackendTxn for FsTxn {
                 "rollback_request without matching begin_request".into(),
             ));
         };
+        // The op replay below restores the frame-start map state exactly, so
+        // restoring the frame-start delta snapshot restores the projection.
+        if let Some(snapshot) = self.key_delta_stack.pop() {
+            self.key_delta = snapshot;
+        }
         for op in ops.into_iter().rev() {
             match op {
                 UndoOp::RestoreRecord { key, old } => match old {
@@ -616,15 +559,19 @@ impl BackendTxn for FsTxn {
 
         let map_key = (store, key.to_vec());
 
+        // Single existence probe serves the constraint, quota and delta
+        // paths (previously probed twice per put).
+        let existed = self.record_exists(&map_key);
+
         // Check no_overwrite
-        if no_overwrite && self.record_exists(&map_key) {
+        if no_overwrite && existed {
             return Err(BackendError::Constraint(format!(
                 "Record already exists for key in store {store}"
             )));
         }
 
-        if !self.record_exists(&map_key) {
-            let projected = self.projected_key_count_after_insert(&map_key);
+        if !existed {
+            let projected = self.projected_key_count_for_insert();
             if projected > self.max_keys_in_memory {
                 return Err(BackendError::QuotaExceeded {
                     needed: projected,
@@ -643,6 +590,7 @@ impl BackendTxn for FsTxn {
         }
 
         self.pending_records.insert(map_key, Some(value.to_vec()));
+        Self::apply_record_transition(&mut self.key_delta, existed, true);
         Ok(())
     }
 
@@ -669,6 +617,7 @@ impl BackendTxn for FsTxn {
         }
 
         self.pending_records.insert(map_key, None);
+        Self::apply_record_transition(&mut self.key_delta, existed, false);
         Ok(existed)
     }
 
@@ -676,9 +625,11 @@ impl BackendTxn for FsTxn {
         self.check_scope(store)?;
         self.check_readwrite()?;
 
-        // Collect keys in range from committed storage
+        // Collect keys in range from committed storage. A set (not a Vec):
+        // the pending-only sweep below probes membership per key, which was
+        // quadratic in the range size (M7-B H-F1 hygiene).
         let state = self.state.read();
-        let keys_in_range: Vec<RecordKey> = state
+        let keys_in_range: std::collections::HashSet<RecordKey> = state
             .records
             .keys()
             .filter(|(sid, key)| *sid == store && range.contains(key))
@@ -698,8 +649,8 @@ impl BackendTxn for FsTxn {
 
         // Delete committed records
         for key in &keys_in_range {
-            let old_value = self.read_record(key);
-            if old_value.is_some() {
+            let before = self.read_record(key).is_some();
+            if before {
                 count += 1;
             }
             let old = self.pending_slot(key);
@@ -710,12 +661,15 @@ impl BackendTxn for FsTxn {
                 });
             }
             self.pending_records.insert(key.clone(), None);
+            Self::apply_record_transition(&mut self.key_delta, before, false);
         }
 
         // Delete pending-only records (not already handled).
         //
         // The previous pending value is logged for undo so a rollback
-        // restores it; only records that actually exist are counted.
+        // restores it; only records that actually exist are counted. Keys
+        // here are absent from committed storage (committed in-range keys
+        // are all in `keys_in_range`), so removal always ends absent.
         for key in pending_keys {
             if keys_in_range.contains(&key) {
                 continue;
@@ -728,6 +682,7 @@ impl BackendTxn for FsTxn {
                     });
                 }
                 self.pending_records.remove(&key);
+                Self::apply_record_transition(&mut self.key_delta, true, false);
                 count += 1;
             }
             // Tombstone or vanished entry: no live record, no count.
@@ -751,7 +706,6 @@ impl BackendTxn for FsTxn {
             .filter(|(sid, _)| *sid == store)
             .cloned()
             .collect();
-        drop(state);
         for key in self.pending_records.keys().filter(|(sid, _)| *sid == store) {
             if !keys.contains(key) {
                 keys.push(key.clone());
@@ -760,6 +714,14 @@ impl BackendTxn for FsTxn {
 
         for key in keys {
             let old = self.pending_slot(&key);
+            // Effective existence ahead of the tombstone: pending slots
+            // decide locally, absent slots fall through to committed storage
+            // (read under one guard for the whole sweep).
+            let before = match &old {
+                PendingSlot::Absent => state.records.contains_key(&key),
+                PendingSlot::Deleted => false,
+                PendingSlot::Value(_) => true,
+            };
             if let Some(ops) = self.undo_stack.last_mut() {
                 ops.push(UndoOp::RestoreRecord {
                     key: key.clone(),
@@ -769,7 +731,9 @@ impl BackendTxn for FsTxn {
             // Tombstone (not removal): keeps the merged view consistent for
             // any further reads in this transaction.
             self.pending_records.insert(key, None);
+            Self::apply_record_transition(&mut self.key_delta, before, false);
         }
+        drop(state);
 
         Ok(())
     }
@@ -851,7 +815,6 @@ impl BackendTxn for FsTxn {
             }
         }
     }
-
     fn scan(
         &mut self,
         src: SourceRef,
@@ -859,83 +822,30 @@ impl BackendTxn for FsTxn {
         dir: Direction,
         key_only: bool,
     ) -> Result<Box<dyn BackendCursor + '_>, BackendError> {
+        // Lazy cursors (M7-B H-MEM): snapshot the committed maps with
+        // structural O(1) clones and merge them per step with the borrowed
+        // pending overlay. No locks are held across steps.
+        let maps = {
+            let state = self.state.read();
+            CursorMaps {
+                records: state.records.clone(),
+                index: state.index_entries.clone(),
+                pending_records: &self.pending_records,
+                pending_index: &self.pending_index_entries,
+            }
+        };
         match src {
             SourceRef::Store(store) => {
                 self.check_scope(store)?;
-
-                // Collect merged records in range
-                let mut entries: Vec<(Vec<u8>, Vec<u8>, Option<Vec<u8>>)> = Vec::new();
-
-                // Add committed records
-                let state = self.state.read();
-                for (rkey, value) in state.records.iter() {
-                    let (sid, key) = rkey;
-                    if *sid == store && range.contains(key) {
-                        // Check if overridden by pending
-                        let pending_key = (store, key.clone());
-                        if let Some(pending_val) = self.pending_records.get(&pending_key) {
-                            if let Some(v) = pending_val {
-                                entries.push((key.clone(), key.clone(), Some(v.clone())));
-                            }
-                            // If None, record is deleted - skip
-                        } else {
-                            entries.push((key.clone(), key.clone(), Some(value.clone())));
-                        }
-                    }
-                }
-                drop(state);
-
-                // Add pending-only records
-                for ((sid, key), val) in &self.pending_records {
-                    if *sid == store && val.is_some() && range.contains(key) {
-                        // Only add if not already added from committed
-                        let committed_exists = {
-                            let state = self.state.read();
-                            state.records.contains_key(&(*sid, key.clone()))
-                        };
-                        if !committed_exists {
-                            entries.push((key.clone(), key.clone(), val.clone()));
-                        }
-                    }
-                }
-
-                // Sort by key
-                entries.sort_by(|a, b| a.0.cmp(&b.0));
-
-                // Apply direction
-                let cursor = match dir {
-                    Direction::Next | Direction::NextUnique => {
-                        if key_only {
-                            FsCursor::with_entries(
-                                entries
-                                    .into_iter()
-                                    .map(|(k, pk, _)| (k, pk, None))
-                                    .collect(),
-                            )
-                        } else {
-                            FsCursor::with_entries(entries)
-                        }
-                    }
-                    Direction::Prev | Direction::PrevUnique => {
-                        if key_only {
-                            FsCursor::with_entries_reversed(
-                                entries
-                                    .into_iter()
-                                    .map(|(k, pk, _)| (k, pk, None))
-                                    .collect(),
-                            )
-                        } else {
-                            FsCursor::with_entries_reversed(entries)
-                        }
-                    }
-                };
-
-                Ok(Box::new(cursor))
+                Ok(Box::new(FsCursor::open_store(
+                    maps, store, range, dir, key_only,
+                )))
             }
             SourceRef::Index { store, index } => {
                 self.check_scope(store)?;
-                let entries = self.scan_index(store, index, range, dir, key_only);
-                Ok(Box::new(FsCursor::with_entries(entries)))
+                Ok(Box::new(FsCursor::open_index(
+                    maps, store, index, range, dir, key_only,
+                )))
             }
         }
     }

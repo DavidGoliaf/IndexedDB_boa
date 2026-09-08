@@ -5,7 +5,7 @@ use boa_idb_core::backend::traits::{Database, Storage};
 use boa_idb_core::proto::StorageKey;
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -25,6 +25,10 @@ pub struct SqliteStorage {
     /// fresh [`SqliteDatabase`] handle). Without this, concurrent RW txns
     /// each take a private writer connection and collide inside SQLite.
     pools: Mutex<HashMap<String, ConnectionPool>>,
+    /// Database files whose crash-recovery blob sweep already ran (M7-B
+    /// H-F4): the sweep rescans the records table, so it runs once per
+    /// storage lifetime instead of on every open.
+    swept_blobs: Mutex<HashSet<String>>,
 }
 
 impl SqliteStorage {
@@ -47,6 +51,7 @@ impl SqliteStorage {
             root: root.to_path_buf(),
             registry_conn,
             pools: Mutex::new(HashMap::new()),
+            swept_blobs: Mutex::new(HashSet::new()),
         })
     }
 
@@ -188,7 +193,11 @@ impl Storage for SqliteStorage {
                 .map_err(|e| BackendError::Internal(format!("Failed to store db name: {e}")))?;
         }
 
-        let db = SqliteDatabase::open(pool, self.root.clone(), db_hash)?;
+        // Crash-recovery sweep runs once per storage lifetime per database;
+        // orphans arise solely from process crashes (in-process blob files
+        // are GC'd by savepoint/commit/abort paths), so repeat opens skip it.
+        let sweep_orphans = self.swept_blobs.lock().insert(db_file.clone());
+        let db = SqliteDatabase::open(pool, self.root.clone(), db_hash, sweep_orphans)?;
 
         // Keep the registry version in sync with the database file (upgrades
         // bump the file; `list_databases` serves the registry copy).
@@ -223,7 +232,9 @@ impl Storage for SqliteStorage {
         if let Some(ref file) = db_file {
             // Drop the cached pool before unlinking files so open connections
             // are released and a later reopen does not reuse a dead handle.
+            // The sweep mark goes with it: a recreated database sweeps again.
             self.pools.lock().remove(file);
+            self.swept_blobs.lock().remove(file);
 
             // Delete the database file
             let db_path = self.root.join(file);

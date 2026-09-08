@@ -21,20 +21,99 @@ const SECRET_VALUE: &[u8] = b"TOP-SECRET-VALUE-12345";
 const SECRET_HEX_PREFIX: &str = "544f502d53454352";
 /// Hex of the first seeded key (`cli-key-1`).
 const KEY_HEX: &str = "636c692d6b65792d31";
-
 /// Locates the built `boa-idb-cli` example executable.
+///
+/// Cargo usually emits `examples/boa-idb-cli[.exe]`, but coverage runners
+/// (e.g. `cargo llvm-cov`, which retargets and fingerprints builds) may
+/// leave only hashed names (`boa-idb-cli-<hash>[.exe]`): fall back to the
+/// sorted first match so the suite works in both layouts.
+//
+// M7-C: extracted into [`resolve_cli_exe`] so the resolution contract is
+// unit-tested without executing the binary (regression: CI coverage ran
+// `--tests` without building `--examples`, leaving no binary anywhere).
 fn cli_exe() -> PathBuf {
     let test_exe = std::env::current_exe().expect("current test executable path must be known");
     let profile_dir = test_exe
         .parent() // deps/
         .and_then(|p| p.parent()) // debug/ or release/
         .expect("profile directory must exist");
+    resolve_cli_exe(
+        profile_dir,
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
+    )
+    .unwrap_or_else(|checked| {
+        panic!(
+            "boa-idb-cli example binary must exist (checked {}); \
+                 run `cargo build -p boa_idb --example boa-idb-cli` first",
+            checked
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(" and ")
+        )
+    })
+}
+
+/// Pure resolution contract behind [`cli_exe`]: probe order is
+/// (1) plain `examples/boa-idb-cli[.exe]` next to the test profile dir,
+/// (2) sorted-first hashed `boa-idb-cli-*[.exe]` in the same dir,
+/// (3) the workspace's normal `target/<profile>/examples/` (covers runners
+/// that retarget or never build examples into the current target dir).
+///
+/// Returns `Ok(path)` on the first hit, or `Err(checked)` listing every
+/// probed candidate so failures name all searched locations.
+fn resolve_cli_exe(
+    profile_dir: &std::path::Path,
+    manifest_dir: &std::path::Path,
+) -> Result<PathBuf, Vec<PathBuf>> {
     let exe_name = if cfg!(windows) {
         "boa-idb-cli.exe"
     } else {
         "boa-idb-cli"
     };
-    profile_dir.join("examples").join(exe_name)
+    let mut checked = Vec::new();
+    let examples = profile_dir.join("examples");
+    let plain = examples.join(exe_name);
+    checked.push(plain.clone());
+    if plain.is_file() {
+        return Ok(plain);
+    }
+    if let Ok(entries) = std::fs::read_dir(&examples) {
+        let mut hashed: Vec<PathBuf> = entries
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| {
+                p.is_file()
+                    && p.file_name().is_some_and(|n| {
+                        n.to_string_lossy().starts_with("boa-idb-cli")
+                            && p.extension().is_none_or(|e| e == "exe")
+                    })
+            })
+            .collect();
+        hashed.sort();
+        if let Some(exe) = hashed.into_iter().next() {
+            return Ok(exe);
+        }
+    }
+    // Last resort: the workspace's normal target dir (plain names). Covers
+    // invocations that never build examples into the current target dir
+    // (e.g. `cargo llvm-cov --test cli_tests` without `--examples`).
+    let profile = profile_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("debug");
+    let fallback = manifest_dir
+        .join("..")
+        .join("..")
+        .join("target")
+        .join(profile)
+        .join("examples")
+        .join(exe_name);
+    checked.push(fallback.clone());
+    if fallback.is_file() {
+        return Ok(fallback);
+    }
+    Err(checked)
 }
 
 /// Runs the CLI with `args`, asserting success and returning stdout.
@@ -205,4 +284,67 @@ fn cli_rejects_bad_usage() {
         run_cli_fails(&["--root", &root, "--backend", "sqlite", "ls"]),
         2
     );
+}
+
+/// Unit tests for the [`resolve_cli_exe`] probe contract (no binary runs).
+///
+/// Regression for the M7-C CI coverage failure: with no binary anywhere,
+/// the resolver must report every probed location (not panic inside the
+/// first `read_dir`), and each probe layer must win when it holds the file.
+mod resolve_cli_exe_tests {
+    use super::resolve_cli_exe;
+    use std::path::PathBuf;
+
+    /// Creates an empty file at `dir/name`, creating `dir` if needed.
+    fn touch(dir: &std::path::Path, name: &str) -> PathBuf {
+        std::fs::create_dir_all(dir).expect("fixture dir");
+        let path = dir.join(name);
+        std::fs::write(&path, []).expect("fixture file");
+        path
+    }
+
+    #[test]
+    fn reports_all_checked_locations_when_nothing_built() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let profile = tmp.path().join("debug");
+        std::fs::create_dir_all(profile.join("examples")).expect("examples dir");
+        let err = resolve_cli_exe(&profile, tmp.path()).expect_err("must fail");
+        assert_eq!(err.len(), 2, "plain + workspace fallback, got {err:?}");
+    }
+
+    #[test]
+    fn missing_examples_dir_still_reports_both_locations() {
+        // CI coverage retargets into a dir whose `examples/` may not exist
+        // at all: `read_dir` must not panic, both candidates are reported.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let profile = tmp.path().join("debug");
+        std::fs::create_dir_all(&profile).expect("profile dir");
+        let err = resolve_cli_exe(&profile, tmp.path()).expect_err("must fail");
+        assert_eq!(err.len(), 2, "plain + workspace fallback, got {err:?}");
+    }
+
+    #[test]
+    fn plain_binary_wins_over_hashed_and_fallback() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let profile = tmp.path().join("debug");
+        let exe = if cfg!(windows) {
+            "boa-idb-cli.exe"
+        } else {
+            "boa-idb-cli"
+        };
+        let plain = touch(&profile.join("examples"), exe);
+        touch(&profile.join("examples"), "boa-idb-cli-abc123");
+        assert_eq!(resolve_cli_exe(&profile, tmp.path()), Ok(plain));
+    }
+
+    #[test]
+    fn hashed_binary_is_sorted_first_match() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let profile = tmp.path().join("examples_dir_probe");
+        let examples = profile.join("examples");
+        touch(&examples, "boa-idb-cli-zz99");
+        let first = touch(&examples, "boa-idb-cli-aa11");
+        touch(&examples, "boa-idb-cli-note.txt");
+        assert_eq!(resolve_cli_exe(&profile, tmp.path()), Ok(first));
+    }
 }

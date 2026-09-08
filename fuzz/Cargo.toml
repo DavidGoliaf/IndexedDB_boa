@@ -4,6 +4,10 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
+# Standalone fuzz workspace (standard `cargo fuzz` layout): keeps the
+# libFuzzer harness out of the main workspace's build graph.
+[workspace]
+
 [package.metadata]
 cargo-fuzz = true
 
@@ -12,6 +16,12 @@ libfuzzer-sys = "0.4"
 
 [dependencies.boa_idb_core]
 path = "../crates/boa_idb_core"
+
+[dependencies.boa_idb_memory]
+path = "../crates/boa_idb_memory"
+
+[dependencies.boa_idb_fs]
+path = "../crates/boa_idb_fs"
 
 [[bin]]
 name = "fuzz_key_decode"
@@ -24,3 +34,11 @@ path = "fuzz_targets/fuzz_scf_decode.rs"
 [[bin]]
 name = "fuzz_keypath_parse"
 path = "fuzz_targets/fuzz_keypath_parse.rs"
+
+[[bin]]
+name = "fuzz_wal_recovery"
+path = "fuzz_targets/fuzz_wal_recovery.rs"
+
+[[bin]]
+name = "fuzz_stateful_txn"
+path = "fuzz_targets/fuzz_stateful_txn.rs"

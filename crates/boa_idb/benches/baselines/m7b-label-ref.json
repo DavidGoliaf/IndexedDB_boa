@@ -1,0 +1,99 @@
+{
+  "provenance": {
+    "date_utc": "2026-09-06",
+    "os": "Windows",
+    "os_release": "10",
+    "arch": "AMD64",
+    "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+    "profile": "bench (inherits release, lto=thin)",
+    "command": "cargo bench -p boa_idb --bench backends",
+    "threshold": 1.1,
+    "rustc": "rustc 1.91.0 (f8297e351 2025-10-28)",
+    "git_sha": "62f32db1afc711a164057d3f0a78a3a1df025f0a",
+    "host_role": "interim",
+    "note": "Loaded Windows dev box; back-to-back variance 1.1-1.8x observed. Replace on the pinned labelled host (see README.md)."
+  },
+  "scenarios": {
+    "core/eval_readback": {
+      "mean_ns": 11120.169082026481
+    },
+    "core/js_request": {
+      "mean_ns": 35774.84461031417
+    },
+    "fs/cursor_scan": {
+      "mean_ns": 289142.29844957124
+    },
+    "fs/cursor_scan_2000": {
+      "mean_ns": 243743.1877625506
+    },
+    "fs/cursor_scan_20000": {
+      "mean_ns": 11459161.721852418
+    },
+    "fs/empty_txn": {
+      "mean_ns": 1306475.8507609405
+    },
+    "fs/open": {
+      "mean_ns": 1567114580.0
+    },
+    "fs/pk_get": {
+      "mean_ns": 176225.17846366283
+    },
+    "fs/put_batch": {
+      "mean_ns": 25173893.347117107
+    },
+    "fs/strict_commit": {
+      "mean_ns": 25438427.0
+    },
+    "fs_open/open": {
+      "mean_ns": 73599922.75595239
+    },
+    "memory/cursor_scan": {
+      "mean_ns": 255511.0918581207
+    },
+    "memory/cursor_scan_2000": {
+      "mean_ns": 258231.28528634482
+    },
+    "memory/cursor_scan_20000": {
+      "mean_ns": 7349901.102563255
+    },
+    "memory/empty_txn": {
+      "mean_ns": 13073.83081025183
+    },
+    "memory/pk_get": {
+      "mean_ns": 147943.67152040516
+    },
+    "memory/put_batch": {
+      "mean_ns": 7760816.997283697
+    },
+    "memory/strict_commit": {
+      "mean_ns": 4858.557121043288
+    },
+    "sqlite/cursor_scan": {
+      "mean_ns": 725359.0802524443
+    },
+    "sqlite/cursor_scan_2000": {
+      "mean_ns": 547225.6640510755
+    },
+    "sqlite/cursor_scan_20000": {
+      "mean_ns": 8526847.950189387
+    },
+    "sqlite/empty_txn": {
+      "mean_ns": 1372881.9948017418
+    },
+    "sqlite/open": {
+      "mean_ns": 39077.55804165242
+    },
+    "sqlite/pk_get": {
+      "mean_ns": 763062.6628440097
+    },
+    "sqlite/put_batch": {
+      "mean_ns": 76570806.66666666
+    },
+    "sqlite/strict_commit": {
+      "mean_ns": 8062302.829341484
+    },
+    "sqlite_open/open": {
+      "mean_ns": 599896.214511754
+    }
+  }
+}

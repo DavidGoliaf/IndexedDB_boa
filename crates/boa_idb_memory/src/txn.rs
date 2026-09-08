@@ -207,89 +207,6 @@ impl MemoryTxn {
 
         results
     }
-
-    /// Collects index-scan entries over the merged pending/committed view.
-    ///
-    /// Entries are ordered ascending by `(index key, primary key)`; `*unique`
-    /// directions collapse each index-key group to its first entry (smallest
-    /// primary key), and `prev*` directions reverse the result.
-    fn scan_index(
-        &self,
-        store: StoreId,
-        index: IndexId,
-        range: &EncodedRange,
-        dir: Direction,
-        key_only: bool,
-    ) -> Vec<(Vec<u8>, Vec<u8>, Option<Vec<u8>>)> {
-        // Merged (index_key, primary_key) set: committed entries minus
-        // pending deletions, plus pending-only inserts.
-        let state = self.storage_state.read();
-        let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-        for ((iid, idx_key, pk), _) in &state.index_entries {
-            if *iid != index || !range.contains(idx_key) {
-                continue;
-            }
-            let key = (index, idx_key.clone(), pk.clone());
-            if self
-                .pending_index_entries
-                .get(&key)
-                .copied()
-                .unwrap_or(true)
-            {
-                pairs.push((idx_key.clone(), pk.clone()));
-            }
-        }
-        for ((iid, idx_key, pk), existed) in &self.pending_index_entries {
-            if *iid != index || !*existed || !range.contains(idx_key) {
-                continue;
-            }
-            let key = (index, idx_key.clone(), pk.clone());
-            if !state.index_entries.contains_key(&key)
-                && !pairs.contains(&(idx_key.clone(), pk.clone()))
-            {
-                pairs.push((idx_key.clone(), pk.clone()));
-            }
-        }
-
-        // Resolve record values through the merged record view so index
-        // cursors (non-key-only) yield values (read-your-writes).
-        let mut entries: Vec<(Vec<u8>, Vec<u8>, Option<Vec<u8>>)> = Vec::with_capacity(pairs.len());
-        for (idx_key, pk) in pairs {
-            let value = if key_only {
-                None
-            } else {
-                self.read_record(&(store, pk.clone()))
-            };
-            entries.push((idx_key, pk, value));
-        }
-        drop(state);
-
-        // Sort by (index key, primary key) ascending.
-        entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-
-        // `*unique` directions yield one entry per index key — the first in
-        // sort order, i.e. the one with the smallest primary key. Reversing
-        // afterwards gives `prevunique` its groups in descending index-key
-        // order with the same representative.
-        if dir.is_unique() {
-            let mut deduped: Vec<(Vec<u8>, Vec<u8>, Option<Vec<u8>>)> =
-                Vec::with_capacity(entries.len());
-            for entry in entries {
-                let same_group = deduped
-                    .last()
-                    .is_some_and(|last: &(Vec<u8>, Vec<u8>, Option<Vec<u8>>)| last.0 == entry.0);
-                if !same_group {
-                    deduped.push(entry);
-                }
-            }
-            entries = deduped;
-        }
-        if dir.is_prev() {
-            entries.reverse();
-        }
-
-        entries
-    }
 }
 
 impl BackendTxn for MemoryTxn {
@@ -702,82 +619,35 @@ impl BackendTxn for MemoryTxn {
         dir: Direction,
         key_only: bool,
     ) -> Result<Box<dyn BackendCursor + '_>, BackendError> {
+        // Lazy cursors (M7-B H-MEM): the merged view is iterated per step
+        // with O(1) memory instead of collected up front. Committed state is
+        // shared (short read locks per step); the pending overlay is
+        // borrowed from this transaction.
         match src {
             SourceRef::Store(store) => {
                 self.check_scope(store)?;
-
-                // Collect merged records in range
-                let mut entries: Vec<(Vec<u8>, Vec<u8>, Option<Vec<u8>>)> = Vec::new();
-
-                // Add committed records
-                let state = self.storage_state.read();
-                for ((sid, key), value) in &state.records {
-                    if *sid == store && range.contains(key) {
-                        // Check if overridden by pending
-                        let pending_key = (store, key.clone());
-                        if let Some(pending_val) = self.pending_records.get(&pending_key) {
-                            if let Some(v) = pending_val {
-                                entries.push((key.clone(), key.clone(), Some(v.clone())));
-                            }
-                            // If None, record is deleted - skip
-                        } else {
-                            entries.push((key.clone(), key.clone(), Some(value.clone())));
-                        }
-                    }
-                }
-                drop(state);
-
-                // Add pending-only records
-                for ((sid, key), val) in &self.pending_records {
-                    if *sid == store && val.is_some() && range.contains(key) {
-                        // Only add if not already added from committed
-                        let committed_exists = {
-                            let state = self.storage_state.read();
-                            state.records.contains_key(&(*sid, key.clone()))
-                        };
-                        if !committed_exists {
-                            entries.push((key.clone(), key.clone(), val.clone()));
-                        }
-                    }
-                }
-
-                // Sort by key
-                entries.sort_by(|a, b| a.0.cmp(&b.0));
-
-                // Apply direction
-                let cursor = match dir {
-                    Direction::Next | Direction::NextUnique => {
-                        if key_only {
-                            MemoryCursor::with_entries(
-                                entries
-                                    .into_iter()
-                                    .map(|(k, pk, _)| (k, pk, None))
-                                    .collect(),
-                            )
-                        } else {
-                            MemoryCursor::with_entries(entries)
-                        }
-                    }
-                    Direction::Prev | Direction::PrevUnique => {
-                        if key_only {
-                            MemoryCursor::with_entries_reversed(
-                                entries
-                                    .into_iter()
-                                    .map(|(k, pk, _)| (k, pk, None))
-                                    .collect(),
-                            )
-                        } else {
-                            MemoryCursor::with_entries_reversed(entries)
-                        }
-                    }
-                };
-
-                Ok(Box::new(cursor))
+                Ok(Box::new(MemoryCursor::open_store(
+                    Arc::clone(&self.storage_state),
+                    &self.pending_records,
+                    &self.pending_index_entries,
+                    store,
+                    range,
+                    dir,
+                    key_only,
+                )))
             }
             SourceRef::Index { store, index } => {
                 self.check_scope(store)?;
-                let entries = self.scan_index(store, index, range, dir, key_only);
-                Ok(Box::new(MemoryCursor::with_entries(entries)))
+                Ok(Box::new(MemoryCursor::open_index(
+                    Arc::clone(&self.storage_state),
+                    &self.pending_records,
+                    &self.pending_index_entries,
+                    store,
+                    index,
+                    range,
+                    dir,
+                    key_only,
+                )))
             }
         }
     }

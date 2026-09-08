@@ -1,0 +1,232 @@
+name: Nightly M7 gates (coverage, fuzz, memory, differential)
+
+# Heavy gates that do not fit per-PR CI: line-coverage ratchet with LCOV
+# artifact, 4h libFuzzer total across all targets, Valgrind massif RSS gate,
+# the full 1M cursor matrix (store+index x Next/Prev x all backends, dhat
+# peak receipts), and the full suite with nightly-only knobs (10k
+# differential scenarios via the 10 000-case proptest suites, long
+# lifecycle). Crash-consistency 200 iterations live in nightly-fs-crash.yml.
+#
+# Coverage note: the TZ §13.2 absolutes are enforced directly (core 90 %,
+# boa_idb 80 %, WPT included) — measured actuals are core 90.4 / boa_idb
+# 80.5 on the 2026-09-06 drive, so the gate has headroom but no trailing
+# ratchet. A threshold failure must be triaged before merge, same as a red
+# check.
+
+on:
+  schedule:
+    - cron: "37 4 * * *"
+  workflow_dispatch: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-nightly-cov-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --version 0.9.0 --locked
+      - name: Pre-build example binaries (cli_tests needs boa-idb-cli)
+        # MUST run before the coverage step below: the llvm-cov run
+        # retargets builds into target/llvm-cov-target, where the plain-named
+        # example binary was absent at test time in run 34050610807 (and a
+        # failed step skips everything after it, so building afterwards
+        # could never help). Pre-building into the normal target dir lets
+        # the test's workspace-fallback probe resolve the binary.
+        run: cargo build --workspace --examples
+      - name: Tests under coverage (lib+bins+tests+examples)
+        # NOTE: `--doc` is deliberately excluded (unstable in cargo-llvm-cov,
+        # issue #2); doctests still run in CI's test job, just unmeasured.
+        run: cargo llvm-cov --workspace --lib --bins --tests --examples --no-report
+      - name: WPT under coverage (memory, sqlite, fs)
+        run: |
+          cargo llvm-cov run --no-clean -p boa_idb_wpt --bin boa-idb-wpt -- --backend memory --summary
+          cargo llvm-cov run --no-clean -p boa_idb_wpt --bin boa-idb-wpt -- --backend sqlite --summary
+          cargo llvm-cov run --no-clean -p boa_idb_wpt --bin boa-idb-wpt -- --backend fs --summary
+      - name: LCOV artifact
+        run: cargo llvm-cov report --lcov --output-path lcov.info
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+      - name: Per-package threshold gate (TZ §13.2 absolutes)
+        # Enforces the TZ §13.2 line-coverage absolutes (core 90 %, boa_idb
+        # 80 %) with WPT included — not a trailing ratchet. Any dip below
+        # the absolute fails the gate and must be triaged before merge.
+        # Uses python3 (always present on ubuntu runners). NOTE: llvm-cov
+        # JSON nests files under data[0] ("data": {"data": [{"files": ...}]}).
+        run: |
+          cargo llvm-cov report --json --output-path cov.json
+          python3 - <<'EOF'
+          import json, sys
+          floors = {"boa_idb_core": 90.0, "boa_idb": 80.0}
+          data = json.load(open("cov.json"))
+          per_pkg = {}
+          for f in data["data"][0]["files"]:
+              name = f["filename"].replace("\\", "/")
+              for pkg in floors:
+                  if f"/crates/{pkg}/" in name:
+                      s = per_pkg.setdefault(pkg, [0, 0])
+                      lines = f["summary"]["lines"]
+                      s[0] += lines["count"]
+                      s[1] += lines["covered"]
+                      break
+          failed = False
+          for pkg, floor in floors.items():
+              total, covered = per_pkg.get(pkg, (0, 0))
+              pct = 100.0 * covered / total if total else 0.0
+              print(f"{pkg}: lines={total} covered={covered} cover={pct:.1f}% floor={floor}%")
+              if pct < floor:
+                  print(f"::error::coverage threshold violated for {pkg}")
+                  failed = True
+          sys.exit(1 if failed else 0)
+          EOF
+
+  differential-and-lifecycle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-nightly-suite-${{ hashFiles('**/Cargo.lock') }}
+      - name: Full suite, nightly knobs (10k proptest scenarios, long lifecycle)
+        env:
+          BOA_IDB_LONG_LIFECYCLE: 1
+        run: |
+          # `cli_tests` shells out to the built `boa-idb-cli` example
+          # binary (see the `coverage` job): build examples first.
+          cargo build --workspace --examples
+          cargo test --workspace
+
+  cursor-matrix-1m:
+    # Normative 1M cursor evidence (M7-B P1-2): store+index x Next/Prev x
+    # memory/sqlite/fs, dhat peak < 1 MiB each. PR runs the time-boxed
+    # subset (FS 200k store, 100k index); this job raises every scale to
+    # 10^6 via BOA_IDB_FULL_MATRIX and uploads the log + receipt lines.
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-nightly-matrix-${{ hashFiles('**/Cargo.lock') }}
+      - name: Full 1M cursor matrix (receipts to log)
+        env:
+          BOA_IDB_FULL_MATRIX: 1
+        run: |
+          uname -a | tee matrix-1m.log
+          echo "command: BOA_IDB_FULL_MATRIX=1 cargo test -p boa_idb --test memory_gates_tests cursor_ -- --nocapture --test-threads=1" | tee -a matrix-1m.log
+          BOA_IDB_FULL_MATRIX=1 cargo test -p boa_idb --test memory_gates_tests cursor_ -- --nocapture --test-threads=1 2>&1 | tee -a matrix-1m.log
+      - name: Extract RECEIPT-MATRIX lines
+        if: always()
+        run: |
+          grep -h RECEIPT-MATRIX matrix-1m.log | tee receipt-matrix-1m.txt || true
+          echo "## Cursor matrix 1M receipts" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat receipt-matrix-1m.txt >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cursor-matrix-1m-log
+          path: |
+            matrix-1m.log
+            receipt-matrix-1m.txt
+
+  memory-massif:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-nightly-massif-${{ hashFiles('**/Cargo.lock') }}
+      - name: Build memory-gates test binary
+        run: cargo test -p boa_idb --test memory_gates_tests --no-run
+      - name: Massif on lifecycle+overhead subset
+        # Fast subset only (no 1M walks): lifecycle (long) and overhead
+        # probes. Peak heap is asserted generously (environment-sensitive);
+        # the precise gate is the in-process allocation counter.
+        env:
+          BOA_IDB_LONG_LIFECYCLE: 1
+        run: |
+          BIN=$(ls -t target/debug/deps/memory_gates_tests-* | grep -v '\.' | head -1)
+          echo "binary: $BIN"
+          valgrind --tool=massif --massif-out-file=massif.out --stacks=yes "$BIN" lifecycle overhead --test-threads=1
+          PEAK=$(grep -E '^mem_heap_B=' massif.out | sed 's/mem_heap_B=//' | sort -n | tail -1)
+          echo "massif peak heap bytes: $PEAK"
+          test "$PEAK" -lt 536870912 || (echo "::error::massif peak $PEAK exceeds 512 MiB" && exit 1)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: massif-out
+          path: massif.out
+
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - fuzz_scf_decode
+          - fuzz_key_decode
+          - fuzz_keypath_parse
+          - fuzz_wal_recovery
+          - fuzz_stateful_txn
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            fuzz/corpus
+            fuzz/artifacts
+            fuzz/target
+          key: ${{ runner.os }}-cargo-nightly-fuzz-${{ matrix.target }}-${{ hashFiles('fuzz/Cargo.toml', 'crates/boa_idb_*/Cargo.toml', 'Cargo.toml') }}
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      # 48 min × 5 targets ≈ 4 h total fuzzing (M7 §7.2). Seeds persist via
+      # cache; crashes upload as artifacts with replay commands in logs.
+      - name: Fuzz ${{ matrix.target }} (48 min)
+        working-directory: fuzz
+        run: >
+          mkdir -p artifacts &&
+          cargo +nightly fuzz run ${{ matrix.target }}
+          -- -max_total_time=2880 -print_final_stats=1
+          -artifact_prefix=artifacts/${{ matrix.target }}-
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-crashes-${{ matrix.target }}
+          path: fuzz/artifacts/

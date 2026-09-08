@@ -27,6 +27,7 @@ boa_idb_memory = { path = "../boa_idb_memory" }
 boa_idb_sqlite = { path = "../boa_idb_sqlite" }
 boa_idb_fs = { path = "../boa_idb_fs" }
 criterion = { workspace = true }
+dhat = { workspace = true }
 tempfile = "3"
 proptest = { workspace = true }
 rstest = { workspace = true }
